@@ -1,0 +1,22 @@
+# ==============================================================================
+# 🎯 GLITCHHUNTER AI - DEPENDENCIAS PYTHON
+# Instalar con: pip install -r requirements.txt
+# ==============================================================================
+
+# Core & Validación de Datos
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# Servidor Web, REST API & WebSockets en Tiempo Real
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+
+# Clientes HTTP & Scrapers en Vivo
+requests>=2.31.0
+httpx>=0.24.0
+
+# Salida Rica en Terminal & Formateo Ejecutivo
+rich>=13.4.0
+
+# Pruebas Unitarias e Integración
+pytest>=7.4.0

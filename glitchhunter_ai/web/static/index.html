@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GlitchHunter AI | Radar de Ofertas y Errores de Precio</title>
+
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    body {
+      background-color: #f8fafc;
+      color: #0f172a;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+
+    .white-card {
+      background-color: #ffffff;
+      border: 1px solid #e2e8f0;
+      transition: all 0.15s ease-in-out;
+    }
+
+    .white-card:hover {
+      border-color: #10b981;
+      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.08);
+      transform: translateY(-2px);
+    }
+
+    .glitch-item.is-critical {
+      border-left: 4px solid #ef4444;
+    }
+
+    .deal-item {
+      border-left: 4px solid #10b981;
+    }
+  </style>
+</head>
+
+<body class="min-h-screen text-slate-800 antialiased selection:bg-emerald-100 selection:text-emerald-900">
+  <!-- Toast Notificaciones -->
+  <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col space-y-2 pointer-events-none"></div>
+
+  <!-- Contenedor Principal -->
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+
+    <!-- ==================== HEADER BLANCO Y VERDE ==================== -->
+    <header class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 mb-6 shadow-sm">
+      <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        
+        <!-- Logo y Estado -->
+        <div class="flex items-center space-x-3.5">
+          <div class="w-11 h-11 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-2xl text-emerald-600 shadow-sm">
+            🎯
+          </div>
+          <div>
+            <div class="flex items-center space-x-2.5">
+              <h1 class="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
+                GlitchHunter AI
+              </h1>
+              <span id="connection-status-badge" class="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-mono font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span id="status-text">Online • 60s</span>
+              </span>
+            </div>
+            <p class="text-xs text-slate-500 mt-0.5">
+              Monitor inteligente de errores de precio y descuentos destacados en retail chileno
+            </p>
+          </div>
+        </div>
+
+        <!-- Botonera Rápida -->
+        <div class="flex items-center gap-2">
+          
+          <!-- Audio Toggle -->
+          <button id="toggle-sound-btn" 
+                  class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-50 hover:bg-slate-100 text-xs font-medium text-slate-700 border border-slate-200 transition shadow-sm"
+                  title="Activar/Silenciar sonido de alerta">
+            <i id="sound-icon" data-lucide="volume-2" class="w-3.5 h-3.5 text-emerald-600"></i>
+            <span id="sound-label">Audio ON</span>
+          </button>
+
+          <!-- Forzar Escaneo -->
+          <button id="btn-force-scan" 
+                  class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white hover:bg-slate-50 text-xs font-medium text-slate-700 border border-slate-200 transition active:scale-95 shadow-sm"
+                  title="Escanear las 6 tiendas retail ahora mismo">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-slate-500"></i>
+            <span>Escanear</span>
+          </button>
+
+          <!-- Simular Glitch -->
+          <button id="btn-inject-glitch" 
+                  class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-xs font-semibold text-white transition active:scale-95 shadow-sm"
+                  title="Inyectar oferta de prueba para verificar alertas">
+            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+            <span>Simular Glitch</span>
+          </button>
+
+        </div>
+      </div>
+    </header>
+
+    <!-- ==================== RESUMEN DE MÉTRICAS (3 BLOQUES BLANCO/VERDE) ==================== -->
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3.5 mb-6">
+      
+      <!-- KPI 1: Glitches Críticos -->
+      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex items-center justify-between">
+        <div>
+          <span class="text-xs font-medium text-slate-500 uppercase tracking-wider">Errores de Precio (≥65%)</span>
+          <div class="text-2xl font-bold font-mono text-slate-900 mt-1" id="kpi-total-glitches">0</div>
+        </div>
+        <div class="w-10 h-10 rounded-lg bg-rose-50 border border-rose-100 flex items-center justify-center text-rose-600">
+          <i data-lucide="zap" class="w-5 h-5"></i>
+        </div>
+      </div>
+
+      <!-- KPI 2: Ofertas Comerciales -->
+      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex items-center justify-between">
+        <div>
+          <span class="text-xs font-medium text-slate-500 uppercase tracking-wider">Ofertas Moderadas (40-64%)</span>
+          <div class="text-2xl font-bold font-mono text-emerald-600 mt-1" id="kpi-total-deals">0</div>
+        </div>
+        <div class="w-10 h-10 rounded-lg bg-emerald-50 border border-emerald-100 flex items-center justify-center text-emerald-600">
+          <i data-lucide="tag" class="w-5 h-5"></i>
+        </div>
+      </div>
+
+      <!-- KPI 3: Ahorro Acumulado -->
+      <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex items-center justify-between">
+        <div>
+          <span class="text-xs font-medium text-slate-500 uppercase tracking-wider">Ahorro Total Potencial</span>
+          <div class="text-xl sm:text-2xl font-bold font-mono text-slate-900 mt-1" id="kpi-total-savings">$0 CLP</div>
+        </div>
+        <div class="w-10 h-10 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-600">
+          <i data-lucide="shield-check" class="w-5 h-5 text-emerald-600"></i>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ==================== BARRA GLOBAL DE FILTROS ==================== -->
+    <div class="bg-white border border-slate-200 rounded-xl p-4 mb-6 shadow-sm space-y-3.5">
+      
+      <!-- Fila 1: Filtro por Tienda -->
+      <div class="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none" id="store-filters-container">
+        <button data-store="all" class="store-filter-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold transition bg-emerald-600 text-white shadow-sm flex-shrink-0">
+          Todas las Tiendas (<span id="count-all">0</span>)
+        </button>
+        <button data-store="falabella" class="store-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium transition bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 flex-shrink-0">
+          Falabella (<span id="count-falabella">0</span>)
+        </button>
+        <button data-store="ripley" class="store-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium transition bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 flex-shrink-0">
+          Ripley (<span id="count-ripley">0</span>)
+        </button>
+        <button data-store="paris" class="store-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium transition bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 flex-shrink-0">
+          Paris (<span id="count-paris">0</span>)
+        </button>
+        <button data-store="lider" class="store-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium transition bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 flex-shrink-0">
+          Líder (<span id="count-lider">0</span>)
+        </button>
+        <button data-store="mercadolibre" class="store-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium transition bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 flex-shrink-0">
+          Mercado Libre (<span id="count-mercadolibre">0</span>)
+        </button>
+        <button data-store="pcfactory" class="store-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium transition bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 flex-shrink-0">
+          PC Factory (<span id="count-pcfactory">0</span>)
+        </button>
+      </div>
+
+      <!-- Fila 2: Buscador y Ordenamiento -->
+      <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2.5 border-t border-slate-100">
+        <div class="relative flex-1">
+          <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+            <i data-lucide="search" class="w-4 h-4"></i>
+          </div>
+          <input type="text" 
+                 id="search-input" 
+                 placeholder="Buscar por producto (ej: iPhone, Smart TV OLED, PS5, ASUS)..." 
+                 class="w-full pl-9 pr-8 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs sm:text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:bg-white transition" />
+          <button id="btn-clear-search" class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 hidden">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+
+        <select id="sort-select" class="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-medium text-slate-700 focus:outline-none focus:border-emerald-500 transition">
+          <option value="recent">Más Recientes</option>
+          <option value="discount">Mayor % Descuento</option>
+          <option value="savings">Mayor Ahorro CLP</option>
+        </select>
+      </div>
+
+    </div>
+
+    <!-- ==================== LAYOUT DE DOS COLUMNAS ==================== -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+      
+      <!-- ==================== COLUMNA 1: GLITCHES CRÍTICOS (≥65%) ==================== -->
+      <section class="space-y-4">
+        
+        <!-- Cabecera de Columna 1 -->
+        <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center space-x-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
+              <h2 class="text-base font-bold text-slate-900">
+                Errores de Precio & Glitches
+              </h2>
+            </div>
+            <span class="px-2 py-0.5 rounded-full text-xs font-mono font-bold bg-rose-50 text-rose-700 border border-rose-200">
+              ≥ 65% OFF
+            </span>
+          </div>
+          <div class="flex items-center justify-between text-xs text-slate-500 mt-1">
+            <span>Bugs tipográficos, omisión de ceros (~10x) y caídas extremas</span>
+            <span id="col1-count-badge" class="font-mono font-semibold text-slate-700">0 disponibles</span>
+          </div>
+        </div>
+
+        <!-- Contenedor de Tarjetas de Columna 1 -->
+        <div id="glitches-col-container" class="space-y-3">
+          <!-- Inyectado dinámicamente por app.js -->
+        </div>
+
+        <!-- Estado vacío Columna 1 -->
+        <div id="empty-glitches" class="hidden bg-white border border-slate-200 rounded-xl p-8 text-center shadow-sm">
+          <div class="w-10 h-10 mx-auto rounded-full bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-400 mb-2">
+            <i data-lucide="check-circle" class="w-5 h-5 text-emerald-500"></i>
+          </div>
+          <h3 class="text-sm font-semibold text-slate-800">No hay glitches que coincidan con la búsqueda</h3>
+          <p class="text-xs text-slate-500 mt-1">Prueba cambiando el término de búsqueda o presiona [Simular Glitch].</p>
+        </div>
+
+      </section>
+
+      <!-- ==================== COLUMNA 2: OFERTAS COMERCIALES (40% - 64%) ==================== -->
+      <section class="space-y-4">
+        
+        <!-- Cabecera de Columna 2 -->
+        <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center space-x-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+              <h2 class="text-base font-bold text-slate-900">
+                Ofertas Comerciales
+              </h2>
+            </div>
+            <span class="px-2 py-0.5 rounded-full text-xs font-mono font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+              40% - 64% OFF
+            </span>
+          </div>
+
+          <div class="flex items-center justify-between text-xs text-slate-500 mt-1">
+            <span>Descuentos reales y liquidaciones atractivas de catálogo</span>
+            <span id="col2-count-badge" class="font-mono font-semibold text-slate-700">0 disponibles</span>
+          </div>
+
+          <!-- Selector de rango de descuento para Columna 2 -->
+          <div class="flex items-center gap-1.5 mt-3 pt-3 border-t border-slate-100">
+            <span class="text-[11px] font-medium text-slate-400 mr-1">Rango:</span>
+            <button data-col2-range="all" class="col2-range-btn px-2 py-0.5 rounded text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+              Todos (40-64%)
+            </button>
+            <button data-col2-range="50" class="col2-range-btn px-2 py-0.5 rounded text-xs font-medium bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200">
+              ≥ 50%
+            </button>
+            <button data-col2-range="60" class="col2-range-btn px-2 py-0.5 rounded text-xs font-medium bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200">
+              ≥ 60%
+            </button>
+          </div>
+        </div>
+
+        <!-- Contenedor de Tarjetas de Columna 2 -->
+        <div id="deals-col-container" class="space-y-3">
+          <!-- Inyectado dinámicamente por app.js -->
+        </div>
+
+        <!-- Estado vacío Columna 2 -->
+        <div id="empty-deals" class="hidden bg-white border border-slate-200 rounded-xl p-8 text-center shadow-sm">
+          <div class="w-10 h-10 mx-auto rounded-full bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-400 mb-2">
+            <i data-lucide="tag" class="w-5 h-5 text-slate-400"></i>
+          </div>
+          <h3 class="text-sm font-semibold text-slate-800">No hay ofertas en este rango</h3>
+          <p class="text-xs text-slate-500 mt-1">Prueba seleccionando "Todos (40-64%)" o ajusta los filtros.</p>
+        </div>
+
+      </section>
+
+    </div>
+
+    <!-- ==================== FOOTER ==================== -->
+    <footer class="mt-12 pt-6 border-t border-slate-200 text-center sm:flex sm:justify-between sm:items-center text-xs text-slate-500">
+      <div class="flex items-center justify-center sm:justify-start gap-2">
+        <span class="font-semibold text-slate-800">GlitchHunter AI</span>
+        <span>•</span>
+        <span>Revisor Continuo de Excelencia</span>
+        <span>•</span>
+        <span class="text-emerald-700 font-medium">Diseño Blanco & Verde</span>
+      </div>
+      <div class="mt-2 sm:mt-0 font-mono text-slate-400">
+        Monitoreo simultáneo en 6 retailers de Chile
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- Lógica de Aplicación -->
+  <script src="/static/app.js"></script>
+</body>
+</html>

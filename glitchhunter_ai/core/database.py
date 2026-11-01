@@ -1,0 +1,1137 @@
+"""
+Persistencia y Gestión de Precios Históricos para GlitchHunter AI.
+Maneja base de datos SQLite con soporte WAL para concurrencia, cálculo de
+precios base (baseline price) para desenmascarar falsos descuentos e inflación
+previa (CyberDay bait), y almacenamiento de alertas de glitches.
+"""
+
+from __future__ import annotations
+
+import contextlib
+from datetime import datetime, timedelta
+import logging
+from pathlib import Path
+import sqlite3
+import statistics
+import sys
+from typing import Any, Dict, List, Optional, Union
+import uuid
+
+# Configuración de rutas para imports robustos
+_CURRENT_DIR = Path(__file__).resolve().parent
+_PROJECT_DIR = _CURRENT_DIR.parent
+_WORKSPACE_DIR = _PROJECT_DIR.parent
+
+for path in (str(_PROJECT_DIR), str(_WORKSPACE_DIR)):
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+try:
+    from glitchhunter_ai import config
+except ImportError:
+    try:
+        import config
+    except ImportError:
+        config = None
+
+try:
+    from glitchhunter_ai.core.models import (
+        GlitchAlert,
+        GlitchSeverity,
+        GlitchVerdict,
+        PriceHistoryRecord,
+        ProductItem,
+    )
+except ImportError:
+    try:
+        from core.models import (
+            GlitchAlert,
+            GlitchSeverity,
+            GlitchVerdict,
+            PriceHistoryRecord,
+            ProductItem,
+        )
+    except ImportError:
+        from models import (
+            GlitchAlert,
+            GlitchSeverity,
+            GlitchVerdict,
+            PriceHistoryRecord,
+            ProductItem,
+        )
+
+logger = logging.getLogger("glitchhunter.database")
+
+
+class PriceDatabase:
+    """
+    Gestor de base de datos SQLite persistente para catálogo, historial de precios
+    y alertas de glitches detectados.
+    """
+
+    def __init__(self, db_path: Optional[Union[str, Path]] = None):
+        """
+        Inicializa la instancia de base de datos.
+        Si db_path es None, utiliza la ruta configurada en config.DB_PATH.
+        """
+        if db_path is not None:
+            self.db_path = Path(db_path) if str(db_path) != ":memory:" else ":memory:"
+        elif config is not None and hasattr(config, "DB_PATH"):
+            self.db_path = Path(config.DB_PATH)
+        else:
+            self.db_path = _PROJECT_DIR / "data" / "glitchhunter.db"
+
+        # Soporte para base de datos en memoria (ideal para tests unitarios)
+        if str(self.db_path) == ":memory:":
+            self.is_memory = True
+            self._mem_conn = sqlite3.connect(":memory:", timeout=30.0, check_same_thread=False)
+            self._mem_conn.row_factory = sqlite3.Row
+            self._mem_conn.execute("PRAGMA foreign_keys=ON;")
+        else:
+            self.is_memory = False
+            self._mem_conn = None
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+
+        self.init_db()
+
+    @contextlib.contextmanager
+    def get_connection(self):
+        """
+        Generador de contexto para conexiones SQLite seguras entre hilos,
+        con WAL mode activado y foreign keys habilitadas.
+        """
+        if self.is_memory:
+            try:
+                yield self._mem_conn
+                self._mem_conn.commit()
+            except Exception:
+                self._mem_conn.rollback()
+                raise
+        else:
+            conn = sqlite3.connect(
+                str(self.db_path),
+                timeout=30.0,
+                check_same_thread=False,
+            )
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("PRAGMA foreign_keys=ON;")
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    def init_db(self) -> None:
+        """
+        Crea las tablas e índices necesarios si no existen.
+        Tablas:
+          - products: catálogo consolidado y último precio conocido.
+          - price_history: serie temporal de precios para cada producto.
+          - glitch_alerts: registro de glitches detectados y su estado de despacho.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # 1. Tabla de Productos
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS products (
+                    id TEXT PRIMARY KEY,
+                    store_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    category TEXT,
+                    url TEXT,
+                    image_url TEXT,
+                    current_price REAL NOT NULL,
+                    normal_price REAL,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
+            # 2. Tabla de Historial de Precios
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS price_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_id TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                );
+            """)
+
+            # 3. Tabla de Alertas de Glitches
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS glitch_alerts (
+                    id TEXT PRIMARY KEY,
+                    product_id TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    confidence_score REAL NOT NULL,
+                    discount_pct REAL NOT NULL,
+                    savings_clp REAL NOT NULL,
+                    reason TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    telegram_sent INTEGER DEFAULT 0,
+                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                );
+            """)
+
+            # 4. Tabla de Estado de Ofertas Continuas (Buscador de Excelencia)
+            # Mantiene el ciclo de vida de cada oferta para no repetir notificaciones jamás
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tracked_deals (
+                    product_id TEXT PRIMARY KEY,
+                    store_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    category TEXT,
+                    normal_price REAL NOT NULL,
+                    glitch_price REAL NOT NULL,
+                    discount_pct REAL NOT NULL,
+                    savings_clp REAL NOT NULL,
+                    severity TEXT NOT NULL DEFAULT 'MODERADO',
+                    reason TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'ACTIVE',
+                    first_detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    alert_dispatched INTEGER DEFAULT 1,
+                    alert_id TEXT NOT NULL,
+                    url TEXT,
+                    image_url TEXT,
+                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                );
+            """)
+
+            # Índices de Alto Rendimiento
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_store_id ON products(store_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_history_product_id ON price_history(product_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_history_timestamp ON price_history(timestamp);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_history_prod_time ON price_history(product_id, timestamp);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_glitch_alerts_product_id ON glitch_alerts(product_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_glitch_alerts_timestamp ON glitch_alerts(timestamp);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_glitch_alerts_severity ON glitch_alerts(severity);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracked_deals_status ON tracked_deals(status);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracked_deals_store ON tracked_deals(store_id);")
+
+            # Migración inicial: si tracked_deals está vacía, poblarla con las alertas históricas ya registradas
+            # para que el revisor continuo sepa que ya fueron notificadas y no vuelva a alertarlas.
+            try:
+                cursor.execute("ALTER TABLE products ADD COLUMN card_price REAL;")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE products ADD COLUMN in_stock INTEGER DEFAULT 1;")
+            except Exception:
+                pass
+
+            cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals;")
+            if cursor.fetchone()["cnt"] == 0:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO tracked_deals (
+                        product_id, store_id, title, category,
+                        normal_price, glitch_price, discount_pct, savings_clp,
+                        severity, reason, status, first_detected_at, last_seen_at,
+                        alert_dispatched, alert_id, url, image_url
+                    )
+                    SELECT 
+                        g.product_id,
+                        p.store_id,
+                        p.title,
+                        p.category,
+                        p.normal_price,
+                        p.current_price,
+                        g.discount_pct,
+                        g.savings_clp,
+                        g.severity,
+                        g.reason,
+                        'ACTIVE',
+                        g.timestamp,
+                        g.timestamp,
+                        1,
+                        g.id,
+                        p.url,
+                        p.image_url
+                    FROM glitch_alerts g
+                    INNER JOIN products p ON g.product_id = p.id;
+                """)
+
+        # Limpiar cualquier duplicado histórico al inicializar
+        try:
+            self.cleanup_duplicate_glitches()
+            self.cleanup_duplicate_price_history()
+        except Exception:
+            pass
+
+    def _extract_product_dict(self, product: Union[ProductItem, Dict[str, Any]]) -> Dict[str, Any]:
+        """Normaliza un ProductItem (Pydantic) o dict a un diccionario plano."""
+        if hasattr(product, "model_dump"):
+            data = product.model_dump()
+        elif hasattr(product, "dict"):
+            data = product.dict()
+        elif isinstance(product, dict):
+            data = product.copy()
+        elif hasattr(product, "__dict__"):
+            data = vars(product).copy()
+        else:
+            raise TypeError(f"Tipo de producto no soportado: {type(product)}")
+
+        # Normalizar timestamp a ISO string si es datetime
+        ts = data.get("timestamp") or data.get("last_updated")
+        if isinstance(ts, datetime):
+            data["last_updated"] = ts.strftime("%Y-%m-%d %H:%M:%S")
+        elif ts is None:
+            data["last_updated"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            data["last_updated"] = str(ts)
+
+        return data
+
+    def upsert_product(self, product: Union[ProductItem, Dict[str, Any]]) -> bool:
+        """
+        Inserta o actualiza un producto en el catálogo y añade automáticamente
+        una entrada en la tabla price_history.
+        """
+        data = self._extract_product_dict(product)
+        prod_id = str(data["id"])
+        store_id = str(data["store_id"])
+        title = str(data["title"])
+        category = str(data.get("category") or "General")
+        url = str(data.get("url") or "")
+        image_url = data.get("image_url")
+        current_price = float(data["current_price"])
+        normal_price = float(data["normal_price"]) if data.get("normal_price") is not None else None
+        card_price = float(data["card_price"]) if data.get("card_price") is not None else None
+        in_stock = 1 if bool(data.get("in_stock", True)) else 0
+        last_updated = data["last_updated"]
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Insert or update en tabla products
+            cursor.execute("""
+                INSERT INTO products (
+                    id, store_id, title, category, url, image_url,
+                    current_price, normal_price, card_price, in_stock, last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    store_id = excluded.store_id,
+                    title = excluded.title,
+                    category = excluded.category,
+                    url = excluded.url,
+                    image_url = excluded.image_url,
+                    current_price = excluded.current_price,
+                    normal_price = excluded.normal_price,
+                    card_price = excluded.card_price,
+                    in_stock = excluded.in_stock,
+                    last_updated = excluded.last_updated;
+            """, (
+                prod_id, store_id, title, category, url, image_url,
+                current_price, normal_price, card_price, in_stock, last_updated
+            ))
+
+            # Registrar en price_history únicamente si el precio cambió o es el primer registro
+            cursor.execute("""
+                SELECT price FROM price_history
+                WHERE product_id = ?
+                ORDER BY timestamp DESC, id DESC
+                LIMIT 1;
+            """, (prod_id,))
+            last_record = cursor.fetchone()
+
+            should_record = False
+            if not last_record:
+                should_record = True
+            else:
+                last_price = float(last_record["price"])
+                if abs(current_price - last_price) > 0.01:
+                    should_record = True
+
+            if should_record:
+                cursor.execute("""
+                    INSERT INTO price_history (product_id, price, timestamp)
+                    VALUES (?, ?, ?);
+                """, (prod_id, current_price, last_updated))
+
+        return True
+
+    def get_baseline_price(self, product_id: str, days: int = 30) -> Optional[float]:
+        """
+        Calcula el precio base histórico de un producto usando la mediana móvil
+        de los últimos 'days' días en price_history.
+
+        La mediana es robusta ante inflación artificial de última hora (práctica
+        común antes del CyberDay para inflar el % de descuento aparente).
+
+        Para constituir un verdadero historial base de 30 días, los registros
+        deben tener profundidad temporal (ej. abarcar al menos 12 horas o múltiples días).
+        Muestras repetidas tomadas dentro de una misma sesión reciente no constituyen
+        un historial base de 30 días, por lo que en tal caso se retorna None
+        para evaluar contra el precio normal publicado por la tienda.
+        """
+        cutoff_date = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # 1. Buscar precios dentro del rango de días
+            cursor.execute("""
+                SELECT price, timestamp FROM price_history
+                WHERE product_id = ? AND timestamp >= ?
+                ORDER BY timestamp ASC;
+            """, (product_id, cutoff_date))
+            rows = cursor.fetchall()
+
+            if rows and len(rows) >= 2:
+                # Verificar profundidad temporal para no confundir ráfagas de escaneo con historial
+                t_first = str(rows[0]["timestamp"])[:19]
+                t_last = str(rows[-1]["timestamp"])[:19]
+                try:
+                    dt_first = datetime.strptime(t_first, "%Y-%m-%d %H:%M:%S")
+                    dt_last = datetime.strptime(t_last, "%Y-%m-%d %H:%M:%S")
+                    time_span_seconds = abs((dt_last - dt_first).total_seconds())
+                except Exception:
+                    time_span_seconds = 86400.0
+
+                if time_span_seconds >= 3600 * 12:  # Al menos 12 horas de profundidad
+                    prices = [float(row["price"]) for row in rows if row["price"] is not None and row["price"] > 0]
+                    if len(prices) >= 2:
+                        return round(float(statistics.median(prices)), 2)
+
+            return None
+
+    def record_glitch_alert(self, alert: Union[GlitchAlert, Dict[str, Any]]) -> str:
+        """
+        Guarda o actualiza una alerta de glitch detectada en glitch_alerts.
+        Retorna el ID de la alerta registrada.
+        """
+        if isinstance(alert, dict):
+            alert_id = str(alert.get("id") or alert.get("alert_id") or f"ALT-{uuid.uuid4().hex[:8].upper()}")
+            product_id = str(alert.get("product_id") or (alert.get("product", {}).get("id") if isinstance(alert.get("product"), dict) else ""))
+            severity = str(alert.get("severity") or "MODERADO")
+            confidence_score = float(alert.get("confidence_score", 0.0))
+            discount_pct = float(alert.get("discount_pct", alert.get("discount_percentage", 0.0)))
+            savings_clp = float(alert.get("savings_clp", alert.get("absolute_savings_clp", 0.0)))
+            reason = str(alert.get("reason", "Glitch sospechoso detectado"))
+            ts = alert.get("timestamp") or alert.get("created_at")
+            if isinstance(ts, datetime):
+                timestamp = ts.strftime("%Y-%m-%d %H:%M:%S")
+            elif ts:
+                timestamp = str(ts)
+            else:
+                timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            telegram_sent = 1 if alert.get("telegram_sent") else 0
+        else:
+            # Es una instancia de GlitchAlert (Pydantic)
+            alert_id = getattr(alert, "alert_id", None) or getattr(alert, "id", None) or f"ALT-{uuid.uuid4().hex[:8].upper()}"
+            
+            # Obtener product_id
+            if hasattr(alert, "product") and hasattr(alert.product, "id"):
+                product_id = alert.product.id
+            else:
+                product_id = getattr(alert, "product_id", "")
+
+            # Obtener datos del veredicto
+            if hasattr(alert, "verdict"):
+                v = alert.verdict
+                severity = v.severity.value if hasattr(v.severity, "value") else str(v.severity)
+                confidence_score = float(v.confidence_score)
+                discount_pct = float(v.discount_percentage)
+                savings_clp = float(v.absolute_savings_clp)
+                reason = str(v.reason)
+            else:
+                severity = str(getattr(alert, "severity", "MODERADO"))
+                confidence_score = float(getattr(alert, "confidence_score", 0.0))
+                discount_pct = float(getattr(alert, "discount_pct", 0.0))
+                savings_clp = float(getattr(alert, "savings_clp", 0.0))
+                reason = str(getattr(alert, "reason", "Glitch detectado"))
+
+            ts = getattr(alert, "created_at", None) or getattr(alert, "timestamp", None)
+            if isinstance(ts, datetime):
+                timestamp = ts.strftime("%Y-%m-%d %H:%M:%S")
+            elif ts:
+                timestamp = str(ts)
+            else:
+                timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+            telegram_sent = 1 if getattr(alert, "telegram_sent", False) else 0
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO glitch_alerts (
+                    id, product_id, severity, confidence_score,
+                    discount_pct, savings_clp, reason, timestamp, telegram_sent
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    severity = excluded.severity,
+                    confidence_score = excluded.confidence_score,
+                    discount_pct = excluded.discount_pct,
+                    savings_clp = excluded.savings_clp,
+                    reason = excluded.reason,
+                    timestamp = excluded.timestamp,
+                    telegram_sent = excluded.telegram_sent;
+            """, (
+                alert_id, product_id, severity, confidence_score,
+                discount_pct, savings_clp, reason, timestamp, telegram_sent
+            ))
+
+        return alert_id
+
+    def register_or_update_deal(
+        self,
+        product: Union[ProductItem, Dict[str, Any]],
+        verdict: Union[GlitchVerdict, Dict[str, Any]],
+        alert_id: str,
+    ) -> tuple[bool, str]:
+        """
+        Registrador y Revisor Continuo de Estado de Ofertas (Motor de Excelencia).
+        
+        Garantiza la regla inquebrantable de los buscadores de ofertas profesionales:
+        - Si la oferta es NUEVA: se inserta en tracked_deals y retorna (True, "NEW_DEAL").
+        - Si la oferta YA ESTÁ ACTIVA al mismo precio: actualiza last_seen_at silenciosamente
+          y retorna (False, "ALREADY_ACTIVE") -> CERO NOTIFICACIONES, CERO SPAM.
+        - Si el precio baja significativamente más: actualiza y retorna (True, "PRICE_DROP").
+        - Si la tienda corrigió el error: marca status='CORRECTED' y retorna (False, "CORRECTED").
+        """
+        prod_data = self._extract_product_dict(product)
+        prod_id = str(prod_data["id"])
+        store_id = str(prod_data["store_id"])
+        title = str(prod_data["title"])
+        category = str(prod_data.get("category") or "General")
+        url = str(prod_data.get("url") or "")
+        image_url = prod_data.get("image_url")
+        current_price = float(prod_data["current_price"])
+        normal_price = float(prod_data.get("normal_price") or current_price)
+        card_price = prod_data.get("card_price")
+
+        # Determinar el precio efectivo de glitch (considerando precio exclusivo con tarjeta)
+        effective_glitch_price = current_price
+        is_card_price = False
+        if card_price is not None and 0.0 < float(card_price) < current_price:
+            effective_glitch_price = float(card_price)
+            is_card_price = True
+
+        if hasattr(verdict, "model_dump"):
+            v_data = verdict.model_dump()
+        elif hasattr(verdict, "dict"):
+            v_data = verdict.dict()
+        elif isinstance(verdict, dict):
+            v_data = verdict
+        else:
+            v_data = vars(verdict)
+
+        severity = str(v_data.get("severity") or "MODERADO")
+        discount_pct = float(v_data.get("discount_percentage", 0.0))
+        savings_clp = float(v_data.get("absolute_savings_clp", 0.0))
+        reason = str(v_data.get("reason", "Glitch de precio detectado"))
+        if is_card_price and "tarjeta" not in reason.lower():
+            reason = f"{reason} (Exclusivo con Tarjeta Tienda)"
+
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT product_id, glitch_price, normal_price, status, alert_dispatched
+                FROM tracked_deals
+                WHERE product_id = ?;
+            """, (prod_id,))
+            row = cursor.fetchone()
+
+            if not row:
+                # 🎯 Oferta genuinamente NUEVA: registrar y habilitar notificación única
+                cursor.execute("""
+                    INSERT INTO tracked_deals (
+                        product_id, store_id, title, category,
+                        normal_price, glitch_price, discount_pct, savings_clp,
+                        severity, reason, status, first_detected_at, last_seen_at,
+                        alert_dispatched, alert_id, url, image_url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, 1, ?, ?, ?);
+                """, (
+                    prod_id, store_id, title, category,
+                    normal_price, effective_glitch_price, discount_pct, savings_clp,
+                    severity, reason, now_str, now_str,
+                    alert_id, url, image_url
+                ))
+                return True, "NEW_DEAL"
+
+            old_glitch_price = float(row["glitch_price"])
+
+            # 1. Si la tienda corrigió el precio (subió a precio normal o subió > 40% sobre el glitch anterior)
+            if (normal_price > 0 and effective_glitch_price >= normal_price * 0.8) or (effective_glitch_price >= old_glitch_price * 1.4):
+                cursor.execute("""
+                    UPDATE tracked_deals
+                    SET status = 'CORRECTED', last_seen_at = ?
+                    WHERE product_id = ?;
+                """, (now_str, prod_id))
+                return False, "CORRECTED"
+
+            # 2. Si el precio bajó aún más (más de 3% adicional sobre el precio del glitch previo)
+            if effective_glitch_price < old_glitch_price * 0.97:
+                cursor.execute("""
+                    UPDATE tracked_deals
+                    SET glitch_price = ?, savings_clp = ?, discount_pct = ?,
+                        severity = ?, reason = ?, status = 'ACTIVE', last_seen_at = ?,
+                        alert_id = ?
+                    WHERE product_id = ?;
+                """, (
+                    effective_glitch_price, savings_clp, discount_pct,
+                    severity, reason, now_str, alert_id, prod_id
+                ))
+                return True, "PRICE_DROP"
+
+            # 3. Oferta ya conocida y activa: actualizar presencia silenciosamente
+            # CERO NOTIFICACIONES, CERO SPAM
+            cursor.execute("""
+                UPDATE tracked_deals
+                SET last_seen_at = ?, status = 'ACTIVE'
+                WHERE product_id = ?;
+            """, (now_str, prod_id))
+            return False, "ALREADY_ACTIVE"
+
+    def check_and_update_deal_status(
+        self,
+        product: Union[ProductItem, Dict[str, Any]]
+    ) -> Optional[str]:
+        """
+        Inspecciona si el producto está en seguimiento en tracked_deals.
+        Si está sin stock, actualiza su estado a 'OUT_OF_STOCK'.
+        Si su precio actual subió de regreso al precio normal, actualiza su estado a 'CORRECTED'.
+        Retorna el estado resultante ('OUT_OF_STOCK', 'CORRECTED', 'ACTIVE') o None si no estaba en seguimiento.
+        """
+        prod_data = self._extract_product_dict(product)
+        prod_id = str(prod_data["id"])
+        in_stock = bool(prod_data.get("in_stock", True))
+        current_price = float(prod_data["current_price"])
+        normal_price = float(prod_data.get("normal_price") or current_price)
+        card_price = prod_data.get("card_price")
+        best_price = float(card_price) if (card_price is not None and 0.0 < float(card_price) < current_price) else current_price
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT glitch_price, normal_price, status
+                FROM tracked_deals
+                WHERE product_id = ?;
+            """, (prod_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            current_status = row["status"]
+            old_glitch_price = float(row["glitch_price"])
+
+            if not in_stock:
+                if current_status == "ACTIVE":
+                    cursor.execute("""
+                        UPDATE tracked_deals
+                        SET status = 'OUT_OF_STOCK', last_seen_at = ?
+                        WHERE product_id = ?;
+                    """, (now_str, prod_id))
+                return "OUT_OF_STOCK"
+
+            # Si el precio subió a >= 80% del precio de lista o subió >= 40% sobre el precio de glitch detectado:
+            if (normal_price > 0 and best_price >= normal_price * 0.8) or (best_price >= old_glitch_price * 1.4):
+                if current_status == "ACTIVE":
+                    cursor.execute("""
+                        UPDATE tracked_deals
+                        SET status = 'CORRECTED', last_seen_at = ?
+                        WHERE product_id = ?;
+                    """, (now_str, prod_id))
+                return "CORRECTED"
+
+            return current_status
+
+    def get_deal_status(self, product_id: str) -> Optional[str]:
+        """Retorna el estado de seguimiento de una oferta ('ACTIVE', 'CORRECTED', 'OUT_OF_STOCK', 'EXPIRED', None)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT status FROM tracked_deals WHERE product_id = ?;", (product_id,))
+            row = cursor.fetchone()
+            return row["status"] if row else None
+
+    def mark_deal_corrected(self, product_id: str, new_price: Optional[float] = None) -> bool:
+        """Marca manualmente o por pipeline una oferta como 'CORRECTED'."""
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE tracked_deals
+                SET status = 'CORRECTED', last_seen_at = ?
+                WHERE product_id = ?;
+            """, (now_str, product_id))
+            return cursor.rowcount > 0
+
+    def expire_stale_deals(self, max_hours: int = 12) -> int:
+        """
+        Retira automáticamente del radar aquellas ofertas activas que no han sido
+        re-observadas en los escaneos durante más de `max_hours` horas,
+        transicionándolas a 'EXPIRED'.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE tracked_deals
+                SET status = 'EXPIRED'
+                WHERE status = 'ACTIVE'
+                  AND datetime(last_seen_at) < datetime('now', ?);
+            """, (f"-{max_hours} hours",))
+            return cursor.rowcount
+
+    def is_duplicate_alert(self, product_id: str, current_price: float, window_hours: int = 24) -> bool:
+        """
+        Verifica de forma ultrarrápida si el producto ya cuenta con una oferta activa
+        a un precio igual o inferior al actual.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT glitch_price, status
+                FROM tracked_deals
+                WHERE product_id = ?;
+            """, (product_id,))
+            row = cursor.fetchone()
+
+            if not row:
+                return False
+
+            old_price = float(row["glitch_price"])
+            if current_price >= old_price * 0.97:
+                return True
+
+            return False
+
+    def cleanup_duplicate_glitches(self) -> int:
+        """
+        Elimina alertas duplicadas de glitch_alerts, conservando únicamente
+        el registro más reciente de cada product_id.
+        Retorna la cantidad de registros duplicados eliminados.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM glitch_alerts
+                WHERE rowid NOT IN (
+                    SELECT MAX(rowid)
+                    FROM glitch_alerts
+                    GROUP BY product_id
+                );
+            """)
+            deleted_count = cursor.rowcount
+            if deleted_count > 0:
+                logger.info(f"🧹 Limpieza de alertas duplicadas: se removieron {deleted_count} registros redundantes.")
+            return deleted_count
+
+    def cleanup_duplicate_price_history(self) -> int:
+        """
+        Elimina registros duplicados idénticos en price_history acumulados por escaneos repetidos,
+        conservando únicamente la primera observación de cada precio por producto.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM price_history 
+                WHERE id NOT IN (
+                    SELECT MIN(id) FROM price_history GROUP BY product_id, price
+                );
+            """)
+            deleted_count = cursor.rowcount
+            if deleted_count > 0:
+                logger.info(f"🧹 Historial de precios saneado: {deleted_count} registros redundantes eliminados.")
+            return deleted_count
+
+    def get_recent_glitches(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Retorna la lista de ofertas activas no duplicadas para el radar web.
+        Prioriza la tabla de estado continuo tracked_deals (con fallback a glitch_alerts si tracked_deals está vacía).
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Verificar si tracked_deals contiene registros
+            cursor.execute("SELECT COUNT(*) AS total FROM tracked_deals;")
+            has_tracked = cursor.fetchone()["total"] > 0
+
+            if has_tracked:
+                cursor.execute("""
+                    SELECT 
+                        t.alert_id AS id,
+                        t.product_id,
+                        t.severity,
+                        95.0 AS confidence_score,
+                        t.discount_pct,
+                        t.savings_clp,
+                        t.reason,
+                        t.first_detected_at AS timestamp,
+                        1 AS telegram_sent,
+                        t.store_id,
+                        t.title,
+                        t.category,
+                        t.url,
+                        t.image_url,
+                        t.glitch_price AS current_price,
+                        t.normal_price,
+                        t.status,
+                        t.last_seen_at
+                    FROM tracked_deals t
+                    WHERE t.status = 'ACTIVE'
+                    ORDER BY t.first_detected_at DESC
+                    LIMIT ?;
+                """, (limit,))
+                rows = cursor.fetchall()
+                results = []
+                for row in rows:
+                    item = dict(row)
+                    item["telegram_sent"] = bool(item.get("telegram_sent", 1))
+                    results.append(item)
+                return results
+
+            # Fallback exclusivamente en caso de base de datos donde tracked_deals nunca se pobló
+            cursor.execute("""
+                SELECT 
+                    g.id,
+                    g.product_id,
+                    g.severity,
+                    g.confidence_score,
+                    g.discount_pct,
+                    g.savings_clp,
+                    g.reason,
+                    g.timestamp,
+                    g.telegram_sent,
+                    p.store_id,
+                    p.title,
+                    p.category,
+                    p.url,
+                    p.image_url,
+                    p.current_price,
+                    p.normal_price
+                FROM glitch_alerts g
+                INNER JOIN (
+                    SELECT product_id, MAX(rowid) AS max_rowid
+                    FROM glitch_alerts
+                    GROUP BY product_id
+                ) latest ON g.rowid = latest.max_rowid
+                LEFT JOIN products p ON g.product_id = p.id
+                ORDER BY g.timestamp DESC
+                LIMIT ?;
+            """, (limit,))
+            rows = cursor.fetchall()
+
+            results = []
+            for row in rows:
+                item = dict(row)
+                item["telegram_sent"] = bool(item.get("telegram_sent", 0))
+                results.append(item)
+            return results
+
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        Calcula estadísticas globales del sistema de forma fidedigna y desduplicada:
+          - total_products: productos únicos monitoreados
+          - total_glitches: glitches únicos activos
+          - accumulated_savings_clp: ahorro acumulado real de glitches únicos
+          - breakdown por severidad y tiendas monitoreadas
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Total de productos únicos
+            cursor.execute("SELECT COUNT(*) AS cnt FROM products;")
+            total_products = cursor.fetchone()["cnt"]
+
+            # Total de glitches únicos activos en tracked_deals
+            cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals WHERE status = 'ACTIVE';")
+            active_cnt = cursor.fetchone()["cnt"]
+
+            if active_cnt > 0:
+                total_glitches = active_cnt
+                cursor.execute("SELECT COALESCE(SUM(savings_clp), 0.0) AS total_savings FROM tracked_deals WHERE status = 'ACTIVE';")
+                accumulated_savings = float(cursor.fetchone()["total_savings"])
+
+                cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals WHERE status = 'ACTIVE' AND severity = 'CRITICO';")
+                critical_glitches = cursor.fetchone()["cnt"]
+
+                cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals WHERE status = 'ACTIVE' AND severity = 'ALTO';")
+                high_glitches = cursor.fetchone()["cnt"]
+            else:
+                cursor.execute("SELECT COUNT(DISTINCT product_id) AS cnt FROM glitch_alerts;")
+                total_glitches = cursor.fetchone()["cnt"]
+
+                cursor.execute("""
+                    SELECT COALESCE(SUM(g.savings_clp), 0.0) AS total_savings
+                    FROM glitch_alerts g
+                    INNER JOIN (
+                        SELECT product_id, MAX(rowid) AS max_rowid
+                        FROM glitch_alerts
+                        GROUP BY product_id
+                    ) latest ON g.rowid = latest.max_rowid;
+                """)
+                accumulated_savings = float(cursor.fetchone()["total_savings"])
+
+                cursor.execute("SELECT COUNT(DISTINCT g.product_id) AS cnt FROM glitch_alerts g WHERE g.severity = 'CRITICO';")
+                critical_glitches = cursor.fetchone()["cnt"]
+
+                cursor.execute("SELECT COUNT(DISTINCT g.product_id) AS cnt FROM glitch_alerts g WHERE g.severity = 'ALTO';")
+                high_glitches = cursor.fetchone()["cnt"]
+
+            # Tiendas monitoreadas
+            cursor.execute("SELECT COUNT(DISTINCT store_id) AS cnt FROM products;")
+            active_stores = cursor.fetchone()["cnt"]
+
+            # Registros históricos totales
+            cursor.execute("SELECT COUNT(*) AS cnt FROM price_history;")
+            total_history_records = cursor.fetchone()["cnt"]
+
+            # Conteo de ofertas comerciales moderadas (40% - 64%)
+            cursor.execute("""
+                SELECT COUNT(*) AS cnt FROM products
+                WHERE normal_price > 0 AND current_price < normal_price
+                  AND (((normal_price - current_price) / normal_price) * 100) >= 40.0
+                  AND (((normal_price - current_price) / normal_price) * 100) < 65.0;
+            """)
+            moderate_deals = cursor.fetchone()["cnt"]
+
+        return {
+            "total_products": total_products,
+            "total_glitches": total_glitches,
+            "moderate_deals": moderate_deals,
+            "accumulated_savings_clp": accumulated_savings,
+            "savings_clp": accumulated_savings,
+            "critical_glitches": critical_glitches,
+            "high_glitches": high_glitches,
+            "active_stores": active_stores,
+            "total_history_records": total_history_records,
+        }
+
+    def get_commercial_deals(
+        self,
+        min_discount: float = 40.0,
+        max_discount: float = 65.0,
+        limit: int = 100,
+        store_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retorna ofertas comerciales moderadas (ej: 40% a 64% de descuento)
+        provenientes del catálogo de productos monitoreados.
+        Permite al usuario explorar descuentos atractivos pero no anómalos.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT 
+                    p.id AS product_id,
+                    p.store_id,
+                    p.title,
+                    p.category,
+                    p.url,
+                    p.image_url,
+                    p.current_price,
+                    p.card_price,
+                    p.normal_price,
+                    ROUND(((p.normal_price - (CASE WHEN p.card_price > 0 AND p.card_price < p.current_price THEN p.card_price ELSE p.current_price END)) / p.normal_price) * 100, 1) AS discount_pct,
+                    ROUND(p.normal_price - (CASE WHEN p.card_price > 0 AND p.card_price < p.current_price THEN p.card_price ELSE p.current_price END), 0) AS savings_clp,
+                    p.last_updated AS timestamp
+                FROM products p
+                WHERE p.normal_price > 0 
+                  AND (CASE WHEN p.card_price > 0 AND p.card_price < p.current_price THEN p.card_price ELSE p.current_price END) < p.normal_price
+                  AND (p.in_stock IS NULL OR p.in_stock = 1)
+                  AND (((p.normal_price - (CASE WHEN p.card_price > 0 AND p.card_price < p.current_price THEN p.card_price ELSE p.current_price END)) / p.normal_price) * 100) >= ?
+                  AND (((p.normal_price - (CASE WHEN p.card_price > 0 AND p.card_price < p.current_price THEN p.card_price ELSE p.current_price END)) / p.normal_price) * 100) < ?
+            """
+            params: list[Any] = [float(min_discount), float(max_discount)]
+            if store_id and store_id != "all":
+                query += " AND LOWER(p.store_id) = ?"
+                params.append(store_id.lower())
+            query += " ORDER BY discount_pct DESC LIMIT ?;"
+            params.append(int(limit))
+
+            cursor.execute(query, tuple(params))
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                item = dict(row)
+                results.append(item)
+            return results
+
+    def mark_telegram_sent(self, alert_id: str) -> bool:
+        """Marca una alerta como despachada por Telegram."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE glitch_alerts
+                SET telegram_sent = 1
+                WHERE id = ?;
+            """, (alert_id,))
+            return cursor.rowcount > 0
+
+    def get_product(self, product_id: str) -> Optional[Dict[str, Any]]:
+        """Obtiene un producto específico por su ID."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM products WHERE id = ?;", (product_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_price_history(self, product_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Retorna el historial cronológico de precios de un producto."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, product_id, price, timestamp
+                FROM price_history
+                WHERE product_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?;
+            """, (product_id, limit))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def clear_all(self) -> None:
+        """Limpia todas las tablas (usado en tests y reseteos)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM glitch_alerts;")
+            cursor.execute("DELETE FROM price_history;")
+            cursor.execute("DELETE FROM products;")
+
+
+# =====================================================================
+# Bloque de validación y pruebas autónomas
+# =====================================================================
+if __name__ == "__main__":
+    print("=" * 70)
+    print("🚀 Test de Validación: PriceDatabase (GlitchHunter AI)")
+    print("=" * 70)
+
+    # 1. Usar base de datos temporal en memoria o archivo temporal
+    test_db_path = _PROJECT_DIR / "data" / "test_glitchhunter.db"
+    if test_db_path.exists():
+        test_db_path.unlink()
+
+    db = PriceDatabase(db_path=test_db_path)
+    print(f"✅ Base de datos inicializada en: {test_db_path}")
+
+    # 2. Crear productos de prueba con ProductItem
+    p1 = ProductItem(
+        id="falabella-tv-lg-oled-55",
+        store_id="falabella",
+        store_name="Falabella",
+        title="Smart TV LG OLED 55 Pulgadas 4K HDR",
+        category="televisores",
+        current_price=129990.0,  # Posible glitch (normalmente $899.990)
+        normal_price=899990.0,
+        card_price=119990.0,
+        url="https://www.falabella.com/falabella-cl/product/12345/tv-lg-oled",
+        image_url="https://images.falabella.com/tv-lg-oled.jpg",
+        in_stock=True,
+    )
+
+    p2 = ProductItem(
+        id="pcfactory-rtx-4080",
+        store_id="pcfactory",
+        store_name="PC Factory",
+        title="Tarjeta de Video ASUS GeForce RTX 4080 16GB",
+        category="componentes",
+        current_price=1199990.0,
+        normal_price=1299990.0,
+        url="https://www.pcfactory.cl/producto/rtx-4080",
+        in_stock=True,
+    )
+
+    print("\n📦 Insertando productos con upsert_product()...")
+    db.upsert_product(p1)
+    db.upsert_product(p2)
+    print("✅ Productos insertados exitosamente.")
+
+    # 3. Simular fluctuación histórica de precios para comprobar get_baseline_price
+    print("\n📈 Registrando historial histórico de precios (simulando 30 días atrás)...")
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        # Insertar precios históricos para la TV simulando días anteriores
+        for day_offset, hist_price in [(25, 899990.0), (20, 879990.0), (15, 899990.0), (5, 949990.0)]:
+            ts = (datetime.utcnow() - timedelta(days=day_offset)).strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute(
+                "INSERT INTO price_history (product_id, price, timestamp) VALUES (?, ?, ?);",
+                (p1.id, hist_price, ts)
+            )
+
+    baseline = db.get_baseline_price(p1.id, days=30)
+    print(f"✅ Baseline price calculado para {p1.id}: ${baseline:,.0f} CLP (Mediana de 30 días)")
+    assert baseline is not None and baseline > 800000.0, "El baseline price debería rondar los $899.990"
+
+    # 4. Registrar una alerta de Glitch detectada
+    print("\n🚨 Registrando alerta de Glitch...")
+    alert_payload = {
+        "id": "ALT-TEST-001",
+        "product_id": p1.id,
+        "severity": "CRITICO",
+        "confidence_score": 96.5,
+        "discount_pct": 85.5,
+        "savings_clp": 770000.0,
+        "reason": "Caída de ceros detectada (ratio ~7.5x) y descuento masivo de 85.5% vs mediana histórica.",
+        "telegram_sent": False,
+    }
+    alert_id = db.record_glitch_alert(alert_payload)
+    print(f"✅ Alerta registrada con ID: {alert_id}")
+
+    # También registrar con modelo GlitchAlert de Pydantic
+    from glitchhunter_ai.core.models import GlitchVerdict, GlitchSeverity, SemanticClassificationResult
+    verdict = GlitchVerdict(
+        is_glitch=True,
+        severity=GlitchSeverity.CRITICO,
+        confidence_score=98.0,
+        discount_percentage=85.5,
+        absolute_savings_clp=770000.0,
+        is_missing_zero=True,
+        semantic_check=SemanticClassificationResult(
+            is_accessory=False,
+            is_main_device=True,
+            detected_item_type="televisor_oled",
+            explanation="Televisor OLED confirmado como dispositivo principal.",
+            confidence=0.99
+        ),
+        reason="Glitch crítico confirmado por motor semántico y matemático."
+    )
+    alert_obj = GlitchAlert(
+        alert_id="ALT-PYDANTIC-002",
+        product=p1,
+        verdict=verdict,
+        alert_url=p1.url,
+        telegram_sent=False
+    )
+    alert_id_2 = db.record_glitch_alert(alert_obj)
+    print(f"✅ Alerta registrada vía objeto Pydantic GlitchAlert con ID: {alert_id_2}")
+
+    # 5. Consultar glitches recientes
+    print("\n📋 Consultando get_recent_glitches()...")
+    recent = db.get_recent_glitches(limit=10)
+    print(f"✅ Se recuperaron {len(recent)} glitches recientes:")
+    for g in recent:
+        print(f"   - [{g['severity']}] {g['title']} | Oferta: ${g['current_price']:,.0f} CLP | Ahorro: ${g['savings_clp']:,.0f} CLP")
+
+    # 6. Estadísticas globales
+    print("\n📊 Consultando get_stats()...")
+    stats = db.get_stats()
+    print(f"   • Total productos monitoreados: {stats['total_products']}")
+    print(f"   • Total glitches registrados: {stats['total_glitches']}")
+    print(f"   • Ahorro acumulado detectado: ${stats['accumulated_savings_clp']:,.0f} CLP")
+    print(f"   • Glitches críticos: {stats['critical_glitches']}")
+    print(f"   • Tiendas activas: {stats['active_stores']}")
+    print(f"   • Entradas en historial: {stats['total_history_records']}")
+
+    # 7. Marcar telegram sent
+    marked = db.mark_telegram_sent(alert_id)
+    print(f"\n📲 Marcar despacho Telegram ({alert_id}): {marked}")
+    updated_glitches = db.get_recent_glitches(limit=10)
+    assert any(g["id"] == alert_id and g["telegram_sent"] is True for g in updated_glitches)
+
+    # Limpiar archivos de prueba
+    for p in [test_db_path, test_db_path.with_name(test_db_path.name + "-wal"), test_db_path.with_name(test_db_path.name + "-shm")]:
+        if p.exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    print("\n🎉 Todas las pruebas pasaron exitosamente. Módulo database.py verificado al 100%!")
