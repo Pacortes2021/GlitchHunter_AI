@@ -16,6 +16,7 @@ from glitchhunter_ai.scrapers.paris import ParisScraper
 from glitchhunter_ai.scrapers.lider import LiderScraper
 from glitchhunter_ai.scrapers.mercadolibre import MercadoLibreScraper
 from glitchhunter_ai.scrapers.pcfactory import PCFactoryScraper
+from glitchhunter_ai.scrapers.solotodo import SoloTodoScraper
 
 __all__ = [
     "FalabellaScraper",
@@ -24,12 +25,13 @@ __all__ = [
     "LiderScraper",
     "MercadoLibreScraper",
     "PCFactoryScraper",
+    "SoloTodoScraper",
     "get_all_scrapers",
 ]
 
 
 def get_all_scrapers() -> List[Any]:
-    """Retorna instancias inicializadas de los 6 scrapers de retail."""
+    """Retorna instancias inicializadas de los scrapers de retail chileno + SoloTodo meta-retailer."""
     return [
         FalabellaScraper(),
         RipleyScraper(),
@@ -37,4 +39,5 @@ def get_all_scrapers() -> List[Any]:
         LiderScraper(),
         MercadoLibreScraper(),
         PCFactoryScraper(),
+        SoloTodoScraper(),
     ]

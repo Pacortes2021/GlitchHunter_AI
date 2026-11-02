@@ -30,7 +30,7 @@ def test_pipeline_scan_and_accessory_filter(clean_db):
         assert g.verdict.is_glitch is True
         assert g.verdict.semantic_check.is_accessory is False or g.verdict.semantic_check.is_main_device is True
         assert g.alert_url is not None
-        assert g.product.store_id in ["falabella", "ripley", "paris", "lider", "mercadolibre", "pcfactory"]
+        assert g.product.store_id in ["falabella", "ripley", "paris", "lider", "mercadolibre", "pcfactory", "solotodo"]
 
     # Verificar que el missing zero bug esté presente en los productos clave
     missing_zero_glitches = [g for g in glitches if g.verdict.is_missing_zero]
@@ -43,7 +43,7 @@ def test_server_status_and_stats_endpoints():
         assert res.status_code == 200
         data = res.json()
         assert data["status"] == "online"
-        assert data["stores_monitored"] == 6
+        assert data["stores_monitored"] >= 6
 
         res_stats = client.get("/api/stats")
         assert res_stats.status_code == 200

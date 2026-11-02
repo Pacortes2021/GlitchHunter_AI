@@ -16,7 +16,8 @@
     paris: { name: 'Paris', color: '#0284c7', badgeBg: '#f0f9ff', badgeText: '#0369a1' },
     lider: { name: 'Líder', color: '#2563eb', badgeBg: '#eff6ff', badgeText: '#1d4ed8' },
     mercadolibre: { name: 'Mercado Libre', color: '#ca8a04', badgeBg: '#fefce8', badgeText: '#a16207' },
-    pcfactory: { name: 'PC Factory', color: '#dc2626', badgeBg: '#fef2f2', badgeText: '#b91c1c' }
+    pcfactory: { name: 'PC Factory', color: '#dc2626', badgeBg: '#fef2f2', badgeText: '#b91c1c' },
+    solotodo: { name: 'SoloTodo', color: '#10b981', badgeBg: '#ecfdf5', badgeText: '#065f46' }
   };
 
   const FALLBACK_IMAGE = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200" fill="%23f1f5f9"><rect width="200" height="200" fill="%23f1f5f9"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="%2394a3b8" font-family="sans-serif" font-size="12">Sin imagen</text></svg>`;
@@ -252,6 +253,11 @@
                 ⚡ Bug 10x
               </span>
             ` : ''}
+            ${item.is_watchlist_match ? `
+              <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-yellow-100 text-yellow-800 border border-yellow-300">
+                ⭐ Watchlist
+              </span>
+            ` : ''}
             <span class="px-2 py-0.5 rounded text-xs font-mono font-bold ${
               isCritical
                 ? 'bg-rose-50 text-rose-700 border border-rose-200'
@@ -302,19 +308,38 @@
         </div>
       </div>
 
-      <!-- Botón de Compra Directo -->
+      <!-- Botones de Compra Directo / Sniper 1-Clic -->
       <div>
-        <a href="${safeUrl}" 
-           target="_blank" 
-           rel="noopener noreferrer" 
-           class="w-full py-2 px-3 rounded-lg ${
-             isGlitchColumn
-               ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-               : 'bg-slate-800 hover:bg-slate-900 text-white'
-           } font-semibold text-xs text-center transition flex items-center justify-center gap-1.5 shadow-sm active:scale-95">
-          <span>Ver Oferta en ${safeStoreName}</span>
-          <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
-        </a>
+        ${item.add_to_cart_url && item.add_to_cart_url !== safeUrl ? `
+          <div class="grid grid-cols-2 gap-2">
+            <a href="${safeUrl}" 
+               target="_blank" 
+               rel="noopener noreferrer" 
+               class="py-2 px-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs text-center transition flex items-center justify-center gap-1">
+              <span>Ver Tienda</span>
+              <i data-lucide="external-link" class="w-3 h-3"></i>
+            </a>
+            <a href="${item.add_to_cart_url}" 
+               target="_blank" 
+               rel="noopener noreferrer" 
+               class="py-2 px-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs text-center transition flex items-center justify-center gap-1 shadow-sm active:scale-95">
+              <span>⚡ 1-Clic Sniper</span>
+              <i data-lucide="zap" class="w-3 h-3"></i>
+            </a>
+          </div>
+        ` : `
+          <a href="${safeUrl}" 
+             target="_blank" 
+             rel="noopener noreferrer" 
+             class="w-full py-2 px-3 rounded-lg ${
+               isGlitchColumn
+                 ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                 : 'bg-slate-800 hover:bg-slate-900 text-white'
+             } font-semibold text-xs text-center transition flex items-center justify-center gap-1.5 shadow-sm active:scale-95">
+            <span>Ver Oferta en ${safeStoreName}</span>
+            <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+          </a>
+        `}
       </div>
     `;
 
@@ -659,6 +684,22 @@
       if (resDeals.ok) {
         const deals = await resDeals.json();
         if (Array.isArray(deals)) state.commercialDeals = deals;
+      }
+
+      // 3. Cargar Matriz de Salud de Tiendas (Store Health Matrix)
+      const resHealth = await fetch('/api/store-health');
+      if (resHealth.ok) {
+        const data = await resHealth.json();
+        const container = document.getElementById('store-health-pills');
+        if (container && Array.isArray(data.stores) && data.stores.length > 0) {
+          container.innerHTML = data.stores.map(s => {
+            const isOk = s.status === 'HEALTHY' || s.status === 'IDLE';
+            const icon = isOk ? '🟢' : (s.status === 'DEGRADED' ? '🟡' : '🔴');
+            const bg = isOk ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200';
+            const lat = Math.round(s.latency_ms || s.avg_latency_ms || 0);
+            return `<span class="px-2 py-0.5 rounded ${bg} border font-mono text-[11px]">${s.store_name}: ${icon} ${lat}ms</span>`;
+          }).join('');
+        }
       }
     } catch {
       // Servidor local offline

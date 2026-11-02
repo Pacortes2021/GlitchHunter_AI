@@ -37,6 +37,7 @@ class ProductItem(BaseModel):
     normal_price: float = Field(..., ge=0.0, description="Precio de referencia / lista previo al descuento")
     card_price: Optional[float] = Field(default=None, ge=0.0, description="Precio exclusivo con tarjeta de la tienda (CMR, Ripley, Cencosud)")
     url: str = Field(..., description="Enlace directo a la publicación del producto")
+    add_to_cart_url: Optional[str] = Field(default=None, description="URL directa para agregar al carrito en 1 clic (Sniper Mode)")
     image_url: Optional[str] = Field(default=None, description="URL de la imagen principal del producto")
     in_stock: bool = Field(default=True, description="Indica si el producto tiene stock disponible")
     timestamp: datetime = Field(default_factory=datetime.utcnow, description="Fecha y hora de captura")
@@ -121,6 +122,8 @@ class GlitchAlert(BaseModel):
     verdict: GlitchVerdict = Field(..., description="Veredicto y análisis del glitch")
     created_at: datetime = Field(default_factory=datetime.utcnow, description="Fecha y hora de generación de la alerta")
     alert_url: str = Field(..., description="Enlace para comprar o ver el producto")
+    add_to_cart_url: Optional[str] = Field(default=None, description="URL directa para compra Sniper en 1 clic")
+    is_watchlist_match: bool = Field(default=False, description="True si coincide con palabras clave monitoreadas por el usuario")
     telegram_sent: bool = Field(default=False, description="Indica si la alerta ya fue despachada por Telegram")
 
 

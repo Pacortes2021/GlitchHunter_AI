@@ -23,6 +23,7 @@ import urllib.parse
 import requests
 
 from glitchhunter_ai.core.models import ProductItem
+from glitchhunter_ai.scrapers.stealth_client import default_stealth_client
 
 logger = logging.getLogger("glitchhunter.scrapers.live_feed")
 
@@ -129,8 +130,7 @@ class LiveRetailFeed:
 
     def __init__(self, timeout: float = 6.0):
         self.timeout = timeout
-        self.session = requests.Session()
-        self.session.headers.update(DEFAULT_HEADERS)
+        self.session = default_stealth_client
 
     def fetch_live_products_for_store(
         self,

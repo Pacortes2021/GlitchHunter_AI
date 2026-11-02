@@ -5,5 +5,6 @@ Incluye integraciones con Telegram Bot API, notificaciones push móviles ntfy y 
 
 from glitchhunter_ai.notifications.telegram_bot import TelegramAlertDispatcher
 from glitchhunter_ai.notifications.ntfy_client import NtfyAlertDispatcher
+from glitchhunter_ai.notifications.discord_webhook import DiscordAlertDispatcher
 
-__all__ = ["TelegramAlertDispatcher", "NtfyAlertDispatcher"]
+__all__ = ["TelegramAlertDispatcher", "NtfyAlertDispatcher", "DiscordAlertDispatcher"]

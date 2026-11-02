@@ -230,6 +230,15 @@ class PriceDatabase:
             except Exception:
                 pass
 
+            # 5. Tabla de Watchlist / Palabras Clave Prioritarias
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS watchlist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    keyword TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
             cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals;")
             if cursor.fetchone()["cnt"] == 0:
                 cursor.execute("""
@@ -1060,6 +1069,46 @@ class PriceDatabase:
             cursor.execute("DELETE FROM glitch_alerts;")
             cursor.execute("DELETE FROM price_history;")
             cursor.execute("DELETE FROM products;")
+
+    # =========================================================================
+    # MÉTODOS DE WATCHLIST (Seguimiento prioritario por palabras clave)
+    # =========================================================================
+
+    def add_watchlist_keyword(self, keyword: str) -> bool:
+        """Añade una palabra clave a la watchlist del usuario (ej: 'macbook', 'rtx 4080')."""
+        clean_kw = keyword.strip().lower()
+        if not clean_kw:
+            return False
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("INSERT INTO watchlist (keyword) VALUES (?);", (clean_kw,))
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def remove_watchlist_keyword(self, keyword: str) -> bool:
+        """Elimina una palabra clave de la watchlist."""
+        clean_kw = keyword.strip().lower()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM watchlist WHERE keyword = ?;", (clean_kw,))
+            return cursor.rowcount > 0
+
+    def get_watchlist_keywords(self) -> List[str]:
+        """Retorna todas las palabras clave activas en la watchlist."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT keyword FROM watchlist ORDER BY created_at ASC;")
+            return [row["keyword"] for row in cursor.fetchall()]
+
+    def is_in_watchlist(self, title: str) -> bool:
+        """Verifica si el título de un producto coincide con alguna palabra clave de la watchlist."""
+        if not title:
+            return False
+        t_lower = title.lower()
+        keywords = self.get_watchlist_keywords()
+        return any(kw in t_lower for kw in keywords)
 
 
 # =====================================================================

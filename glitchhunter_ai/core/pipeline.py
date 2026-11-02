@@ -7,6 +7,7 @@ y el filtro semántico NLP estricto para erradicar el 'Carcasa Trap'.
 """
 
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -17,6 +18,7 @@ from rich.table import Table
 from glitchhunter_ai.ai_detector.inflation_verifier import InflationVerifier
 from glitchhunter_ai.ai_detector.math_detector import MathAnomalyDetector
 from glitchhunter_ai.ai_detector.semantic_filter import SemanticGlitchFilter
+from glitchhunter_ai.core.cart_sniper import generate_direct_add_to_cart_url
 from glitchhunter_ai.core.database import PriceDatabase
 from glitchhunter_ai.core.models import (
     GlitchAlert,
@@ -25,7 +27,8 @@ from glitchhunter_ai.core.models import (
     ProductItem,
     SemanticClassificationResult,
 )
-from glitchhunter_ai.notifications import NtfyAlertDispatcher, TelegramAlertDispatcher
+from glitchhunter_ai.core.store_health import global_store_health
+from glitchhunter_ai.notifications import DiscordAlertDispatcher, NtfyAlertDispatcher, TelegramAlertDispatcher
 from glitchhunter_ai.scrapers import get_all_scrapers
 
 logger = logging.getLogger("GlitchHunter.Pipeline")
@@ -42,6 +45,7 @@ class GlitchHuntingPipeline:
         db: Optional[PriceDatabase] = None,
         telegram_dispatcher: Optional[TelegramAlertDispatcher] = None,
         ntfy_dispatcher: Optional[NtfyAlertDispatcher] = None,
+        discord_dispatcher: Optional[DiscordAlertDispatcher] = None,
         on_glitch_callback: Optional[Callable[[GlitchAlert], Any]] = None,
     ):
         self.db = db or PriceDatabase()
@@ -50,6 +54,7 @@ class GlitchHuntingPipeline:
         self.semantic_filter = SemanticGlitchFilter()
         self.telegram_dispatcher = telegram_dispatcher or TelegramAlertDispatcher()
         self.ntfy_dispatcher = ntfy_dispatcher or NtfyAlertDispatcher()
+        self.discord_dispatcher = discord_dispatcher or DiscordAlertDispatcher()
         self.scrapers = get_all_scrapers()
         self.on_glitch_callback = on_glitch_callback
 
@@ -179,11 +184,24 @@ class GlitchHuntingPipeline:
             logger.debug(f"🔁 [Glitch Activo Existente] Omitiendo duplicado de {product.title} ({product.id}).")
             return None
 
+        # 🎯 MODO SNIPER: Generar enlace directo para agregar al carrito en 1 clic
+        sniper_url = generate_direct_add_to_cart_url(product.store_id, product.url, product.id)
+        product.add_to_cart_url = sniper_url
+
+        # ⭐ REVISIÓN DE WATCHLIST: Prioridad especial para términos monitoreados por el usuario
+        is_watchlist = False
+        if hasattr(self.db, "is_in_watchlist") and self.db.is_in_watchlist(product.title):
+            is_watchlist = True
+            verdict.confidence_score = min(100.0, verdict.confidence_score + 10.0)
+            logger.info("⭐ [WATCHLIST HIT] %s coincide con las palabras clave de seguimiento prioritario!", product.title)
+
         alert = GlitchAlert(
             alert_id=alert_id,
             product=product,
             verdict=verdict,
             alert_url=str(product.url),
+            add_to_cart_url=sniper_url,
+            is_watchlist_match=is_watchlist,
             created_at=datetime.utcnow(),
             telegram_sent=False,
         )
@@ -212,9 +230,19 @@ class GlitchHuntingPipeline:
         except Exception as e:
             logger.error(f"Error despachando notificación push ntfy para {alert_id}: {e}")
 
+        # Despacho enriquecido a Discord Webhook
+        discord_ok = False
+        try:
+            discord_ok = bool(self.discord_dispatcher.send_alert(alert))
+        except Exception as e:
+            logger.error(f"Error despachando alerta a Discord para {alert_id}: {e}")
+
+        # Registro de métrica de salud en matriz
+        global_store_health.record_glitch(product.store_id)
+
         # Confirmación de despacho en el radar tracked_deals
         is_sim = getattr(self.telegram_dispatcher, "is_simulation", False)
-        if telegram_ok or ntfy_ok or is_sim:
+        if telegram_ok or ntfy_ok or discord_ok or is_sim:
             if hasattr(self.db, "mark_deal_dispatched"):
                 self.db.mark_deal_dispatched(product.id)
 
@@ -254,6 +282,9 @@ class GlitchHuntingPipeline:
 
         total_scanned = 0
         for scraper in target_scrapers:
+            t_start = time.perf_counter()
+            has_error = False
+            products = []
             try:
                 products = scraper.fetch_catalog(use_live=use_live)
                 total_scanned += len(products)
@@ -262,7 +293,17 @@ class GlitchHuntingPipeline:
                     if alert:
                         all_detected_glitches.append(alert)
             except Exception as exc:
+                has_error = True
                 logger.error(f"Error escaneando {scraper.store_name}: {exc}")
+            finally:
+                elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                global_store_health.record_scan(
+                    store_id=scraper.store_id,
+                    store_name=scraper.store_name,
+                    latency_ms=elapsed_ms,
+                    items_count=len(products),
+                    error=has_error,
+                )
 
         logger.debug(
             f"✅ Ciclo concluido: {total_scanned} productos analizados, "

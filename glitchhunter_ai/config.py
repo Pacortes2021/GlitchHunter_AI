@@ -49,6 +49,10 @@ WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
 WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 API_AUTH_KEY = os.getenv("API_AUTH_KEY", "")  # Token de acceso opcional para endpoints administrativos (/api/scan, etc.)
 
+# Configuración de Discord Webhook
+DISCORD_ENABLED = os.getenv("DISCORD_ENABLED", "true").lower() in ("true", "1", "yes")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+
 # Intervalo del Escaneo Automático en Segundo Plano (en segundos)
 # 60s = cada 1 minuto (solicitado para monitoreo rápido y oportuno)
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "60"))
@@ -63,4 +67,5 @@ STORES = [
     {"id": "lider", "name": "Líder", "domain": "lider.cl"},
     {"id": "mercadolibre", "name": "Mercado Libre", "domain": "mercadolibre.cl"},
     {"id": "pcfactory", "name": "PC Factory", "domain": "pcfactory.cl"},
+    {"id": "solotodo", "name": "SoloTodo", "domain": "solotodo.cl"},
 ]

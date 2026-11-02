@@ -255,28 +255,21 @@ class TelegramAlertDispatcher:
     def build_inline_keyboard(self, alert: GlitchAlert) -> Dict[str, Any]:
         """
         Genera los botones inline interactivos de Telegram:
+          - [🛒 AGREGAR AL CARRO (1 CLIC)] (Si está disponible en modo Sniper)
           - [⚡ COMPRAR AHORA (ENLACE DIRECTO)]
           - [📊 Ver Historial en Dashboard]
         """
         buy_url = alert.alert_url or alert.product.url
         dashboard_url = f"http://{self.web_host}:{self.web_port}/#alert-{alert.alert_id}"
 
-        return {
-            "inline_keyboard": [
-                [
-                    {
-                        "text": "⚡ COMPRAR AHORA (ENLACE DIRECTO)",
-                        "url": buy_url,
-                    }
-                ],
-                [
-                    {
-                        "text": "📊 Ver Historial en Dashboard",
-                        "url": dashboard_url,
-                    }
-                ],
-            ]
-        }
+        buttons = []
+        if getattr(alert, "add_to_cart_url", None) and alert.add_to_cart_url != buy_url:
+            buttons.append([{"text": "🛒 AGREGAR AL CARRO (1 CLIC)", "url": alert.add_to_cart_url}])
+
+        buttons.append([{"text": "⚡ COMPRAR AHORA (ENLACE DIRECTO)", "url": buy_url}])
+        buttons.append([{"text": "📊 Ver Historial en Dashboard", "url": dashboard_url}])
+
+        return {"inline_keyboard": buttons}
 
     def create_payload(self, alert: GlitchAlert, parse_mode: str = "HTML") -> TelegramAlertPayload:
         """

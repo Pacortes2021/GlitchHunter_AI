@@ -22,6 +22,7 @@ from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from glitchhunter_ai.config import (
     AUTO_SCAN_ENABLED,
@@ -33,6 +34,7 @@ from glitchhunter_ai.config import (
     WEB_HOST,
     WEB_PORT,
 )
+from glitchhunter_ai.core.cart_sniper import generate_direct_add_to_cart_url
 from glitchhunter_ai.core.database import PriceDatabase
 from glitchhunter_ai.core.models import (
     GlitchAlert,
@@ -42,6 +44,7 @@ from glitchhunter_ai.core.models import (
     SemanticClassificationResult,
 )
 from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
+from glitchhunter_ai.core.store_health import global_store_health
 from glitchhunter_ai.notifications.telegram_bot import TelegramAlertDispatcher
 
 logger = logging.getLogger("GlitchHunter.Server")
@@ -256,24 +259,34 @@ def format_glitch_record(row: Dict[str, Any]) -> Dict[str, Any]:
     ratio = normal_price / max(current_price, 1.0)
     missing_zero = (ratio >= 8.5 and ratio <= 11.5)
 
+    prod_url = row.get("url") or ""
+    prod_id = row.get("product_id") or ""
+    title = row.get("title") or "Producto"
+
+    sniper_url = generate_direct_add_to_cart_url(store_id, prod_url, prod_id)
+    is_watchlist = bool(db.is_in_watchlist(title)) if hasattr(db, "is_in_watchlist") else False
+
     return {
         "alert_id": row.get("id") or f"ALT-{store_id.upper()}-{uuid.uuid4().hex[:6].upper()}",
         "created_at": row.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "detected_at_exact": row.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "origin": "SIMULACION" if "test" in (row.get("product_id") or "").lower() or "sim" in (row.get("product_id") or "").lower() or row.get("product_id", "").startswith(("fal-", "rip-", "par-", "lid-", "mlc-", "pcf-")) else "EN_VIVO",
         "pipeline_latency_ms": 14,
-        "alert_url": row.get("url") or "",
+        "alert_url": prod_url,
+        "add_to_cart_url": sniper_url,
+        "is_watchlist_match": is_watchlist,
         "telegram_sent": bool(row.get("telegram_sent") or False),
         "product": {
-            "id": row.get("product_id") or "",
+            "id": prod_id,
             "store_id": store_id,
             "store_name": store_name,
-            "title": row.get("title") or "Producto",
+            "title": title,
             "category": row.get("category") or "General",
             "current_price": current_price,
             "normal_price": normal_price,
             "card_price": float(row["card_price"]) if row.get("card_price") is not None and float(row["card_price"]) > 0 else None,
-            "url": row.get("url") or "",
+            "url": prod_url,
+            "add_to_cart_url": sniper_url,
             "image_url": row.get("image_url") or "",
             "in_stock": True,
         },
@@ -320,22 +333,31 @@ def format_commercial_deal_record(row: Dict[str, Any]) -> Dict[str, Any]:
     normal_price = float(row.get("normal_price") or 0.0)
     discount_pct = float(row.get("discount_pct") or 0.0)
     savings_clp = float(row.get("savings_clp") or 0.0)
+    prod_url = row.get("url") or ""
+    prod_id = row.get("product_id") or ""
+    title = row.get("title") or "Producto en Oferta"
+
+    sniper_url = generate_direct_add_to_cart_url(store_id, prod_url, prod_id)
+    is_watchlist = bool(db.is_in_watchlist(title)) if hasattr(db, "is_in_watchlist") else False
 
     return {
         "alert_id": f"DEAL-{store_id.upper()}-{abs(hash(row.get('product_id', ''))) % 100000000}",
         "created_at": row.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "origin": "OFERTA_COMERCIAL",
-        "alert_url": row.get("url") or "",
+        "alert_url": prod_url,
+        "add_to_cart_url": sniper_url,
+        "is_watchlist_match": is_watchlist,
         "product": {
-            "id": row.get("product_id") or "",
+            "id": prod_id,
             "store_id": store_id,
             "store_name": store_name,
-            "title": row.get("title") or "Producto en Oferta",
+            "title": title,
             "category": row.get("category") or "General",
             "current_price": current_price,
             "normal_price": normal_price,
             "card_price": float(row["card_price"]) if row.get("card_price") is not None else None,
-            "url": row.get("url") or "",
+            "url": prod_url,
+            "add_to_cart_url": sniper_url,
             "image_url": row.get("image_url") or "",
             "in_stock": True,
         },
@@ -481,6 +503,42 @@ async def get_status():
         "scan_interval_seconds": SCAN_INTERVAL_SECONDS,
         "scan_interval_minutes": round(SCAN_INTERVAL_SECONDS / 60, 1),
         "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/store-health")
+async def get_store_health():
+    """Retorna la matriz de salud, latencia y tiempos de respuesta de cada scraper."""
+    return {"stores": global_store_health.get_matrix()}
+
+
+class WatchlistRequest(BaseModel):
+    keyword: str
+
+
+@app.get("/api/watchlist")
+async def get_watchlist():
+    """Retorna las palabras clave prioritarias configuradas en la watchlist."""
+    return {"keywords": db.get_watchlist_keywords() if hasattr(db, "get_watchlist_keywords") else []}
+
+
+@app.post("/api/watchlist")
+async def add_watchlist(payload: WatchlistRequest):
+    """Agrega una nueva palabra clave a la watchlist del usuario."""
+    success = db.add_watchlist_keyword(payload.keyword) if hasattr(db, "add_watchlist_keyword") else False
+    return {
+        "success": success,
+        "keywords": db.get_watchlist_keywords() if hasattr(db, "get_watchlist_keywords") else [],
+    }
+
+
+@app.delete("/api/watchlist/{keyword}")
+async def delete_watchlist(keyword: str):
+    """Elimina una palabra clave de la watchlist."""
+    removed = db.remove_watchlist_keyword(keyword) if hasattr(db, "remove_watchlist_keyword") else False
+    return {
+        "success": removed,
+        "keywords": db.get_watchlist_keywords() if hasattr(db, "get_watchlist_keywords") else [],
     }
 
 

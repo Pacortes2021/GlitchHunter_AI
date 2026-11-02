@@ -160,6 +160,22 @@
 
     </div>
 
+    <!-- ==================== MATRIZ DE SALUD Y LATENCIA (STORE HEALTH) ==================== -->
+    <div id="store-health-panel" class="bg-white border border-slate-200 rounded-xl p-3 sm:p-3.5 mb-6 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-2.5 text-xs">
+      <div class="flex items-center gap-2 text-slate-700 font-semibold">
+        <i data-lucide="activity" class="w-4 h-4 text-emerald-600"></i>
+        <span>Salud Operativa Retail:</span>
+      </div>
+      <div id="store-health-pills" class="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
+        <span class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">SoloTodo: 🟢 190ms</span>
+        <span class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">Falabella: 🟢 110ms</span>
+        <span class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">Ripley: 🟢 95ms</span>
+        <span class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">Paris: 🟢 105ms</span>
+        <span class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">Líder: 🟢 130ms</span>
+        <span class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">PC Factory: 🟢 85ms</span>
+      </div>
+    </div>
+
     <!-- ==================== BARRA GLOBAL DE FILTROS ==================== -->
     <div class="bg-white border border-slate-200 rounded-xl p-4 mb-6 shadow-sm space-y-3.5">
       
@@ -185,6 +201,9 @@
         </button>
         <button data-store="pcfactory" class="store-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium transition bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 flex-shrink-0">
           PC Factory (<span id="count-pcfactory">0</span>)
+        </button>
+        <button data-store="solotodo" class="store-filter-btn px-3 py-1.5 rounded-lg text-xs font-medium transition bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 flex-shrink-0">
+          SoloTodo (<span id="count-solotodo">0</span>)
         </button>
       </div>
 
