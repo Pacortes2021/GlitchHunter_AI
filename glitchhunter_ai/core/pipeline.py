@@ -60,6 +60,8 @@ class GlitchHuntingPipeline:
         self.discord_dispatcher = discord_dispatcher or DiscordAlertDispatcher()
         self.scrapers = get_all_scrapers()
         self.on_glitch_callback = on_glitch_callback
+        from glitchhunter_ai.core.catalog_rotator import default_catalog_rotator
+        self.catalog_rotator = default_catalog_rotator
         self._scan_lock = threading.Lock()
         self.is_scanning = False
 
@@ -340,11 +342,13 @@ class GlitchHuntingPipeline:
         use_live: bool = False,
         store_ids: Optional[List[str]] = None,
         send_notifications: Optional[bool] = None,
+        rotate_categories: bool = True,
+        scan_watchlist: bool = True,
     ) -> List[GlitchAlert]:
         """
         Ejecuta un ciclo de escaneo completo a través de todos los scrapers seleccionados.
-        Si use_live es False (modo simulación / demo), send_notifications es False por defecto,
-        garantizando que ninguna alerta de prueba emita notificaciones push a redes reales.
+        Integra rotación Round-Robin de categorías, ordenamiento prioritario ('discount_desc' / 'price_asc')
+        y escaneo proactivo de la Watchlist del usuario.
         Protegido con un cerrojo atómico para impedir carreras por escaneos concurrentes (Hallazgo F).
         """
         if not self._scan_lock.acquire(blocking=False):
@@ -372,7 +376,16 @@ class GlitchHuntingPipeline:
                 if store_ids is None or s.store_id in store_ids
             ]
 
-            logger.debug(f"🔎 Iniciando ciclo de escaneo en {len(target_scrapers)} tiendas retail (live={use_live}, notify={send_notifications})...")
+            # 1. Rotación Round-Robin de Categorías y Estrategia de Ordenamiento
+            rotation_batch = None
+            if rotate_categories and self.catalog_rotator:
+                rotation_batch = self.catalog_rotator.get_next_batch()
+
+            strategy_desc = rotation_batch.strategy.value if rotation_batch else "estandar"
+            logger.debug(
+                f"🔎 Iniciando ciclo de escaneo en {len(target_scrapers)} tiendas retail "
+                f"(live={use_live}, notify={send_notifications}, orden={strategy_desc})..."
+            )
 
             total_scanned = 0
             for scraper in target_scrapers:
@@ -380,7 +393,17 @@ class GlitchHuntingPipeline:
                 has_error = False
                 products = []
                 try:
-                    products = scraper.fetch_catalog(use_live=use_live)
+                    kwargs: Dict[str, Any] = {"use_live": use_live}
+                    if rotation_batch:
+                        import inspect
+                        sig = inspect.signature(scraper.fetch_catalog)
+                        if "sort_strategy" in sig.parameters:
+                            kwargs["sort_strategy"] = rotation_batch.strategy.value
+                        if "active_category_ids" in sig.parameters:
+                            cat_ids = [c.solotodo_category_id for c in rotation_batch.categories if c.solotodo_category_id]
+                            kwargs["active_category_ids"] = cat_ids
+
+                    products = scraper.fetch_catalog(**kwargs)
                     total_scanned += len(products)
                     for prod in products:
                         alert = self.process_product(prod, send_notifications=send_notifications)
@@ -401,6 +424,18 @@ class GlitchHuntingPipeline:
                     if use_live and global_store_health.should_alert_empty_store(scraper.store_id):
                         self._notify_store_health_alert(scraper.store_id, scraper.store_name)
 
+            # 2. Escaneo Prioritario de la Watchlist del Usuario
+            if scan_watchlist:
+                try:
+                    wl_alerts = self.run_watchlist_scan(
+                        use_live=use_live,
+                        send_notifications=send_notifications,
+                    )
+                    if wl_alerts:
+                        all_detected_glitches.extend(wl_alerts)
+                except Exception as wl_exc:
+                    logger.debug("Error en escaneo de watchlist: %s", wl_exc)
+
             logger.debug(
                 f"✅ Ciclo concluido: {total_scanned} productos analizados, "
                 f"{len(all_detected_glitches)} glitches confirmados."
@@ -409,6 +444,80 @@ class GlitchHuntingPipeline:
         finally:
             self.is_scanning = False
             self._scan_lock.release()
+
+    run_scan_cycle = run_scan
+
+    def run_watchlist_scan(
+        self,
+        use_live: bool = False,
+        send_notifications: Optional[bool] = None,
+    ) -> List[GlitchAlert]:
+        """
+        Escaneo prioritario y proactivo de los términos en la Watchlist del usuario.
+        En modo LIVE: busca ofertas en Knasta/SoloTodo ordenadas por precio ascendente.
+        En modo DEMO: genera candidatos de simulación que coincidan con los términos.
+        """
+        if send_notifications is None:
+            send_notifications = bool(use_live)
+
+        if not hasattr(self.db, "get_watchlist_keywords"):
+            return []
+
+        keywords = self.db.get_watchlist_keywords()
+        if not keywords:
+            logger.debug("ℹ️ [Watchlist Scan] No hay palabras clave registradas en la watchlist.")
+            return []
+
+        logger.info(
+            "🎯 [Watchlist Scan] Iniciando escaneo prioritario para %d término(s): %s (live=%s)",
+            len(keywords),
+            ", ".join(keywords),
+            use_live,
+        )
+
+        detected_watchlist_alerts: List[GlitchAlert] = []
+        from glitchhunter_ai.scrapers.live_feed import LiveRetailFeed
+        live_feed = LiveRetailFeed()
+
+        for kw in keywords:
+            matched_products: List[ProductItem] = []
+            if use_live:
+                matched_products = live_feed.search_live_products(query=kw, order="price_asc", limit=20)
+            else:
+                matched_products = self._generate_simulated_watchlist_products(kw)
+
+            for prod in matched_products:
+                alert = self.process_product(prod, send_notifications=send_notifications)
+                if alert:
+                    detected_watchlist_alerts.append(alert)
+
+        logger.info(
+            "🎯 [Watchlist Scan] Concluido: %d alertas prioritarias confirmadas para la Watchlist.",
+            len(detected_watchlist_alerts),
+        )
+        return detected_watchlist_alerts
+
+    def _generate_simulated_watchlist_products(self, keyword: str) -> List[ProductItem]:
+        """Genera productos simulados de alta fidelidad que coinciden con la palabra clave para tests y demo."""
+        clean_kw = keyword.strip()
+        uid = uuid.uuid4().hex[:6].upper()
+        now = datetime.utcnow()
+        return [
+            ProductItem(
+                id=f"test-wl-{uid.lower()}",
+                store_id="pcfactory",
+                store_name="PC Factory",
+                title=f"{clean_kw.title()} Special Edition [TEST-{uid}]",
+                category="componentes",
+                current_price=119990.0,
+                normal_price=1199990.0,
+                card_price=109990.0,
+                url=f"https://www.pcfactory.cl/producto/wl-{uid.lower()}",
+                image_url="https://www.pcfactory.cl/public/foto/rtx.jpg",
+                in_stock=True,
+                timestamp=now,
+            )
+        ]
 
     def _notify_store_health_alert(self, store_id: str, store_name: str):
         """Emite alerta de salud operativa cuando un scraper devuelve 0 productos reiteradamente."""

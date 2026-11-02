@@ -58,9 +58,14 @@ class SoloTodoScraper:
         self.client = default_stealth_client
         self.last_latency_ms: float = 0.0
 
-    def _fetch_category_batch(self, cat_id: int, limit: int = 10) -> List[ProductItem]:
-        """Consulta una categoría individual en la API de SoloTodo."""
-        url = f"https://publicapi.solotodo.com/products/browse/?categories={cat_id}&page_size={limit}&ordering=offer_price_usd"
+    def _fetch_category_batch(
+        self,
+        cat_id: int,
+        limit: int = 10,
+        ordering: str = "offer_price_usd",
+    ) -> List[ProductItem]:
+        """Consulta una categoría individual en la API de SoloTodo con ordenamiento configurable."""
+        url = f"https://publicapi.solotodo.com/products/browse/?categories={cat_id}&page_size={limit}&ordering={ordering}"
         items: List[ProductItem] = []
         try:
             resp = self.client.get(url, timeout=self.timeout)
@@ -120,11 +125,18 @@ class SoloTodoScraper:
 
         return items
 
-    def fetch_catalog(self, use_live: bool = False, max_items: int = 50) -> List[ProductItem]:
+    def fetch_catalog(
+        self,
+        use_live: bool = False,
+        max_items: int = 50,
+        active_category_ids: Optional[List[int]] = None,
+        sort_strategy: Optional[str] = None,
+    ) -> List[ProductItem]:
         """
         Obtiene el catálogo de SoloTodo.
         En modo live, ejecuta consultas en paralelo para garantizar latencia idéntica
-        o superior a los scrapers individuales.
+        o superior a los scrapers individuales, con soporte para categorías activas rotativas
+        y ordenamiento por mayor descuento o menor precio.
         """
         start_time = time.perf_counter()
 
@@ -134,13 +146,14 @@ class SoloTodoScraper:
 
         # En modo LIVE: consultas concurrentes vía ThreadPoolExecutor
         products: List[ProductItem] = []
-        cat_ids = list(TARGET_CATEGORIES.keys())[:5]
-        per_cat = max(3, max_items // len(cat_ids))
+        cat_ids = active_category_ids or list(TARGET_CATEGORIES.keys())[:5]
+        per_cat = max(3, max_items // max(1, len(cat_ids)))
+        ordering = "-discount_percentage" if sort_strategy == "discount_desc" else "offer_price_usd"
 
         try:
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 future_to_cat = {
-                    executor.submit(self._fetch_category_batch, cat_id, per_cat): cat_id
+                    executor.submit(self._fetch_category_batch, cat_id, per_cat, ordering): cat_id
                     for cat_id in cat_ids
                 }
                 for future in as_completed(future_to_cat):

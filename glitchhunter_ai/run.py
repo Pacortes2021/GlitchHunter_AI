@@ -70,14 +70,54 @@ def run_demo():
     console.print("   Y abre en tu navegador: [underline green]http://127.0.0.1:8080[/underline green]\n")
 
 
-def run_scan(live: bool = False):
+def run_scan(live: bool = False, watchlist_only: bool = False, show_rotation: bool = False):
     print_banner()
     mode_str = "EN VIVO" if live else "SIMULACIÓN DE ALTA FIDELIDAD"
-    console.print(f"[bold cyan]Ejecutando escaneo retail en modo: {mode_str}...[/bold cyan]\n")
-
     pipeline = GlitchHuntingPipeline()
-    glitches = pipeline.run_scan(use_live=live)
+
+    if watchlist_only:
+        console.print(f"[bold cyan]🎯 Ejecutando escaneo prioritario de WATCHLIST en modo: {mode_str}...[/bold cyan]\n")
+        glitches = pipeline.run_watchlist_scan(use_live=live)
+    else:
+        console.print(f"[bold cyan]Ejecutando escaneo retail en modo: {mode_str}...[/bold cyan]\n")
+        if show_rotation and pipeline.catalog_rotator:
+            status = pipeline.catalog_rotator.get_status()
+            console.print(
+                f"🔄 [bold yellow]Rotación de Catálogo:[/bold yellow] Ciclo #{status['cycle_counter']} | "
+                f"Estrategia: {status['current_strategy']} | "
+                f"Categorías totales: {status['total_categories']}\n"
+            )
+        glitches = pipeline.run_scan(use_live=live)
+
     pipeline.print_glitch_summary_table(glitches)
+
+
+def run_watchlist_cli(add_kw: Optional[str] = None, remove_kw: Optional[str] = None, list_kw: bool = False):
+    print_banner()
+    db = PriceDatabase()
+
+    if add_kw:
+        db.add_watchlist_keyword(add_kw)
+        console.print(f"✅ [bold green]Palabra clave añadida exitosamente a la Watchlist:[/bold green] '{add_kw}'")
+    elif remove_kw:
+        db.remove_watchlist_keyword(remove_kw)
+        console.print(f"🗑️ [bold yellow]Palabra clave eliminada de la Watchlist:[/bold yellow] '{remove_kw}'")
+
+    keywords = db.get_watchlist_keywords()
+    table = Table(title="⭐ Watchlist - Palabras Clave Prioritarias", show_header=True, header_style="bold cyan")
+    table.add_column("#", justify="center", width=4)
+    table.add_column("Término / Modelo Monitoreado", style="white")
+
+    if not keywords:
+        console.print("[dim yellow]No hay palabras clave registradas actualmente en tu Watchlist.[/dim yellow]")
+        console.print("Usa: [bold white]python3 run.py watchlist --add 'rtx 4080'[/bold white] para agregar una.\n")
+        return
+
+    for idx, kw in enumerate(keywords, 1):
+        table.add_row(str(idx), kw)
+
+    console.print(table)
+    console.print()
 
 
 def run_tests():
@@ -170,6 +210,14 @@ def main():
     # Comando scan
     scan_parser = subparsers.add_parser("scan", help="Ejecutar ciclo de escaneo en retail chileno")
     scan_parser.add_argument("--live", action="store_true", help="Usar endpoints en vivo en lugar de simulación")
+    scan_parser.add_argument("--watchlist", action="store_true", help="Escanear únicamente términos de la watchlist")
+    scan_parser.add_argument("--rotate", action="store_true", help="Mostrar información detallada de la rotación de categorías")
+
+    # Comando watchlist
+    wl_parser = subparsers.add_parser("watchlist", help="Gestionar palabras clave monitoreadas por el usuario")
+    wl_parser.add_argument("--list", action="store_true", help="Listar palabras clave activas")
+    wl_parser.add_argument("--add", help="Agregar una nueva palabra clave (ej: 'rtx 4080', 'ipad air')")
+    wl_parser.add_argument("--remove", help="Eliminar una palabra clave existente")
 
     # Comando server
     server_parser = subparsers.add_parser("server", help="Iniciar dashboard web en tiempo real con WebSockets")
@@ -188,7 +236,9 @@ def main():
     if args.command == "demo" or args.command is None:
         run_demo()
     elif args.command == "scan":
-        run_scan(live=args.live)
+        run_scan(live=args.live, watchlist_only=args.watchlist, show_rotation=args.rotate)
+    elif args.command == "watchlist":
+        run_watchlist_cli(add_kw=args.add, remove_kw=args.remove, list_kw=args.list)
     elif args.command == "server":
         print_banner()
         console.print(f"[bold green]🌐 Iniciando Radar Web en http://{args.host}:{args.port}[/bold green]")
