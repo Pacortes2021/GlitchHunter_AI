@@ -6,7 +6,7 @@ análisis semántico, veredictos de glitch y alertas en tiempo real.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, Optional
 import uuid
@@ -50,7 +50,7 @@ class ProductItem(BaseModel):
     add_to_cart_url: Optional[str] = Field(default=None, description="URL directa para agregar al carrito en 1 clic (Sniper Mode)")
     image_url: Optional[str] = Field(default=None, description="URL de la imagen principal del producto")
     in_stock: bool = Field(default=True, description="Indica si el producto tiene stock disponible")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Fecha y hora de captura")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Fecha y hora de captura")
 
     @property
     def best_price(self) -> float:
@@ -85,7 +85,7 @@ class PriceHistoryRecord(BaseModel):
     model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
     product_id: str = Field(..., description="ID del producto monitoreado")
-    recorded_at: datetime = Field(default_factory=datetime.utcnow, description="Fecha y hora del registro")
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Fecha y hora del registro")
     price: float = Field(..., ge=0.0, description="Precio registrado en esa fecha")
     store_id: str = Field(..., description="ID de la tienda retail")
 
@@ -138,7 +138,7 @@ class GlitchAlert(BaseModel):
     alert_id: str = Field(default_factory=lambda: f"ALT-{uuid.uuid4().hex[:8].upper()}", description="Identificador único de alerta")
     product: ProductItem = Field(..., description="Producto que generó la alerta")
     verdict: GlitchVerdict = Field(..., description="Veredicto y análisis del glitch")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="Fecha y hora de generación de la alerta")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Fecha y hora de generación de la alerta")
     alert_url: str = Field(..., description="Enlace para comprar o ver el producto")
     add_to_cart_url: Optional[str] = Field(default=None, description="URL directa para compra Sniper en 1 clic")
     verification_level: VerificationLevel = Field(default=VerificationLevel.DETECTADO, description="Nivel en la cadena de confiabilidad: DETECTADO, VERIFICADO o COMPRABLE")

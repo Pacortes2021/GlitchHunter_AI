@@ -77,7 +77,7 @@ class MarketReferenceService:
         cache_key = f"mkt_ref:{model_code.lower()}"
 
         # 2. Consultar caché local de base de datos (TTL 8 horas)
-        if db and hasattr(db, "get_cached_market_reference"):
+        if db:
             cached = db.get_cached_market_reference(cache_key)
             if cached:
                 logger.debug("Caché hit para referencia de mercado [%s]", model_code)
@@ -91,7 +91,7 @@ class MarketReferenceService:
         if solotodo_data and solotodo_data.get("stores_count", 0) >= 2:
             solotodo_data["match_method"] = "solotodo"
             solotodo_data["matched_model"] = model_code
-            if db and hasattr(db, "save_cached_market_reference"):
+            if db:
                 db.save_cached_market_reference(
                     cache_key=cache_key,
                     median_price=solotodo_data["median_price"],
@@ -109,21 +109,20 @@ class MarketReferenceService:
             return self._build_result(product, solotodo_data, model_code)
 
         # 4. Fallback a catálogo local cruzado de las otras tiendas
-        if db and hasattr(db, "find_local_cross_store_reference"):
+        if db:
             local_data = db.find_local_cross_store_reference(model_code, exclude_store_id)
             if local_data and local_data.get("stores_count", 0) >= 2:
                 local_data["match_method"] = "model_code"
                 local_data["matched_model"] = model_code
-                if hasattr(db, "save_cached_market_reference"):
-                    db.save_cached_market_reference(
-                        cache_key=cache_key,
-                        median_price=local_data["median_price"],
-                        median_normal_price=local_data.get("median_normal_price"),
-                        stores_count=local_data["stores_count"],
-                        match_method="model_code",
-                        matched_model=model_code,
-                        ttl_hours=self.cache_ttl_hours,
-                    )
+                db.save_cached_market_reference(
+                    cache_key=cache_key,
+                    median_price=local_data["median_price"],
+                    median_normal_price=local_data.get("median_normal_price"),
+                    stores_count=local_data["stores_count"],
+                    match_method="model_code",
+                    matched_model=model_code,
+                    ttl_hours=self.cache_ttl_hours,
+                )
                 logger.info(
                     "🌐 [Local Model Benchmark] %s: Mediana $%s CLP (%d tiendas)",
                     model_code, f"{local_data['median_price']:,.0f}".replace(",", "."),

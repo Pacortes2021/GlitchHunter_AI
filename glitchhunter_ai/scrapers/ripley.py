@@ -11,7 +11,7 @@ Proporciona soporte dual:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional
@@ -201,7 +201,7 @@ class RipleyScraper:
                 url=url,
                 image_url=image_url,
                 in_stock=in_stock,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
             )
         except Exception as exc:
             logger.debug("No se pudo parsear producto de Ripley: %s", exc)
@@ -218,7 +218,7 @@ class RipleyScraper:
           - Casos trampa de accesorios (Stylus genérico para iPad, Funda para Nintendo Switch, Filtro DeLonghi).
           - Productos sin stock para verificar filtros de inventario.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         items: List[ProductItem] = [
             # -------------------------------------------------------------

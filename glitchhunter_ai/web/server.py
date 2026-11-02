@@ -310,7 +310,7 @@ def format_glitch_record(row: Dict[str, Any]) -> Dict[str, Any]:
     title = row.get("title") or "Producto"
 
     sniper_url = generate_direct_add_to_cart_url(store_id, prod_url, prod_id)
-    is_watchlist = bool(db.is_in_watchlist(title)) if hasattr(db, "is_in_watchlist") else False
+    is_watchlist = bool(db.is_in_watchlist(title))
     real_latency = global_store_health.get_store_latency(store_id)
     verif_level = row.get("verification_level") or "VERIFICADO"
     if verif_level == "COMPRABLE":
@@ -398,7 +398,7 @@ def format_commercial_deal_record(row: Dict[str, Any]) -> Dict[str, Any]:
     title = row.get("title") or "Producto en Oferta"
 
     sniper_url = generate_direct_add_to_cart_url(store_id, prod_url, prod_id)
-    is_watchlist = bool(db.is_in_watchlist(title)) if hasattr(db, "is_in_watchlist") else False
+    is_watchlist = bool(db.is_in_watchlist(title))
 
     return {
         "alert_id": f"DEAL-{store_id.upper()}-{int(hashlib.sha1(prod_id.encode()).hexdigest(), 16) % 100000000}",
@@ -644,26 +644,26 @@ class WatchlistRequest(BaseModel):
 @app.get("/api/watchlist")
 async def get_watchlist():
     """Retorna las palabras clave prioritarias configuradas en la watchlist."""
-    return {"keywords": db.get_watchlist_keywords() if hasattr(db, "get_watchlist_keywords") else []}
+    return {"keywords": db.get_watchlist_keywords()}
 
 
 @app.post("/api/watchlist", dependencies=[Depends(verify_admin_key)])
 async def add_watchlist(payload: WatchlistRequest):
     """Agrega una nueva palabra clave a la watchlist del usuario."""
-    success = db.add_watchlist_keyword(payload.keyword) if hasattr(db, "add_watchlist_keyword") else False
+    success = db.add_watchlist_keyword(payload.keyword)
     return {
         "success": success,
-        "keywords": db.get_watchlist_keywords() if hasattr(db, "get_watchlist_keywords") else [],
+        "keywords": db.get_watchlist_keywords(),
     }
 
 
 @app.delete("/api/watchlist/{keyword}", dependencies=[Depends(verify_admin_key)])
 async def delete_watchlist(keyword: str):
     """Elimina una palabra clave de la watchlist."""
-    removed = db.remove_watchlist_keyword(keyword) if hasattr(db, "remove_watchlist_keyword") else False
+    removed = db.remove_watchlist_keyword(keyword)
     return {
         "success": removed,
-        "keywords": db.get_watchlist_keywords() if hasattr(db, "get_watchlist_keywords") else [],
+        "keywords": db.get_watchlist_keywords(),
     }
 
 
@@ -679,7 +679,7 @@ async def scan_watchlist_endpoint():
     )
     return {
         "status": "success",
-        "scanned_keywords": db.get_watchlist_keywords() if hasattr(db, "get_watchlist_keywords") else [],
+        "scanned_keywords": db.get_watchlist_keywords(),
         "glitches_found": len(glitches),
         "glitches": [g.model_dump(mode="json") for g in glitches],
     }

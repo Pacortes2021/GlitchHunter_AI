@@ -11,7 +11,7 @@ CPUs, SSDs) y casos trampa de repuestos y accesorios.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import sys
@@ -163,7 +163,7 @@ class PCFactoryScraper:
         Parsea la respuesta JSON estructurada de la API de PC Factory a entidades ProductItem.
         """
         items: List[ProductItem] = []
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         for raw in raw_products:
             try:
@@ -251,7 +251,7 @@ class PCFactoryScraper:
            - Adaptador 12VHPWR 16 pines a 3x8 pines PCIe ($14.990)
         4. Casos de precio inflado (Cyber Bait) y producto agotado sin stock.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         simulated_data: List[ProductItem] = [
             # 🚨 GLITCH CRÍTICO 1: Tarjeta de Video NVIDIA RTX 4080 Super (Falta un cero: $1.199.990 -> $119.990)

@@ -9,7 +9,7 @@ simulando descuentos exorbitantes que en realidad no existen sobre el valor hist
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import statistics
 from typing import List, Optional, Tuple
@@ -84,13 +84,18 @@ class InflationVerifier:
         if not records:
             return None
 
-        ref_date = reference_date or datetime.utcnow()
+        ref_date = reference_date or datetime.now(timezone.utc)
+        if ref_date.tzinfo is None:
+            ref_date = ref_date.replace(tzinfo=timezone.utc)
         cutoff_date = ref_date - timedelta(days=max_days)
 
-        valid_prices = [
-            r.price for r in records
-            if r.recorded_at >= cutoff_date and r.price > 0
-        ]
+        valid_prices = []
+        for r in records:
+            r_date = r.recorded_at
+            if r_date.tzinfo is None:
+                r_date = r_date.replace(tzinfo=timezone.utc)
+            if r_date >= cutoff_date and r.price > 0:
+                valid_prices.append(r.price)
 
         if not valid_prices:
             # Si no hay en la ventana estricta pero existen registros históricos,
@@ -314,9 +319,9 @@ if __name__ == "__main__":
     # --------------------------------------------------------------------------
     print("--- CASO 5: Cálculo de Baseline con PriceHistoryRecord ---")
     history_records = [
-        PriceHistoryRecord(product_id="zapatilla-bait-01", price=49990.0, store_id="falabella", recorded_at=datetime.utcnow() - timedelta(days=25)),
-        PriceHistoryRecord(product_id="zapatilla-bait-01", price=51990.0, store_id="falabella", recorded_at=datetime.utcnow() - timedelta(days=15)),
-        PriceHistoryRecord(product_id="zapatilla-bait-01", price=48990.0, store_id="falabella", recorded_at=datetime.utcnow() - timedelta(days=5)),
+        PriceHistoryRecord(product_id="zapatilla-bait-01", price=49990.0, store_id="falabella", recorded_at=datetime.now(timezone.utc) - timedelta(days=25)),
+        PriceHistoryRecord(product_id="zapatilla-bait-01", price=51990.0, store_id="falabella", recorded_at=datetime.now(timezone.utc) - timedelta(days=15)),
+        PriceHistoryRecord(product_id="zapatilla-bait-01", price=48990.0, store_id="falabella", recorded_at=datetime.now(timezone.utc) - timedelta(days=5)),
     ]
     computed_baseline = verifier.compute_baseline_from_records(history_records, max_days=30)
     print(f"Registros analizados: {[r.price for r in history_records]}")
