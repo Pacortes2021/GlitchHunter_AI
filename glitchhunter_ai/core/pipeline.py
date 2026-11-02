@@ -114,32 +114,6 @@ class GlitchHuntingPipeline:
                         pass
             return None
 
-        # 🌐 Consulta de Referencia de Mercado Inter-Tiendas (Solo candidatos pre-filtrados)
-        # Productos de prueba/simulación (test-*) omiten consulta externa a SoloTodo
-        is_simulated_test = (
-            product.id.startswith("test-")
-            or product.store_id.startswith("test_")
-            or getattr(product, "is_mock", False)
-        )
-        if is_simulated_test:
-            mkt_ref = None
-        else:
-            mkt_ref = default_market_reference.get_market_reference(
-                product=product,
-                exclude_store_id=product.store_id,
-                db=self.db,
-            )
-
-        # Señal 2: Verificación cruzada de inflación inter-tiendas
-        if mkt_ref and mkt_ref.is_fake_inflation:
-            is_fake_inflation = True
-            inflation_explanation = (
-                f"Inflación artificial inter-tiendas detectada: normal ${product.normal_price:,.0f} "
-                f"> 1.8x mediana mercado ${mkt_ref.median_price:,.0f}."
-            )
-            logger.debug(f"🚫 [Inflación Cruzada Rechazada] {product.title} - {inflation_explanation}")
-            return None
-
         # Fase 3: Verificación de Inflación Artificial (Fake CyberDay Deals)
         is_fake_inflation, real_discount, inflation_explanation = (
             self.inflation_verifier.verify_inflation(product, baseline_price=baseline_price)
@@ -164,6 +138,34 @@ class GlitchHuntingPipeline:
             )
             return None
 
+        # 🌐 Consulta de Referencia de Mercado Inter-Tiendas
+        # Se consulta solo tras los filtros locales (inflación propia y semántico) para no gastar
+        # llamadas externas en accesorios o falsos descuentos ya descartados.
+        # Productos de prueba/simulación (test-*) omiten consulta externa a SoloTodo
+        is_simulated_test = (
+            product.id.startswith("test-")
+            or product.store_id.startswith("test_")
+            or getattr(product, "is_mock", False)
+        )
+        if is_simulated_test:
+            mkt_ref = None
+        else:
+            mkt_ref = default_market_reference.get_market_reference(
+                product=product,
+                exclude_store_id=product.store_id,
+                db=self.db,
+            )
+
+        # Señal 2: Inflación inter-tiendas. No descarta la alerta (un match erróneo no debe
+        # ocultar un glitch real): la marca, penaliza su confianza y omite el push al celular.
+        market_inflation = bool(mkt_ref and mkt_ref.is_fake_inflation)
+        if market_inflation:
+            is_fake_inflation = True
+            logger.info(
+                f"⚠️ [Inflación Cruzada] {product.title}: normal ${product.normal_price:,.0f} "
+                f"> 1.8x mediana mercado ${mkt_ref.median_price:,.0f}. Alerta sin push."
+            )
+
         # Determinación de severidad
         severity_val = math_eval.get("severity")
         if isinstance(severity_val, GlitchSeverity):
@@ -185,7 +187,9 @@ class GlitchHuntingPipeline:
         confidence = float(math_eval.get("confidence_score", 95.0))
 
         # Modulación de confianza según Señal 1 (mercado)
-        if mkt_ref:
+        if market_inflation:
+            confidence = max(20.0, confidence - 25.0)
+        elif mkt_ref:
             if mkt_ref.market_discount_pct >= 60.0:
                 confidence = min(99.0, confidence + 5.0)
             elif mkt_ref.market_discount_pct <= 15.0:
@@ -220,6 +224,7 @@ class GlitchHuntingPipeline:
             reason=(
                 f"{'⚠️ Missing Zero Bug (~10x)' if missing_zero else f'Descuento masivo {discount_pct:.1f}%'} "
                 f"en {product.store_name} | Ahorro: ${savings_clp:,.0f} CLP".replace(",", ".")
+                + (" | ⚠️ Precio normal inflado vs mercado" if market_inflation else "")
             ),
         )
 
@@ -291,7 +296,7 @@ class GlitchHuntingPipeline:
             or getattr(product, "is_mock", False)
         )
 
-        if send_notifications and not is_test_product:
+        if send_notifications and not is_test_product and not market_inflation:
             # Despacho por Telegram
             try:
                 dispatch_ok = self.telegram_dispatcher.send_alert(alert)
