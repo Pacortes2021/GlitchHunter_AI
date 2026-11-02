@@ -303,7 +303,7 @@
         </div>
 
         <!-- Bloque de Precios Blanco y Verde -->
-        <div class="bg-slate-50 rounded-lg p-2.5 border border-slate-100 mb-3 flex items-baseline justify-between">
+        <div class="bg-slate-50 rounded-lg p-2.5 border border-slate-100 mb-2.5 flex items-baseline justify-between">
           <div>
             <span class="text-[10px] font-mono text-slate-500 uppercase">${hasCardPrice ? 'Precio Tarjeta' : 'Precio Oferta'}</span>
             <div class="text-lg sm:text-xl font-bold font-mono text-emerald-600">
@@ -317,6 +317,22 @@
             </div>
           </div>
         </div>
+
+        <!-- Referencia de Mercado Inter-Tiendas -->
+        ${item.market_median_price ? `
+          <div class="mb-3 px-2 py-1.5 rounded-lg bg-indigo-50/70 border border-indigo-100 flex items-center justify-between text-[11px]">
+            <div class="flex items-center gap-1.5 text-indigo-900 font-medium">
+              <span class="text-xs">🌐</span>
+              <span>Ref. Mercado: <strong>${formatCLP(item.market_median_price)}</strong></span>
+              <span class="text-[10px] text-indigo-600">(${item.market_stores_count} tiendas${item.market_matched_model ? ` por ${escapeHtml(item.market_matched_model)}` : ''})</span>
+            </div>
+            ${item.market_discount_pct !== null && item.market_discount_pct !== undefined ? `
+              <span class="font-mono font-bold text-indigo-700">
+                ${item.market_discount_pct > 0 ? '-' : '+'}${Math.abs(item.market_discount_pct).toFixed(0)}% vs mkt
+              </span>
+            ` : ''}
+          </div>
+        ` : ''}
       </div>
 
       <!-- Botones de Compra Directo / Sniper 1-Clic -->

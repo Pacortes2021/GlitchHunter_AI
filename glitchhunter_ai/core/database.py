@@ -239,6 +239,30 @@ class PriceDatabase:
                 cursor.execute("ALTER TABLE tracked_deals ADD COLUMN verification_level TEXT DEFAULT 'DETECTADO';")
             except Exception:
                 pass
+            try:
+                cursor.execute("ALTER TABLE tracked_deals ADD COLUMN market_median_price REAL;")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE tracked_deals ADD COLUMN market_normal_price REAL;")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE tracked_deals ADD COLUMN market_discount_pct REAL;")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE tracked_deals ADD COLUMN market_stores_count INTEGER DEFAULT 0;")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE tracked_deals ADD COLUMN market_match_method TEXT;")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE tracked_deals ADD COLUMN market_matched_model TEXT;")
+            except Exception:
+                pass
 
             # 5. Tabla de Watchlist / Palabras Clave Prioritarias
             cursor.execute("""
@@ -248,6 +272,21 @@ class PriceDatabase:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+
+            # 6. Tabla de Caché de Referencias Inter-Tiendas (SoloTodo / Model Code)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS market_reference_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    median_price REAL NOT NULL,
+                    median_normal_price REAL,
+                    stores_count INTEGER NOT NULL,
+                    match_method TEXT NOT NULL,
+                    matched_model TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL
+                );
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_mkt_ref_expires ON market_reference_cache(expires_at);")
 
             cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals;")
             if cursor.fetchone()["cnt"] == 0:
@@ -586,6 +625,13 @@ class PriceDatabase:
         if is_card_price and "tarjeta" not in reason.lower():
             reason = f"{reason} (Exclusivo con Tarjeta Tienda)"
 
+        mkt_median = v_data.get("market_median_price")
+        mkt_normal = v_data.get("market_normal_median_price")
+        mkt_discount = v_data.get("market_discount_pct")
+        mkt_stores = int(v_data.get("market_stores_count") or 0)
+        mkt_method = v_data.get("market_match_method")
+        mkt_model = v_data.get("market_matched_model")
+
         now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
         with self.get_connection() as conn:
@@ -604,13 +650,17 @@ class PriceDatabase:
                         product_id, store_id, title, category,
                         normal_price, glitch_price, card_price, discount_pct, savings_clp,
                         confidence_score, verification_level,
+                        market_median_price, market_normal_price, market_discount_pct,
+                        market_stores_count, market_match_method, market_matched_model,
                         severity, reason, status, first_detected_at, last_seen_at,
                         alert_dispatched, alert_id, url, image_url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, 0, ?, ?, ?);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, 0, ?, ?, ?);
                 """, (
                     prod_id, store_id, title, category,
                     normal_price, effective_glitch_price, card_price_val, discount_pct, savings_clp,
                     confidence_score, verification_level,
+                    mkt_median, mkt_normal, mkt_discount,
+                    mkt_stores, mkt_method, mkt_model,
                     severity, reason, now_str, now_str,
                     alert_id, url, image_url
                 ))
@@ -626,12 +676,20 @@ class PriceDatabase:
                     UPDATE tracked_deals
                     SET glitch_price = ?, card_price = ?, savings_clp = ?, discount_pct = ?,
                         confidence_score = ?, verification_level = ?,
+                        market_median_price = COALESCE(?, market_median_price),
+                        market_normal_price = COALESCE(?, market_normal_price),
+                        market_discount_pct = COALESCE(?, market_discount_pct),
+                        market_stores_count = CASE WHEN ? > 0 THEN ? ELSE market_stores_count END,
+                        market_match_method = COALESCE(?, market_match_method),
+                        market_matched_model = COALESCE(?, market_matched_model),
                         severity = ?, reason = ?, status = 'ACTIVE', last_seen_at = ?,
                         alert_id = ?, alert_dispatched = 0
                     WHERE product_id = ?;
                 """, (
                     effective_glitch_price, card_price_val, savings_clp, discount_pct,
                     confidence_score, verification_level,
+                    mkt_median, mkt_normal, mkt_discount,
+                    mkt_stores, mkt_stores, mkt_method, mkt_model,
                     severity, reason, now_str, alert_id, prod_id
                 ))
                 return True, "REACTIVATED"
@@ -642,12 +700,20 @@ class PriceDatabase:
                     UPDATE tracked_deals
                     SET glitch_price = ?, card_price = ?, savings_clp = ?, discount_pct = ?,
                         confidence_score = ?, verification_level = ?,
+                        market_median_price = COALESCE(?, market_median_price),
+                        market_normal_price = COALESCE(?, market_normal_price),
+                        market_discount_pct = COALESCE(?, market_discount_pct),
+                        market_stores_count = CASE WHEN ? > 0 THEN ? ELSE market_stores_count END,
+                        market_match_method = COALESCE(?, market_match_method),
+                        market_matched_model = COALESCE(?, market_matched_model),
                         severity = ?, reason = ?, status = 'ACTIVE', last_seen_at = ?,
                         alert_id = ?, alert_dispatched = 0
                     WHERE product_id = ?;
                 """, (
                     effective_glitch_price, card_price_val, savings_clp, discount_pct,
                     confidence_score, verification_level,
+                    mkt_median, mkt_normal, mkt_discount,
+                    mkt_stores, mkt_stores, mkt_method, mkt_model,
                     severity, reason, now_str, alert_id, prod_id
                 ))
                 return True, "PRICE_DROP"
@@ -895,7 +961,13 @@ class PriceDatabase:
                         t.normal_price,
                         t.status,
                         t.last_seen_at,
-                        COALESCE(t.verification_level, 'DETECTADO') AS verification_level
+                        COALESCE(t.verification_level, 'DETECTADO') AS verification_level,
+                        t.market_median_price,
+                        t.market_normal_price,
+                        t.market_discount_pct,
+                        t.market_stores_count,
+                        t.market_match_method,
+                        t.market_matched_model
                     FROM tracked_deals t
                     LEFT JOIN products p ON t.product_id = p.id
                     WHERE t.status = 'ACTIVE'
@@ -1156,6 +1228,91 @@ class PriceDatabase:
         t_lower = title.lower()
         keywords = self.get_watchlist_keywords()
         return any(kw in t_lower for kw in keywords)
+
+    # =========================================================================
+    # Referencias de Mercado Inter-Tiendas (Caché y Match Local)
+    # =========================================================================
+    def get_cached_market_reference(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """Obtiene una referencia de mercado en caché si aún no ha expirado."""
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT median_price, median_normal_price, stores_count, match_method, matched_model
+                FROM market_reference_cache
+                WHERE cache_key = ? AND expires_at > ?;
+            """, (cache_key, now_str))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+        return None
+
+    def save_cached_market_reference(
+        self,
+        cache_key: str,
+        median_price: float,
+        median_normal_price: Optional[float],
+        stores_count: int,
+        match_method: str,
+        matched_model: Optional[str] = None,
+        ttl_hours: float = 8.0,
+    ) -> None:
+        """Guarda una referencia de mercado en caché con tiempo de expiración."""
+        now = datetime.utcnow()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        exp_str = (now + timedelta(hours=ttl_hours)).strftime("%Y-%m-%d %H:%M:%S")
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO market_reference_cache (
+                    cache_key, median_price, median_normal_price, stores_count,
+                    match_method, matched_model, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            """, (
+                cache_key, median_price, median_normal_price, stores_count,
+                match_method, matched_model, now_str, exp_str
+            ))
+
+    def find_local_cross_store_reference(
+        self,
+        model_code: str,
+        exclude_store_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Busca en la tabla local de productos otras tiendas que tengan el mismo modelo.
+        Excluye la tienda actual y exige al menos 2 tiendas distintas con stock.
+        """
+        import statistics
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT store_id, current_price, normal_price
+                FROM products
+                WHERE store_id != ? AND in_stock = 1 AND current_price > 0
+                  AND title LIKE ?;
+            """, (exclude_store_id, f"%{model_code}%"))
+            rows = cursor.fetchall()
+
+            store_prices: Dict[str, Dict[str, float]] = {}
+            for r in rows:
+                sid = r["store_id"]
+                cur_p = float(r["current_price"])
+                norm_p = float(r["normal_price"] or cur_p)
+                if sid not in store_prices or cur_p < store_prices[sid]["offer"]:
+                    store_prices[sid] = {"offer": cur_p, "normal": norm_p}
+
+            if len(store_prices) < 2:
+                return None
+
+            offers = [v["offer"] for v in store_prices.values()]
+            normals = [v["normal"] for v in store_prices.values()]
+
+            return {
+                "median_price": statistics.median(offers),
+                "median_normal_price": statistics.median(normals) if normals else None,
+                "stores_count": len(store_prices),
+                "sample_stores": list(store_prices.keys()),
+            }
 
 
 # =====================================================================

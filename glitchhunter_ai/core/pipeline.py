@@ -21,6 +21,7 @@ from glitchhunter_ai.ai_detector.math_detector import MathAnomalyDetector
 from glitchhunter_ai.ai_detector.semantic_filter import SemanticGlitchFilter
 from glitchhunter_ai.core.cart_sniper import generate_direct_add_to_cart_url
 from glitchhunter_ai.core.database import PriceDatabase
+from glitchhunter_ai.core.market_reference import default_market_reference
 from glitchhunter_ai.core.models import (
     GlitchAlert,
     GlitchSeverity,
@@ -111,6 +112,32 @@ class GlitchHuntingPipeline:
                         pass
             return None
 
+        # 🌐 Consulta de Referencia de Mercado Inter-Tiendas (Solo candidatos pre-filtrados)
+        # Productos de prueba/simulación (test-*) omiten consulta externa a SoloTodo
+        is_simulated_test = (
+            product.id.startswith("test-")
+            or product.store_id.startswith("test_")
+            or getattr(product, "is_mock", False)
+        )
+        if is_simulated_test:
+            mkt_ref = None
+        else:
+            mkt_ref = default_market_reference.get_market_reference(
+                product=product,
+                exclude_store_id=product.store_id,
+                db=self.db,
+            )
+
+        # Señal 2: Verificación cruzada de inflación inter-tiendas
+        if mkt_ref and mkt_ref.is_fake_inflation:
+            is_fake_inflation = True
+            inflation_explanation = (
+                f"Inflación artificial inter-tiendas detectada: normal ${product.normal_price:,.0f} "
+                f"> 1.8x mediana mercado ${mkt_ref.median_price:,.0f}."
+            )
+            logger.debug(f"🚫 [Inflación Cruzada Rechazada] {product.title} - {inflation_explanation}")
+            return None
+
         # Fase 3: Verificación de Inflación Artificial (Fake CyberDay Deals)
         is_fake_inflation, real_discount, inflation_explanation = (
             self.inflation_verifier.verify_inflation(product, baseline_price=baseline_price)
@@ -155,6 +182,13 @@ class GlitchHuntingPipeline:
         missing_zero = bool(math_eval.get("is_missing_zero", False))
         confidence = float(math_eval.get("confidence_score", 95.0))
 
+        # Modulación de confianza según Señal 1 (mercado)
+        if mkt_ref:
+            if mkt_ref.market_discount_pct >= 60.0:
+                confidence = min(99.0, confidence + 5.0)
+            elif mkt_ref.market_discount_pct <= 15.0:
+                confidence = max(40.0, confidence - 10.0)
+
         # Construcción del veredicto estructurado
         verdict = GlitchVerdict(
             is_glitch=True,
@@ -165,6 +199,12 @@ class GlitchHuntingPipeline:
             is_missing_zero=missing_zero,
             is_fake_inflation=is_fake_inflation,
             semantic_check=semantic_eval,
+            market_median_price=mkt_ref.median_price if mkt_ref else None,
+            market_normal_median_price=mkt_ref.median_normal_price if mkt_ref else None,
+            market_discount_pct=mkt_ref.market_discount_pct if mkt_ref else None,
+            market_stores_count=mkt_ref.stores_count if mkt_ref else 0,
+            market_match_method=mkt_ref.match_method if mkt_ref else None,
+            market_matched_model=mkt_ref.matched_model if mkt_ref else None,
             reason=(
                 f"{'⚠️ Missing Zero Bug (~10x)' if missing_zero else f'Descuento masivo {discount_pct:.1f}%'} "
                 f"en {product.store_name} | Ahorro: ${savings_clp:,.0f} CLP".replace(",", ".")
@@ -219,6 +259,11 @@ class GlitchHuntingPipeline:
             add_to_cart_url=sniper_url,
             is_watchlist_match=is_watchlist,
             verification_level=verif_level,
+            market_median_price=mkt_ref.median_price if mkt_ref else None,
+            market_discount_pct=mkt_ref.market_discount_pct if mkt_ref else None,
+            market_stores_count=mkt_ref.stores_count if mkt_ref else 0,
+            market_match_method=mkt_ref.match_method if mkt_ref else None,
+            market_matched_model=mkt_ref.matched_model if mkt_ref else None,
             created_at=datetime.utcnow(),
             telegram_sent=False,
         )
