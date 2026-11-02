@@ -136,7 +136,7 @@ def test_build_inline_keyboard(tmp_dispatcher: TelegramAlertDispatcher, sample_a
 
     assert "inline_keyboard" in kb
     rows = kb["inline_keyboard"]
-    assert len(rows) == 2
+    assert len(rows) == 3
 
     # Botón 1: Comprar ahora
     btn1 = rows[0][0]
@@ -147,6 +147,14 @@ def test_build_inline_keyboard(tmp_dispatcher: TelegramAlertDispatcher, sample_a
     btn2 = rows[1][0]
     assert btn2["text"] == "📊 Ver Historial en Dashboard"
     assert btn2["url"] == f"http://127.0.0.1:8080/#alert-{sample_alert.alert_id}"
+
+    # Fila 3: Botones interactivos de Feedback 👍 / 👎
+    feedback_row = rows[2]
+    assert len(feedback_row) == 2
+    assert feedback_row[0]["text"] == "👍 Oferta Real"
+    assert feedback_row[0]["callback_data"] == f"fb:up:{sample_alert.alert_id}"
+    assert feedback_row[1]["text"] == "👎 Falso Positivo"
+    assert feedback_row[1]["callback_data"] == f"fb:down:{sample_alert.alert_id}"
 
 
 def test_create_payload(tmp_dispatcher: TelegramAlertDispatcher, sample_alert: GlitchAlert):

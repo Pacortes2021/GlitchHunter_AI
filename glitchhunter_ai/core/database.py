@@ -263,6 +263,14 @@ class PriceDatabase:
                 cursor.execute("ALTER TABLE tracked_deals ADD COLUMN market_matched_model TEXT;")
             except Exception:
                 pass
+            try:
+                cursor.execute("ALTER TABLE tracked_deals ADD COLUMN upvotes INTEGER DEFAULT 0;")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE tracked_deals ADD COLUMN downvotes INTEGER DEFAULT 0;")
+            except Exception:
+                pass
 
             # 5. Tabla de Watchlist / Palabras Clave Prioritarias
             cursor.execute("""
@@ -287,6 +295,22 @@ class PriceDatabase:
                 );
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_mkt_ref_expires ON market_reference_cache(expires_at);")
+
+            # 7. Tabla de Feedback del Usuario (👍 Buena Oferta / 👎 Falso Positivo)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS deal_feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    deal_id TEXT NOT NULL,
+                    product_id TEXT,
+                    store_id TEXT,
+                    category TEXT,
+                    vote TEXT NOT NULL,
+                    reason TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_feedback_deal ON deal_feedback(deal_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_feedback_store_cat ON deal_feedback(store_id, category);")
 
             cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals;")
             if cursor.fetchone()["cnt"] == 0:
@@ -967,7 +991,9 @@ class PriceDatabase:
                         t.market_discount_pct,
                         t.market_stores_count,
                         t.market_match_method,
-                        t.market_matched_model
+                        t.market_matched_model,
+                        COALESCE(t.upvotes, 0) AS upvotes,
+                        COALESCE(t.downvotes, 0) AS downvotes
                     FROM tracked_deals t
                     LEFT JOIN products p ON t.product_id = p.id
                     WHERE t.status = 'ACTIVE'
@@ -1002,7 +1028,9 @@ class PriceDatabase:
                     p.image_url,
                     p.current_price,
                     p.card_price,
-                    p.normal_price
+                    p.normal_price,
+                    0 AS upvotes,
+                    0 AS downvotes
                 FROM glitch_alerts g
                 INNER JOIN (
                     SELECT product_id, MAX(rowid) AS max_rowid
@@ -1313,6 +1341,192 @@ class PriceDatabase:
                 "stores_count": len(store_prices),
                 "sample_stores": list(store_prices.keys()),
             }
+
+    def record_deal_feedback(
+        self,
+        deal_id: str,
+        vote: str,
+        product_id: Optional[str] = None,
+        store_id: Optional[str] = None,
+        category: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Registra el voto del usuario ('up' para glitch real o 'down' para falso positivo).
+        Actualiza el contador agregado en tracked_deals y persiste el log histórico.
+        """
+        clean_vote = vote.strip().lower()
+        if clean_vote not in ("up", "down", "like", "dislike"):
+            raise ValueError(f"Voto inválido '{vote}'. Se esperaba 'up' o 'down'.")
+        normalized_vote = "up" if clean_vote in ("up", "like") else "down"
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            p_id = product_id
+            s_id = store_id
+            cat = category
+
+            # Si faltan metadatos, intentar completarlos desde tracked_deals o products
+            if not (p_id and s_id):
+                cursor.execute("""
+                    SELECT product_id, store_id, category
+                    FROM tracked_deals
+                    WHERE alert_id = ? OR product_id = ?;
+                """, (deal_id, deal_id))
+                row = cursor.fetchone()
+                if row:
+                    p_id = p_id or row["product_id"]
+                    s_id = s_id or row["store_id"]
+                    cat = cat or row["category"]
+                else:
+                    cursor.execute("""
+                        SELECT id AS product_id, store_id, category
+                        FROM products
+                        WHERE id = ?;
+                    """, (deal_id,))
+                    p_row = cursor.fetchone()
+                    if p_row:
+                        p_id = p_id or p_row["product_id"]
+                        s_id = s_id or p_row["store_id"]
+                        cat = cat or p_row["category"]
+
+            # Registrar en deal_feedback
+            cursor.execute("""
+                INSERT INTO deal_feedback (deal_id, product_id, store_id, category, vote, reason)
+                VALUES (?, ?, ?, ?, ?, ?);
+            """, (deal_id, p_id, s_id, cat, normalized_vote, reason))
+
+            # Actualizar contadores en tracked_deals si existe
+            if normalized_vote == "up":
+                cursor.execute("""
+                    UPDATE tracked_deals
+                    SET upvotes = COALESCE(upvotes, 0) + 1
+                    WHERE alert_id = ? OR product_id = ?;
+                """, (deal_id, deal_id))
+            else:
+                cursor.execute("""
+                    UPDATE tracked_deals
+                    SET downvotes = COALESCE(downvotes, 0) + 1
+                    WHERE alert_id = ? OR product_id = ?;
+                """, (deal_id, deal_id))
+
+            # Consultar totales acumulados para este deal
+            cursor.execute("""
+                SELECT 
+                    SUM(CASE WHEN vote = 'up' THEN 1 ELSE 0 END) AS ups,
+                    SUM(CASE WHEN vote = 'down' THEN 1 ELSE 0 END) AS downs
+                FROM deal_feedback
+                WHERE deal_id = ?;
+            """, (deal_id,))
+            totals = cursor.fetchone()
+            conn.commit()
+
+            return {
+                "deal_id": deal_id,
+                "vote": normalized_vote,
+                "upvotes": totals["ups"] or 0,
+                "downvotes": totals["downs"] or 0,
+            }
+
+    def get_feedback_stats(self) -> Dict[str, Any]:
+        """
+        Retorna métricas agregadas de feedback del usuario y precisión del radar.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    COUNT(*) AS total_votes,
+                    SUM(CASE WHEN vote = 'up' THEN 1 ELSE 0 END) AS total_upvotes,
+                    SUM(CASE WHEN vote = 'down' THEN 1 ELSE 0 END) AS total_downvotes
+                FROM deal_feedback;
+            """)
+            summary = cursor.fetchone()
+            total = summary["total_votes"] or 0
+            ups = summary["total_upvotes"] or 0
+            downs = summary["total_downvotes"] or 0
+            accuracy = round((ups / total) * 100.0, 1) if total > 0 else 100.0
+
+            cursor.execute("""
+                SELECT 
+                    COALESCE(store_id, 'desconocida') AS store,
+                    SUM(CASE WHEN vote = 'up' THEN 1 ELSE 0 END) AS ups,
+                    SUM(CASE WHEN vote = 'down' THEN 1 ELSE 0 END) AS downs
+                FROM deal_feedback
+                GROUP BY store_id
+                ORDER BY (ups + downs) DESC;
+            """)
+            by_store = {
+                r["store"]: {"upvotes": r["ups"], "downvotes": r["downs"]}
+                for r in cursor.fetchall()
+            }
+
+            cursor.execute("""
+                SELECT 
+                    COALESCE(category, 'general') AS cat,
+                    SUM(CASE WHEN vote = 'up' THEN 1 ELSE 0 END) AS ups,
+                    SUM(CASE WHEN vote = 'down' THEN 1 ELSE 0 END) AS downs
+                FROM deal_feedback
+                GROUP BY category
+                ORDER BY (ups + downs) DESC;
+            """)
+            by_cat = {
+                r["cat"]: {"upvotes": r["ups"], "downvotes": r["downs"]}
+                for r in cursor.fetchall()
+            }
+
+            return {
+                "total_votes": total,
+                "total_upvotes": ups,
+                "total_downvotes": downs,
+                "accuracy_rate_pct": accuracy,
+                "by_store": by_store,
+                "by_category": by_cat,
+            }
+
+    def get_category_trust_modifier(
+        self,
+        store_id: str,
+        category: str,
+        min_samples: int = 3,
+    ) -> float:
+        """
+        Calcula un modificador de certeza (-15 a +5 puntos) basado en el feedback histórico
+        del usuario para la combinación (tienda, categoría).
+        Si una categoría acumula muchos falsos positivos (downvotes), penaliza la confianza.
+        Si acumula alta satisfacción (upvotes), bonifica la confianza.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN vote = 'up' THEN 1 ELSE 0 END) AS ups,
+                    SUM(CASE WHEN vote = 'down' THEN 1 ELSE 0 END) AS downs
+                FROM deal_feedback
+                WHERE store_id = ? AND category = ?;
+            """, (store_id, category))
+            row = cursor.fetchone()
+            if not row:
+                return 0.0
+
+            total = row["total"] or 0
+            if total < min_samples:
+                return 0.0
+
+            ups = row["ups"] or 0
+            downs = row["downs"] or 0
+            down_ratio = downs / total
+            up_ratio = ups / total
+
+            if down_ratio >= 0.75:
+                return -15.0
+            elif down_ratio >= 0.50:
+                return -8.0
+            elif up_ratio >= 0.85:
+                return +5.0
+            return 0.0
 
 
 # =====================================================================

@@ -279,6 +279,12 @@ class TelegramAlertDispatcher:
         buttons.append([{"text": "⚡ COMPRAR AHORA (ENLACE DIRECTO)", "url": buy_url}])
         buttons.append([{"text": "📊 Ver Historial en Dashboard", "url": dashboard_url}])
 
+        # Feedback interactivo del usuario (👍 Oferta Real / 👎 Falso Positivo)
+        buttons.append([
+            {"text": "👍 Oferta Real", "callback_data": f"fb:up:{alert.alert_id}"},
+            {"text": "👎 Falso Positivo", "callback_data": f"fb:down:{alert.alert_id}"},
+        ])
+
         return {"inline_keyboard": buttons}
 
     def create_payload(self, alert: GlitchAlert, parse_mode: str = "HTML") -> TelegramAlertPayload:
@@ -591,7 +597,8 @@ if __name__ == "__main__":
     print(f"\n🔘 Botones Inline Generados:")
     for row in buttons["inline_keyboard"]:
         for btn in row:
-            print(f"   [{btn['text']}] -> {btn['url']}")
+            dest = btn.get("url") or btn.get("callback_data")
+            print(f"   [{btn['text']}] -> {dest}")
 
     # 5. Envío simulado de la alerta
     print("\n🚀 Despachando alerta mediante dispatcher.send_alert()...")

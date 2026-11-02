@@ -191,6 +191,16 @@ class GlitchHuntingPipeline:
             elif mkt_ref.market_discount_pct <= 15.0:
                 confidence = max(40.0, confidence - 10.0)
 
+        # Modulación según Feedback Histórico del Usuario (Punto 5)
+        trust_mod = 0.0
+        if hasattr(self.db, "get_category_trust_modifier"):
+            try:
+                trust_mod = self.db.get_category_trust_modifier(product.store_id, product.category)
+                if trust_mod != 0.0:
+                    confidence = max(20.0, min(99.0, confidence + trust_mod))
+            except Exception as e:
+                logger.warning(f"Error al calcular trust modifier para {product.store_id}/{product.category}: {e}")
+
         # Construcción del veredicto estructurado
         verdict = GlitchVerdict(
             is_glitch=True,
@@ -207,6 +217,7 @@ class GlitchHuntingPipeline:
             market_stores_count=mkt_ref.stores_count if mkt_ref else 0,
             market_match_method=mkt_ref.match_method if mkt_ref else None,
             market_matched_model=mkt_ref.matched_model if mkt_ref else None,
+            user_trust_modifier=trust_mod if trust_mod != 0.0 else None,
             reason=(
                 f"{'⚠️ Missing Zero Bug (~10x)' if missing_zero else f'Descuento masivo {discount_pct:.1f}%'} "
                 f"en {product.store_name} | Ahorro: ${savings_clp:,.0f} CLP".replace(",", ".")
