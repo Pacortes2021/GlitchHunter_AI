@@ -3,7 +3,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-emerald.svg)](LICENSE)
-[![Tests Passing](https://img.shields.io/badge/pytest-53%20passed-brightgreen.svg)](tests/)
+[![Tests Passing](https://img.shields.io/badge/pytest-61%20passed-brightgreen.svg)](tests/)
 
 Plataforma agéntica y colaborativa de **monitoreo en tiempo real, detección de anomalías de precios (glitches / bugs de digitación) y alertas instantáneas** diseñada específicamente para el ecosistema de e-commerce y retail de Chile.
 
@@ -125,7 +125,7 @@ GlitchHunter AI viene integrado con [ntfy](https://ntfy.sh), una app open source
 
 ## 🧪 Ejecución de Pruebas Automatizadas
 
-El proyecto cuenta con **53 pruebas unitarias e integrales** con 100% de éxito:
+El proyecto cuenta con **61 pruebas unitarias e integrales** con 100% de éxito:
 
 ```bash
 python3 run.py test
