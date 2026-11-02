@@ -41,6 +41,7 @@ class StoreHealthTracker:
         latency_ms: float,
         items_count: int,
         error: bool = False,
+        blocked: bool = False,
     ):
         with self._lock:
             self.register_store(store_id, store_name)
@@ -51,6 +52,12 @@ class StoreHealthTracker:
             if error:
                 record["error_count"] += 1
                 record["status"] = "OFFLINE" if record["error_count"] >= 3 else "DEGRADED"
+            elif blocked:
+                record["error_count"] += 1
+                record["status"] = "BLOCKED"
+            elif items_count == 0:
+                # Scraper respondió sin excepción pero no obtuvo productos (evita falsos positivos - Hallazgo D de Auditoría 4)
+                record["status"] = "EMPTY_RESPONSE"
             else:
                 record["success_scans"] += 1
                 record["items_scanned"] += items_count
@@ -67,6 +74,13 @@ class StoreHealthTracker:
                     record["avg_latency_ms"] = round(
                         record["avg_latency_ms"] * 0.7 + record["latency_ms"] * 0.3, 1
                     )
+
+    def get_store_latency(self, store_id: str) -> Optional[float]:
+        with self._lock:
+            store = self._stores.get(store_id)
+            if store and store.get("latency_ms", 0.0) > 0.0:
+                return store["latency_ms"]
+            return None
 
     def record_glitch(self, store_id: str):
         with self._lock:

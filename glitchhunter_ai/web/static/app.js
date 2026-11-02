@@ -253,6 +253,15 @@
                 ⚡ Bug 10x
               </span>
             ` : ''}
+            ${item.verification_level === 'COMPRABLE' ? `
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 border border-emerald-300" title="Enlace directo Sniper 1-Clic disponible">
+                ⚡ Comprable
+              </span>
+            ` : (item.verification_level === 'VERIFICADO' ? `
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-50 text-blue-700 border border-blue-200" title="Confirmado en tienda con stock y precio">
+                ✓ Verificado
+              </span>
+            ` : '')}
             ${item.is_watchlist_match ? `
               <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-yellow-100 text-yellow-800 border border-yellow-300">
                 ⭐ Watchlist
@@ -547,6 +556,60 @@
 
     updateAudioUI();
 
+    // 1.1 Configurar API Key Administrativa (Hallazgo C de Auditoría 4)
+    function getStoredApiKey() {
+      return localStorage.getItem('glitchhunter_api_key') || '';
+    }
+
+    function setStoredApiKey(key) {
+      if (key && key.trim()) {
+        localStorage.setItem('glitchhunter_api_key', key.trim());
+      } else {
+        localStorage.removeItem('glitchhunter_api_key');
+      }
+      updateApiKeyUI();
+    }
+
+    function updateApiKeyUI() {
+      const label = document.getElementById('api-key-label');
+      if (label) {
+        const hasKey = Boolean(getStoredApiKey());
+        label.textContent = hasKey ? 'API Key ✓' : 'API Key';
+      }
+    }
+
+    async function authenticatedFetch(url, options = {}) {
+      options.headers = options.headers || {};
+      const key = getStoredApiKey();
+      if (key) {
+        options.headers['X-API-Key'] = key;
+      }
+
+      let res = await fetch(url, options);
+      if (res.status === 401) {
+        const entered = prompt('🔐 Autenticación requerida: Ingresa tu clave API_AUTH_KEY para realizar esta acción:');
+        if (entered) {
+          setStoredApiKey(entered);
+          options.headers['X-API-Key'] = entered.trim();
+          res = await fetch(url, options);
+        }
+      }
+      return res;
+    }
+
+    const btnApiKey = document.getElementById('btn-api-key');
+    if (btnApiKey) {
+      btnApiKey.addEventListener('click', () => {
+        const current = getStoredApiKey();
+        const entered = prompt('Configura tu clave de API administrativa (API_AUTH_KEY). Déjala vacía para removerla:', current);
+        if (entered !== null) {
+          setStoredApiKey(entered);
+          showToast(getStoredApiKey() ? 'API Key guardada correctamente.' : 'API Key removida.', 'Seguridad');
+        }
+      });
+      updateApiKeyUI();
+    }
+
     if (toggleSoundBtn) {
       toggleSoundBtn.addEventListener('click', () => {
         state.soundEnabled = !state.soundEnabled;
@@ -556,7 +619,7 @@
       });
     }
 
-    // 2. Escanear Ahora
+    // 2. Escanear Ahora (Protegido contra carreras concurrentes y autenticado)
     const btnScan = document.getElementById('btn-force-scan');
     if (btnScan) {
       btnScan.addEventListener('click', async () => {
@@ -565,14 +628,21 @@
         if (window.lucide) window.lucide.createIcons();
 
         try {
-          const res = await fetch('/api/scan', { method: 'POST' });
+          const res = await authenticatedFetch('/api/scan', { method: 'POST' });
+          if (res.status === 409) {
+            const data = await res.json();
+            showToast(data.message || 'Un ciclo de escaneo ya está en ejecución.', 'Escáner Ocupado');
+            return;
+          }
           if (res.ok) {
             const data = await res.json();
-            showToast('Escaneo completado en las 6 tiendas.', 'Escaneo Listo');
+            showToast('Escaneo completado exitosamente.', 'Escaneo Listo');
             if (Array.isArray(data.new_glitches)) {
               data.new_glitches.forEach(g => ingestGlitch(g));
             }
             await loadData();
+          } else if (res.status === 401) {
+            showToast('Clave de API no autorizada o ausente.', 'No Autorizado');
           }
         } catch {
           showToast('Error conectando al backend.', 'Error');
@@ -586,15 +656,19 @@
       });
     }
 
-    // 3. Simular Glitch
+    // 3. Simular Glitch (Aislado y autenticado)
     const btnInject = document.getElementById('btn-inject-glitch');
     if (btnInject) {
       btnInject.addEventListener('click', async () => {
         try {
-          const res = await fetch('/api/test-glitch', { method: 'POST' });
+          const res = await authenticatedFetch('/api/test-glitch', { method: 'POST' });
           if (res.ok) {
             const data = await res.json();
             ingestGlitch(data, true);
+          } else if (res.status === 403) {
+            showToast('Inyección de pruebas deshabilitada en este entorno.', 'Prohibido');
+          } else if (res.status === 401) {
+            showToast('Clave de API requerida.', 'No Autorizado');
           }
         } catch {
           showToast('Error inyectando glitch de prueba.', 'Error');
@@ -693,11 +767,26 @@
         const container = document.getElementById('store-health-pills');
         if (container && Array.isArray(data.stores) && data.stores.length > 0) {
           container.innerHTML = data.stores.map(s => {
-            const isOk = s.status === 'HEALTHY' || s.status === 'IDLE';
-            const icon = isOk ? '🟢' : (s.status === 'DEGRADED' ? '🟡' : '🔴');
-            const bg = isOk ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200';
+            let icon = '🟢';
+            let bg = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+            let statusText = s.status;
+            if (s.status === 'EMPTY_RESPONSE') {
+              icon = '🟡';
+              bg = 'bg-amber-50 text-amber-700 border-amber-200';
+              statusText = '0 ítems';
+            } else if (s.status === 'BLOCKED') {
+              icon = '⛔';
+              bg = 'bg-rose-50 text-rose-700 border-rose-200';
+              statusText = 'Bloqueado';
+            } else if (s.status === 'DEGRADED') {
+              icon = '🟡';
+              bg = 'bg-amber-50 text-amber-700 border-amber-200';
+            } else if (s.status === 'OFFLINE') {
+              icon = '🔴';
+              bg = 'bg-rose-50 text-rose-700 border-rose-200';
+            }
             const lat = Math.round(s.latency_ms || s.avg_latency_ms || 0);
-            return `<span class="px-2 py-0.5 rounded ${bg} border font-mono text-[11px]">${s.store_name}: ${icon} ${lat}ms</span>`;
+            return `<span class="px-2 py-0.5 rounded ${bg} border font-mono text-[11px]">${s.store_name}: ${icon} ${lat}ms (${statusText})</span>`;
           }).join('');
         }
       }

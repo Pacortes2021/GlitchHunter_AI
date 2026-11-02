@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-emerald.svg)](LICENSE)
 [![CI Tests Passing](https://github.com/Pacortes2021/GlitchHunter_AI/actions/workflows/ci.yml/badge.svg)](https://github.com/Pacortes2021/GlitchHunter_AI/actions)
-[![Tests Passing](https://img.shields.io/badge/pytest-87%20passed%20(100%25)-brightgreen.svg)](glitchhunter_ai/tests/)
+[![Tests Passing](https://img.shields.io/badge/pytest-92%20passed%20(100%25)-brightgreen.svg)](glitchhunter_ai/tests/)
 
 Plataforma agéntica y colaborativa de **monitoreo en tiempo real, evasión anti-bot TLS (curl_cffi), detección de anomalías de precios (glitches / bugs de digitación) y compras relámpago con modo Sniper 1-Clic** diseñada específicamente para el ecosistema de e-commerce y retail de Chile.
 
@@ -126,7 +126,7 @@ GlitchHunter AI viene integrado con [ntfy](https://ntfy.sh), una app open source
 
 ## 🧪 Ejecución de Pruebas Automatizadas
 
-El proyecto cuenta con **61 pruebas unitarias e integrales** con 100% de éxito:
+El proyecto cuenta con **92 pruebas unitarias e integrales** con 100% de éxito:
 
 ```bash
 python3 run.py test
@@ -135,10 +135,16 @@ pytest glitchhunter_ai/tests/ -v
 ```
 
 Cubre:
-* Pruebas de deduplicación y máquina de estados anti-spam.
-* Detección de caída de ceros (~10x) y z-scores.
+* Pruebas de deduplicación y máquina de estados anti-spam con preservación íntegra de ciclos de precios históricos (Auditoría 4).
+* Detección de caída de ceros (~10x) y z-scores con certeza matemática calibrada sin distorsión de watchlist.
 * Filtro semántico anti-carcasas con casos trampa de Apple, Samsung y consolas.
 * Verificación de inflación artificial CyberDay.
+* Parser inteligente de moneda chilena (distinción de miles vs. decimales técnicos).
+* Aislamiento de notificaciones en modo demo y protección con `X-API-Key` en endpoints administrativos.
+* Evasión anti-bot stealth con `curl_cffi` (TLS Chrome impersonation) y meta-crawler SoloTodo.
+* Matriz de salud por tienda (`StoreHealthTracker`) con detección de bloqueos y respuestas vacías.
+* Modo Sniper para URLs de compra directa en 1 clic y niveles de verificación (`DETECTADO`, `VERIFICADO`, `COMPRABLE`).
+* Bloqueo atómico de concurrencia (`threading.Lock`) para evitar carreras entre escaneo manual y automático.
 * Endpoints REST y WebSockets de FastAPI.
 
 ---

@@ -22,6 +22,16 @@ class GlitchSeverity(str, Enum):
     FALSO_POSITIVO = "FALSO_POSITIVO"  # Descartado (ej. accesorio confundido, precio inflado previo)
 
 
+class VerificationLevel(str, Enum):
+    """
+    Cadena de Confiabilidad LIVE (Punto 4 de Auditoría):
+    Distingue la certeza operativa de cada oferta para priorizar oportunidades reales de compra.
+    """
+    DETECTADO = "DETECTADO"    # Anomalía de precio capturada por scraper o catálogo
+    VERIFICADO = "VERIFICADO"  # Confirmado en stock y vigente en el retail
+    COMPRABLE = "COMPRABLE"    # Enlace directo de compra instantánea (Sniper 1-Clic) validado
+
+
 class ProductItem(BaseModel):
     """
     Representa un producto extraído de un retail chileno en un momento dado.
@@ -108,6 +118,7 @@ class GlitchVerdict(BaseModel):
     is_missing_zero: bool = Field(default=False, description="True si coincide con patrón de 'falta un cero' (~10x)")
     is_fake_inflation: bool = Field(default=False, description="True si el precio normal fue inflado artificialmente antes")
     semantic_check: SemanticClassificationResult = Field(..., description="Desglose del análisis semántico")
+    verification_level: VerificationLevel = Field(default=VerificationLevel.DETECTADO, description="Nivel en la cadena de confiabilidad")
     reason: str = Field(..., description="Explicación detallada del veredicto para el usuario / log")
 
 
@@ -123,6 +134,7 @@ class GlitchAlert(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow, description="Fecha y hora de generación de la alerta")
     alert_url: str = Field(..., description="Enlace para comprar o ver el producto")
     add_to_cart_url: Optional[str] = Field(default=None, description="URL directa para compra Sniper en 1 clic")
+    verification_level: VerificationLevel = Field(default=VerificationLevel.DETECTADO, description="Nivel en la cadena de confiabilidad: DETECTADO, VERIFICADO o COMPRABLE")
     is_watchlist_match: bool = Field(default=False, description="True si coincide con palabras clave monitoreadas por el usuario")
     telegram_sent: bool = Field(default=False, description="Indica si la alerta ya fue despachada por Telegram")
 

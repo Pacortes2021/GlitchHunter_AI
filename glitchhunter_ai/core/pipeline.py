@@ -7,6 +7,7 @@ y el filtro semántico NLP estricto para erradicar el 'Carcasa Trap'.
 """
 
 import logging
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -26,6 +27,7 @@ from glitchhunter_ai.core.models import (
     GlitchVerdict,
     ProductItem,
     SemanticClassificationResult,
+    VerificationLevel,
 )
 from glitchhunter_ai.core.store_health import global_store_health
 from glitchhunter_ai.notifications import DiscordAlertDispatcher, NtfyAlertDispatcher, TelegramAlertDispatcher
@@ -57,6 +59,8 @@ class GlitchHuntingPipeline:
         self.discord_dispatcher = discord_dispatcher or DiscordAlertDispatcher()
         self.scrapers = get_all_scrapers()
         self.on_glitch_callback = on_glitch_callback
+        self._scan_lock = threading.Lock()
+        self.is_scanning = False
 
     def process_product(
         self,
@@ -169,6 +173,20 @@ class GlitchHuntingPipeline:
 
         alert_id = f"ALT-{product.store_id.upper()}-{uuid.uuid4().hex[:8].upper()}"
 
+        # 🎯 MODO SNIPER: Generar enlace directo para agregar al carrito en 1 clic
+        sniper_url = generate_direct_add_to_cart_url(product.store_id, product.url, product.id)
+        product.add_to_cart_url = sniper_url
+
+        # Cadena de Confiabilidad LIVE: Determinar nivel operativo (Punto 4 de Auditoría)
+        direct_checkout_keywords = ("cart", "carro", "checkout", "comprar-ahora", "cart-add")
+        if sniper_url and any(kw in sniper_url for kw in direct_checkout_keywords) and sniper_url != str(product.url):
+            verif_level = VerificationLevel.COMPRABLE
+        elif product.in_stock:
+            verif_level = VerificationLevel.VERIFICADO
+        else:
+            verif_level = VerificationLevel.DETECTADO
+        verdict.verification_level = verif_level
+
         # 🧠 MOTOR DE EXCELENCIA: Revisor Continuo y Registro de Estado
         # Consulta si la oferta ya está registrada y notificada previamente.
         # Si ya existe al mismo precio, actualiza su presencia sin reenviar notificaciones al celular.
@@ -188,15 +206,10 @@ class GlitchHuntingPipeline:
             logger.debug(f"🔁 [Glitch Activo Existente] Omitiendo duplicado de {product.title} ({product.id}).")
             return None
 
-        # 🎯 MODO SNIPER: Generar enlace directo para agregar al carrito en 1 clic
-        sniper_url = generate_direct_add_to_cart_url(product.store_id, product.url, product.id)
-        product.add_to_cart_url = sniper_url
-
-        # ⭐ REVISIÓN DE WATCHLIST: Prioridad especial para términos monitoreados por el usuario
+        # ⭐ REVISIÓN DE WATCHLIST: Prioridad especial sin corromper la certeza matemática (Hallazgo E de Auditoría 4)
         is_watchlist = False
         if hasattr(self.db, "is_in_watchlist") and self.db.is_in_watchlist(product.title):
             is_watchlist = True
-            verdict.confidence_score = min(100.0, verdict.confidence_score + 10.0)
             logger.info("⭐ [WATCHLIST HIT] %s coincide con las palabras clave de seguimiento prioritario!", product.title)
 
         alert = GlitchAlert(
@@ -206,6 +219,7 @@ class GlitchHuntingPipeline:
             alert_url=str(product.url),
             add_to_cart_url=sniper_url,
             is_watchlist_match=is_watchlist,
+            verification_level=verif_level,
             created_at=datetime.utcnow(),
             telegram_sent=False,
         )
@@ -287,57 +301,68 @@ class GlitchHuntingPipeline:
         Ejecuta un ciclo de escaneo completo a través de todos los scrapers seleccionados.
         Si use_live es False (modo simulación / demo), send_notifications es False por defecto,
         garantizando que ninguna alerta de prueba emita notificaciones push a redes reales.
+        Protegido con un cerrojo atómico para impedir carreras por escaneos concurrentes (Hallazgo F).
         """
+        if not self._scan_lock.acquire(blocking=False):
+            logger.warning("⚠️ Intento de escaneo concurrente rechazado: ya existe un ciclo de escaneo en ejecución.")
+            return []
+
+        self.is_scanning = True
         all_detected_glitches: List[GlitchAlert] = []
-        if send_notifications is None:
-            send_notifications = bool(use_live)
 
-        # Expirar ofertas que no han sido vistas en las últimas 12 horas
-        if hasattr(self.db, "expire_stale_deals"):
-            try:
-                expired = self.db.expire_stale_deals(max_hours=12)
-                if expired > 0:
-                    logger.info(f"⏳ [Expiración Automática] {expired} oferta(s) no vistas en >12h transicionadas a EXPIRED.")
-            except Exception as e:
-                logger.debug(f"Error en expire_stale_deals: {e}")
+        try:
+            if send_notifications is None:
+                send_notifications = bool(use_live)
 
-        target_scrapers = [
-            s for s in self.scrapers
-            if store_ids is None or s.store_id in store_ids
-        ]
+            # Expirar ofertas que no han sido vistas en las últimas 12 horas
+            if hasattr(self.db, "expire_stale_deals"):
+                try:
+                    expired = self.db.expire_stale_deals(max_hours=12)
+                    if expired > 0:
+                        logger.info(f"⏳ [Expiración Automática] {expired} oferta(s) no vistas en >12h transicionadas a EXPIRED.")
+                except Exception as e:
+                    logger.debug(f"Error en expire_stale_deals: {e}")
 
-        logger.debug(f"🔎 Iniciando ciclo de escaneo en {len(target_scrapers)} tiendas retail (live={use_live}, notify={send_notifications})...")
+            target_scrapers = [
+                s for s in self.scrapers
+                if store_ids is None or s.store_id in store_ids
+            ]
 
-        total_scanned = 0
-        for scraper in target_scrapers:
-            t_start = time.perf_counter()
-            has_error = False
-            products = []
-            try:
-                products = scraper.fetch_catalog(use_live=use_live)
-                total_scanned += len(products)
-                for prod in products:
-                    alert = self.process_product(prod, send_notifications=send_notifications)
-                    if alert:
-                        all_detected_glitches.append(alert)
-            except Exception as exc:
-                has_error = True
-                logger.error(f"Error escaneando {scraper.store_name}: {exc}")
-            finally:
-                elapsed_ms = (time.perf_counter() - t_start) * 1000.0
-                global_store_health.record_scan(
-                    store_id=scraper.store_id,
-                    store_name=scraper.store_name,
-                    latency_ms=elapsed_ms,
-                    items_count=len(products),
-                    error=has_error,
-                )
+            logger.debug(f"🔎 Iniciando ciclo de escaneo en {len(target_scrapers)} tiendas retail (live={use_live}, notify={send_notifications})...")
 
-        logger.debug(
-            f"✅ Ciclo concluido: {total_scanned} productos analizados, "
-            f"{len(all_detected_glitches)} glitches confirmados."
-        )
-        return all_detected_glitches
+            total_scanned = 0
+            for scraper in target_scrapers:
+                t_start = time.perf_counter()
+                has_error = False
+                products = []
+                try:
+                    products = scraper.fetch_catalog(use_live=use_live)
+                    total_scanned += len(products)
+                    for prod in products:
+                        alert = self.process_product(prod, send_notifications=send_notifications)
+                        if alert:
+                            all_detected_glitches.append(alert)
+                except Exception as exc:
+                    has_error = True
+                    logger.error(f"Error escaneando {scraper.store_name}: {exc}")
+                finally:
+                    elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                    global_store_health.record_scan(
+                        store_id=scraper.store_id,
+                        store_name=scraper.store_name,
+                        latency_ms=elapsed_ms,
+                        items_count=len(products),
+                        error=has_error,
+                    )
+
+            logger.debug(
+                f"✅ Ciclo concluido: {total_scanned} productos analizados, "
+                f"{len(all_detected_glitches)} glitches confirmados."
+            )
+            return all_detected_glitches
+        finally:
+            self.is_scanning = False
+            self._scan_lock.release()
 
     def print_glitch_summary_table(self, glitches: List[GlitchAlert]):
         """Renderiza una tabla ejecutiva de glitches detectados con formato Rich."""

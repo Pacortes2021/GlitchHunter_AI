@@ -306,13 +306,16 @@ def format_glitch_record(row: Dict[str, Any]) -> Dict[str, Any]:
 
     sniper_url = generate_direct_add_to_cart_url(store_id, prod_url, prod_id)
     is_watchlist = bool(db.is_in_watchlist(title)) if hasattr(db, "is_in_watchlist") else False
+    real_latency = global_store_health.get_store_latency(store_id)
+    verif_level = row.get("verification_level") or ("COMPRABLE" if sniper_url and "cart" in sniper_url else "VERIFICADO")
 
     return {
         "alert_id": row.get("id") or f"ALT-{store_id.upper()}-{uuid.uuid4().hex[:6].upper()}",
         "created_at": row.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "detected_at_exact": row.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "origin": "SIMULACION" if "test" in (row.get("product_id") or "").lower() or "sim" in (row.get("product_id") or "").lower() or row.get("product_id", "").startswith(("fal-", "rip-", "par-", "lid-", "mlc-", "pcf-")) else "EN_VIVO",
-        "pipeline_latency_ms": 14,
+        "pipeline_latency_ms": real_latency,
+        "verification_level": verif_level,
         "alert_url": prod_url,
         "add_to_cart_url": sniper_url,
         "is_watchlist_match": is_watchlist,
@@ -334,11 +337,12 @@ def format_glitch_record(row: Dict[str, Any]) -> Dict[str, Any]:
         "verdict": {
             "is_glitch": True,
             "severity": row.get("severity") or "MODERADO",
-            "confidence_score": float(row.get("confidence_score") or 95.0),
+            "confidence_score": float(row.get("confidence_score") or 90.0),
             "discount_percentage": discount_pct,
             "absolute_savings_clp": savings_clp,
             "is_missing_zero": missing_zero,
             "is_fake_inflation": False,
+            "verification_level": verif_level,
             "reason": row.get("reason") or f"Descuento de {discount_pct:.1f}%",
         },
     }
@@ -440,8 +444,18 @@ async def trigger_scan(use_live: bool = USE_LIVE_SCRAPING):
     """
     Dispara un ciclo de escaneo inmediato descargado en un hilo de trabajo (run_in_executor)
     para evitar bloquear el event loop principal del servidor web.
-    Protegido administrativamente si API_AUTH_KEY está configurada.
+    Protegido contra concurrencia con cerrojo atómico (Hallazgo F de Auditoría 4).
     """
+    if pipeline.is_scanning:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "status": "busy",
+                "message": "Un ciclo de escaneo ya se encuentra en ejecución. Por favor espera a que finalice.",
+                "running": True,
+            },
+        )
+
     logger.info(f"⚡ Escaneo manual solicitado vía API (use_live={use_live})")
     loop = asyncio.get_running_loop()
     detected = await loop.run_in_executor(None, pipeline.run_scan, use_live)

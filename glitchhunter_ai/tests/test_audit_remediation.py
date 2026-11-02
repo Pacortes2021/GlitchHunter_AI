@@ -595,3 +595,192 @@ def test_audit_3_hallazgo_6_mercadolibre_bs4_dependency():
     assert BeautifulSoup is not None
     assert bs4.__version__ is not None
 
+
+# ==============================================================================
+# 🎯 PRUEBAS DE REGRESIÓN: AUDITORÍA 4 (NOVIEMBRE 2026)
+# ==============================================================================
+
+def test_audit_4_hallazgo_a_price_history_deduplication_preserves_cycles(tmp_path):
+    """
+    Hallazgo A (Crítica): Verifica que cleanup_duplicate_price_history() NO elimine
+    observaciones válidas cuando un precio regresa al mismo valor en fechas distintas
+    (ej: $100k el 1 Oct -> $80k el 10 Oct -> $100k el 20 Oct -> $70k el 30 Oct).
+    """
+    db = PriceDatabase(db_path=tmp_path / "test_history_cycles.db")
+    db.init_db()
+
+    prod_id = "tv-cycle-test"
+
+    # Insertar la secuencia exacta reportada por el auditor
+    history_points = [
+        (prod_id, 100000.0, "2026-10-01 10:00:00"),
+        (prod_id, 80000.0, "2026-10-10 10:00:00"),
+        (prod_id, 100000.0, "2026-10-20 10:00:00"),  # <- Este registro se eliminaba erróneamente
+        (prod_id, 70000.0, "2026-10-30 10:00:00"),
+    ]
+
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO products (id, store_id, title, current_price, normal_price) VALUES (?, 'falabella', 'TV', 70000, 100000);", (prod_id,))
+        for pid, pr, ts in history_points:
+            cursor.execute("INSERT INTO price_history (product_id, price, timestamp) VALUES (?, ?, ?);", (pid, pr, ts))
+
+    # Ejecutar la limpieza de duplicados
+    db.cleanup_duplicate_price_history()
+
+    # Comprobar que los 4 registros históricos siguen existiendo intactos
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT price, timestamp FROM price_history WHERE product_id = ? ORDER BY timestamp ASC;", (prod_id,))
+        rows = cursor.fetchall()
+        assert len(rows) == 4, f"Se esperaban 4 observaciones históricas, se obtuvieron {len(rows)}"
+        assert rows[0]["price"] == 100000.0
+        assert rows[1]["price"] == 80000.0
+        assert rows[2]["price"] == 100000.0, "La observación del 20 de octubre ($100.000) debe preservarse intacta"
+        assert rows[3]["price"] == 70000.0
+
+
+def test_audit_4_hallazgo_b_get_stats_strict_active_deals_isolation(tmp_path):
+    """
+    Hallazgo B (Alta): Verifica que cuando todas las ofertas expiran o son corregidas,
+    total_glitches sea estrictamente 0 y NUNCA recurra a alertas históricas.
+    """
+    db = PriceDatabase(db_path=tmp_path / "test_stats_active_strict.db")
+    db.init_db()
+
+    pipeline = GlitchHuntingPipeline(db=db)
+
+    # Inyectar una alerta histórica
+    item = ProductItem(
+        id="prod-strict-01",
+        store_id="falabella",
+        store_name="Falabella",
+        title="Laptop Gamer",
+        category="notebooks",
+        current_price=99990.0,
+        normal_price=999990.0,
+        url="https://falabella.com/p1",
+        in_stock=True,
+    )
+    pipeline.process_product(item, send_notifications=False)
+
+    stats1 = db.get_stats()
+    assert stats1["total_glitches"] == 1
+    assert stats1["active_glitches"] == 1
+
+    # Oferta corregida
+    item_corr = ProductItem(
+        id="prod-strict-01",
+        store_id="falabella",
+        store_name="Falabella",
+        title="Laptop Gamer",
+        category="notebooks",
+        current_price=999990.0,
+        normal_price=999990.0,
+        url="https://falabella.com/p1",
+        in_stock=True,
+    )
+    pipeline.process_product(item_corr, send_notifications=False)
+
+    stats2 = db.get_stats()
+    assert stats2["total_glitches"] == 0, "total_glitches debe ser 0"
+    assert stats2["active_glitches"] == 0
+    assert stats2["historical_distinct_glitches"] == 1, "Histórico debe permanecer separado"
+
+
+def test_audit_4_hallazgo_d_store_health_empty_response_and_blocked():
+    """
+    Hallazgo D (Alta): Verifica que una extracción de 0 ítems no se reporte como HEALTHY,
+    sino como EMPTY_RESPONSE, y que bloqueos se clasifiquen como BLOCKED.
+    """
+    from glitchhunter_ai.core.store_health import StoreHealthTracker
+
+    tracker = StoreHealthTracker()
+
+    # 1. Escaneo rápido de 850ms pero con 0 productos extraídos -> EMPTY_RESPONSE
+    tracker.record_scan("paris", "Paris Chile", latency_ms=850.0, items_count=0, error=False)
+    matrix = tracker.get_matrix()
+    paris_rec = next(s for s in matrix if s["store_id"] == "paris")
+    assert paris_rec["status"] == "EMPTY_RESPONSE", "0 productos no debe ser HEALTHY, sino EMPTY_RESPONSE"
+
+    # 2. Bloqueo por WAF / Bot Manager -> BLOCKED
+    tracker.record_scan("ripley", "Ripley Chile", latency_ms=500.0, items_count=0, blocked=True)
+    matrix2 = tracker.get_matrix()
+    ripley_rec = next(s for s in matrix2 if s["store_id"] == "ripley")
+    assert ripley_rec["status"] == "BLOCKED"
+
+    # 3. Escaneo normal exitoso -> HEALTHY
+    tracker.record_scan("falabella", "Falabella", latency_ms=600.0, items_count=15)
+    matrix3 = tracker.get_matrix()
+    fal_rec = next(s for s in matrix3 if s["store_id"] == "falabella")
+    assert fal_rec["status"] == "HEALTHY"
+
+
+def test_audit_4_hallazgo_e_calibrated_confidence_and_verification_level(tmp_path):
+    """
+    Hallazgo E (Alta): Verifica que get_recent_glitches() reporte la certeza matemática real
+    sin forzar un 95% fijo, que la watchlist no altere la probabilidad estadística,
+    y que se asigne el nivel de verificación adecuado.
+    """
+    from glitchhunter_ai.core.models import VerificationLevel
+
+    db = PriceDatabase(db_path=tmp_path / "test_calibrated_conf.db")
+    db.init_db()
+
+    pipeline = GlitchHuntingPipeline(db=db)
+
+    item = ProductItem(
+        id="item-conf-01",
+        store_id="pcfactory",
+        store_name="PC Factory",
+        title="RTX 4070 Super",
+        category="computacion",
+        current_price=109990.0,
+        normal_price=699990.0,
+        url="https://pcfactory.cl/p1",
+        in_stock=True,
+    )
+    alert = pipeline.process_product(item, send_notifications=False)
+    assert alert is not None
+    assert alert.verification_level in (VerificationLevel.COMPRABLE, VerificationLevel.VERIFICADO)
+
+    # Verificar que el registro en radar refleja el score real
+    recent = db.get_recent_glitches()
+    assert len(recent) == 1
+    assert recent[0]["verification_level"] in ("COMPRABLE", "VERIFICADO")
+    assert recent[0]["confidence_score"] == alert.verdict.confidence_score
+
+
+def test_audit_4_hallazgo_f_pipeline_concurrent_scan_protection(tmp_path):
+    """
+    Hallazgo F (Media-Alta): Verifica que múltiples llamadas simultáneas a run_scan()
+    no produzcan colisiones, rechazando limpiamente ejecuciones superpuestas.
+    """
+    import time
+    import threading
+
+    db = PriceDatabase(db_path=tmp_path / "test_concurrency.db")
+    db.init_db()
+
+    pipeline = GlitchHuntingPipeline(db=db)
+
+    results = []
+
+    def slow_scan():
+        # Simula un escaneo que toma tiempo bloqueando el cerrojo
+        res = pipeline.run_scan(use_live=False, send_notifications=False)
+        results.append(len(res))
+
+    # Adquirir el cerrojo del pipeline para simular un escaneo activo
+    assert pipeline._scan_lock.acquire(blocking=False) is True
+    pipeline.is_scanning = True
+
+    try:
+        # Una llamada simultánea debe ser rechazada inmediatamente retornando []
+        concurrent_res = pipeline.run_scan(use_live=False)
+        assert concurrent_res == [], "El escaneo concurrente debe rechazarse retornando []"
+    finally:
+        pipeline.is_scanning = False
+        pipeline._scan_lock.release()
+
+

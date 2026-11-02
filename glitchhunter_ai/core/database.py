@@ -194,6 +194,8 @@ class PriceDatabase:
                     severity TEXT NOT NULL DEFAULT 'MODERADO',
                     reason TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'ACTIVE',
+                    confidence_score REAL DEFAULT 90.0,
+                    verification_level TEXT DEFAULT 'DETECTADO',
                     first_detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     alert_dispatched INTEGER DEFAULT 1,
@@ -227,6 +229,14 @@ class PriceDatabase:
                 pass
             try:
                 cursor.execute("ALTER TABLE tracked_deals ADD COLUMN card_price REAL;")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE tracked_deals ADD COLUMN confidence_score REAL DEFAULT 90.0;")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE tracked_deals ADD COLUMN verification_level TEXT DEFAULT 'DETECTADO';")
             except Exception:
                 pass
 
@@ -569,6 +579,9 @@ class PriceDatabase:
         severity = str(v_data.get("severity") or "MODERADO")
         discount_pct = float(v_data.get("discount_percentage", 0.0))
         savings_clp = float(v_data.get("absolute_savings_clp", 0.0))
+        confidence_score = float(v_data.get("confidence_score", 90.0))
+        verif_raw = v_data.get("verification_level", "DETECTADO")
+        verification_level = verif_raw.value if hasattr(verif_raw, "value") else str(verif_raw)
         reason = str(v_data.get("reason", "Glitch de precio detectado"))
         if is_card_price and "tarjeta" not in reason.lower():
             reason = f"{reason} (Exclusivo con Tarjeta Tienda)"
@@ -590,12 +603,14 @@ class PriceDatabase:
                     INSERT INTO tracked_deals (
                         product_id, store_id, title, category,
                         normal_price, glitch_price, card_price, discount_pct, savings_clp,
+                        confidence_score, verification_level,
                         severity, reason, status, first_detected_at, last_seen_at,
                         alert_dispatched, alert_id, url, image_url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, 0, ?, ?, ?);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, 0, ?, ?, ?);
                 """, (
                     prod_id, store_id, title, category,
                     normal_price, effective_glitch_price, card_price_val, discount_pct, savings_clp,
+                    confidence_score, verification_level,
                     severity, reason, now_str, now_str,
                     alert_id, url, image_url
                 ))
@@ -606,31 +621,33 @@ class PriceDatabase:
             alert_dispatched = int(row["alert_dispatched"] or 0)
 
             # 1. CASO REACTIVACIÓN:
-            # Si la oferta fue marcada como CORRECTED, EXPIRED o OUT_OF_STOCK previamente,
-            # y ahora vuelve a presentarse como un glitch activo confirmado:
             if old_status in ("CORRECTED", "EXPIRED", "OUT_OF_STOCK"):
                 cursor.execute("""
                     UPDATE tracked_deals
                     SET glitch_price = ?, card_price = ?, savings_clp = ?, discount_pct = ?,
+                        confidence_score = ?, verification_level = ?,
                         severity = ?, reason = ?, status = 'ACTIVE', last_seen_at = ?,
                         alert_id = ?, alert_dispatched = 0
                     WHERE product_id = ?;
                 """, (
                     effective_glitch_price, card_price_val, savings_clp, discount_pct,
+                    confidence_score, verification_level,
                     severity, reason, now_str, alert_id, prod_id
                 ))
                 return True, "REACTIVATED"
 
-            # 2. CASO CAÍDA DE PRECIO AÚN MAYOR (>3% adicional sobre el glitch previo):
+            # 2. CASO CAÍDA DE PRECIO AÚN MAYOR:
             if effective_glitch_price < old_glitch_price * 0.97:
                 cursor.execute("""
                     UPDATE tracked_deals
                     SET glitch_price = ?, card_price = ?, savings_clp = ?, discount_pct = ?,
+                        confidence_score = ?, verification_level = ?,
                         severity = ?, reason = ?, status = 'ACTIVE', last_seen_at = ?,
                         alert_id = ?, alert_dispatched = 0
                     WHERE product_id = ?;
                 """, (
                     effective_glitch_price, card_price_val, savings_clp, discount_pct,
+                    confidence_score, verification_level,
                     severity, reason, now_str, alert_id, prod_id
                 ))
                 return True, "PRICE_DROP"
@@ -826,8 +843,9 @@ class PriceDatabase:
 
     def cleanup_duplicate_price_history(self) -> int:
         """
-        Elimina registros duplicados idénticos en price_history acumulados por escaneos repetidos en el mismo día,
-        conservando una observación diaria de cada precio por producto para preservar profundidad temporal (Hallazgo 4).
+        Elimina únicamente registros con timestamp y precio exactamente duplicados
+        (por ejemplo, por reintentos de red o escrituras concurrentes en el mismo segundo),
+        preservando el 100% de la evolución histórica y de los ciclos de precio en el tiempo (Hallazgo A de Auditoría 4).
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -835,7 +853,7 @@ class PriceDatabase:
                 DELETE FROM price_history 
                 WHERE id NOT IN (
                     SELECT MIN(id) FROM price_history 
-                    GROUP BY product_id, price, substr(timestamp, 1, 10)
+                    GROUP BY product_id, price, timestamp
                 );
             """)
             deleted_count = cursor.rowcount
@@ -861,7 +879,7 @@ class PriceDatabase:
                         t.alert_id AS id,
                         t.product_id,
                         t.severity,
-                        95.0 AS confidence_score,
+                        COALESCE(t.confidence_score, 90.0) AS confidence_score,
                         t.discount_pct,
                         t.savings_clp,
                         t.reason,
@@ -876,7 +894,8 @@ class PriceDatabase:
                         COALESCE(t.card_price, p.card_price) AS card_price,
                         t.normal_price,
                         t.status,
-                        t.last_seen_at
+                        t.last_seen_at,
+                        COALESCE(t.verification_level, 'DETECTADO') AS verification_level
                     FROM tracked_deals t
                     LEFT JOIN products p ON t.product_id = p.id
                     WHERE t.status = 'ACTIVE'
@@ -948,55 +967,33 @@ class PriceDatabase:
             cursor.execute("SELECT COUNT(*) AS cnt FROM products;")
             total_products = cursor.fetchone()["cnt"]
 
-            # Total de ofertas en tracked_deals y activas
-            cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals;")
-            total_tracked = cursor.fetchone()["cnt"]
-
+            # Total de ofertas verdaderamente ACTIVAS en el radar (Hallazgo B de Auditoría 4)
             cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals WHERE status = 'ACTIVE';")
             active_cnt = cursor.fetchone()["cnt"]
 
-            # Conteo histórico en glitch_alerts
+            # total_glitches refleja ESTRICTAMENTE las ofertas vivas en este instante
+            total_glitches = active_cnt
+
+            if active_cnt > 0:
+                cursor.execute("SELECT COALESCE(SUM(savings_clp), 0.0) AS total_savings FROM tracked_deals WHERE status = 'ACTIVE';")
+                accumulated_savings = float(cursor.fetchone()["total_savings"])
+
+                cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals WHERE status = 'ACTIVE' AND severity = 'CRITICO';")
+                critical_glitches = cursor.fetchone()["cnt"]
+
+                cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals WHERE status = 'ACTIVE' AND severity = 'ALTO';")
+                high_glitches = cursor.fetchone()["cnt"]
+            else:
+                accumulated_savings = 0.0
+                critical_glitches = 0
+                high_glitches = 0
+
+            # Conteo histórico all-time independiente
             cursor.execute("SELECT COUNT(*) AS cnt FROM glitch_alerts;")
             historical_alerts_total = cursor.fetchone()["cnt"]
 
             cursor.execute("SELECT COUNT(DISTINCT product_id) AS cnt FROM glitch_alerts;")
             historical_distinct_glitches = cursor.fetchone()["cnt"]
-
-            if total_tracked > 0:
-                # Si existen ofertas rastreadas, total_glitches representa ESTRICTAMENTE las activas
-                total_glitches = active_cnt
-                if active_cnt > 0:
-                    cursor.execute("SELECT COALESCE(SUM(savings_clp), 0.0) AS total_savings FROM tracked_deals WHERE status = 'ACTIVE';")
-                    accumulated_savings = float(cursor.fetchone()["total_savings"])
-
-                    cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals WHERE status = 'ACTIVE' AND severity = 'CRITICO';")
-                    critical_glitches = cursor.fetchone()["cnt"]
-
-                    cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals WHERE status = 'ACTIVE' AND severity = 'ALTO';")
-                    high_glitches = cursor.fetchone()["cnt"]
-                else:
-                    accumulated_savings = 0.0
-                    critical_glitches = 0
-                    high_glitches = 0
-            else:
-                # Caso base de datos recién inicializada (migración)
-                total_glitches = historical_distinct_glitches
-                cursor.execute("""
-                    SELECT COALESCE(SUM(g.savings_clp), 0.0) AS total_savings
-                    FROM glitch_alerts g
-                    INNER JOIN (
-                        SELECT product_id, MAX(rowid) AS max_rowid
-                        FROM glitch_alerts
-                        GROUP BY product_id
-                    ) latest ON g.rowid = latest.max_rowid;
-                """)
-                accumulated_savings = float(cursor.fetchone()["total_savings"])
-
-                cursor.execute("SELECT COUNT(DISTINCT g.product_id) AS cnt FROM glitch_alerts g WHERE g.severity = 'CRITICO';")
-                critical_glitches = cursor.fetchone()["cnt"]
-
-                cursor.execute("SELECT COUNT(DISTINCT g.product_id) AS cnt FROM glitch_alerts g WHERE g.severity = 'ALTO';")
-                high_glitches = cursor.fetchone()["cnt"]
 
             # Tiendas monitoreadas
             cursor.execute("SELECT COUNT(DISTINCT store_id) AS cnt FROM products;")
