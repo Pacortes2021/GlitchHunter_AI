@@ -7,14 +7,19 @@ from typing import Optional, Dict, Any
 
 logger = logging.getLogger("GlitchHunter.StealthClient")
 
-# Intentar importar curl_cffi para máxima evasión anti-bot
+# Intentar importar curl_cffi para máxima evasión anti-bot y requests como fallback
 _CURL_CFFI_AVAILABLE = False
 try:
     from curl_cffi import requests as curl_requests
     _CURL_CFFI_AVAILABLE = True
 except ImportError:
-    import requests as std_requests
+    curl_requests = None
     _CURL_CFFI_AVAILABLE = False
+
+try:
+    import requests as std_requests
+except ImportError:
+    std_requests = None
 
 DEFAULT_CHROME_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -44,15 +49,17 @@ class StealthHTTPClient:
         self._init_session()
 
     def _init_session(self):
-        if self.use_curl_cffi:
+        if self.use_curl_cffi and curl_requests is not None:
             self._session = curl_requests.Session(impersonate=self.impersonate)
             self._session.headers.update(DEFAULT_CHROME_HEADERS)
             logger.debug("StealthHTTPClient inicializado con curl_cffi (impersonate=%s)", self.impersonate)
-        else:
-            import requests as std_requests
+        elif std_requests is not None:
             self._session = std_requests.Session()
             self._session.headers.update(DEFAULT_CHROME_HEADERS)
             logger.warning("curl_cffi no disponible; usando requests estándar con cabeceras Chrome emuladas.")
+        else:
+            self._session = None
+            logger.error("Ni curl_cffi ni requests estándar se encuentran disponibles.")
 
     def get(self, url: str, headers: Optional[Dict[str, str]] = None, timeout: Optional[int] = None, **kwargs) -> Any:
         merged_headers = dict(DEFAULT_CHROME_HEADERS)
@@ -61,14 +68,24 @@ class StealthHTTPClient:
         
         req_timeout = timeout or self.timeout
 
-        if self.use_curl_cffi:
+        if self.use_curl_cffi and curl_requests is not None:
             try:
                 return self._session.get(url, headers=merged_headers, timeout=req_timeout, impersonate=self.impersonate, **kwargs)
             except Exception as e:
                 logger.warning("Fallo en sesión curl_cffi; reintentando petición directa get(%s): %s", url, e)
-                return curl_requests.get(url, headers=merged_headers, timeout=req_timeout, impersonate=self.impersonate, **kwargs)
+                try:
+                    return curl_requests.get(url, headers=merged_headers, timeout=req_timeout, impersonate=self.impersonate, **kwargs)
+                except Exception as e2:
+                    if std_requests is not None:
+                        logger.warning("Fallo en curl_requests directo; fallback a requests estándar get(%s): %s", url, e2)
+                        return std_requests.get(url, headers=merged_headers, timeout=req_timeout, **kwargs)
+                    raise
         else:
-            return self._session.get(url, headers=merged_headers, timeout=req_timeout, **kwargs)
+            if self._session is not None:
+                return self._session.get(url, headers=merged_headers, timeout=req_timeout, **kwargs)
+            elif std_requests is not None:
+                return std_requests.get(url, headers=merged_headers, timeout=req_timeout, **kwargs)
+            raise RuntimeError("No hay cliente HTTP disponible para ejecutar la petición GET.")
 
     def post(self, url: str, data: Any = None, json: Any = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[int] = None, **kwargs) -> Any:
         merged_headers = dict(DEFAULT_CHROME_HEADERS)
@@ -77,14 +94,24 @@ class StealthHTTPClient:
             
         req_timeout = timeout or self.timeout
 
-        if self.use_curl_cffi:
+        if self.use_curl_cffi and curl_requests is not None:
             try:
                 return self._session.post(url, data=data, json=json, headers=merged_headers, timeout=req_timeout, impersonate=self.impersonate, **kwargs)
             except Exception as e:
                 logger.warning("Fallo en sesión curl_cffi; reintentando petición directa post(%s): %s", url, e)
-                return curl_requests.post(url, data=data, json=json, headers=merged_headers, timeout=req_timeout, impersonate=self.impersonate, **kwargs)
+                try:
+                    return curl_requests.post(url, data=data, json=json, headers=merged_headers, timeout=req_timeout, impersonate=self.impersonate, **kwargs)
+                except Exception as e2:
+                    if std_requests is not None:
+                        logger.warning("Fallo en curl_requests directo; fallback a requests estándar post(%s): %s", url, e2)
+                        return std_requests.post(url, data=data, json=json, headers=merged_headers, timeout=req_timeout, **kwargs)
+                    raise
         else:
-            return self._session.post(url, data=data, json=json, headers=merged_headers, timeout=req_timeout, **kwargs)
+            if self._session is not None:
+                return self._session.post(url, data=data, json=json, headers=merged_headers, timeout=req_timeout, **kwargs)
+            elif std_requests is not None:
+                return std_requests.post(url, data=data, json=json, headers=merged_headers, timeout=req_timeout, **kwargs)
+            raise RuntimeError("No hay cliente HTTP disponible para ejecutar la petición POST.")
 
 
 # Instancia singleton para reuso en toda la suite de scrapers

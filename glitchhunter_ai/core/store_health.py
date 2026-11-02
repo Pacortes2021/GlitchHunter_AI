@@ -7,7 +7,7 @@ de cada scraper en tiempo real.
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
@@ -45,7 +45,7 @@ class StoreHealthTracker:
         with self._lock:
             self.register_store(store_id, store_name)
             record = self._stores[store_id]
-            record["last_scan_at"] = datetime.utcnow().isoformat()
+            record["last_scan_at"] = datetime.now(timezone.utc).isoformat()
             record["latency_ms"] = round(latency_ms, 1)
 
             if error:
@@ -75,7 +75,7 @@ class StoreHealthTracker:
 
     def get_matrix(self) -> List[Dict[str, Any]]:
         with self._lock:
-            return list(self._stores.values())
+            return [dict(s) for s in self._stores.values()]
 
 
 # Singleton global de salud de tiendas

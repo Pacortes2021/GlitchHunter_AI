@@ -72,20 +72,30 @@ def generate_direct_add_to_cart_url(store_id: str, product_url: str, product_id:
         # 5. Mercado Libre Chile
         if "mercadolibre" in sid or "mercadolibre.cl" in domain:
             match = re.search(r"(MLC-?\d+)", path, re.IGNORECASE)
-            item_id = match.group(1).replace("-", "") if match else None
+            item_id = match.group(1).replace("-", "").upper() if match else None
+            if not item_id and product_id:
+                m_pid = re.search(r"(MLC-?\d+)", str(product_id), re.IGNORECASE)
+                if m_pid:
+                    item_id = m_pid.group(1).replace("-", "").upper()
             if item_id:
                 return f"https://articulo.mercadolibre.cl/checkout/buyer/comprar-ahora?itemId={item_id}"
             return url
 
         # 6. Paris (Cencosud)
         if "paris" in sid or "paris.cl" in domain:
-            match = re.search(r"-(\d{7,10})\.html", path)
-            sku = match.group(1) if match else None
+            match = re.search(r"-(\d{6,12})\.html", path) or re.search(r"/(\d{6,12})", path)
+            sku = match.group(1) if match else product_id
             if sku:
-                return f"https://www.paris.cl/cart-add?pid={sku}&quantity=1"
+                clean_sku = re.sub(r"[^\d]", "", str(sku))
+                if clean_sku:
+                    return f"https://www.paris.cl/cart-add?pid={clean_sku}&quantity=1"
             return url
 
-        # 7. Tiendas genéricas Shopify (detectadas por /products/ o tiendas como SP Digital / Digitek)
+        # 7. SoloTodo (Meta-comparador): mantiene el enlace original al producto
+        if "solotodo" in sid or "solotodo.cl" in domain:
+            return url
+
+        # 8. Tiendas genéricas Shopify (detectadas por /products/ o tiendas como SP Digital / Digitek)
         if "/products/" in path:
             # URL de compra directa en Shopify
             return f"{parsed.scheme}://{domain}/cart/add?url={urllib.parse.quote(url)}"
