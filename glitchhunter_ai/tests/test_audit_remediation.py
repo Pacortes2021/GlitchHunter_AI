@@ -426,7 +426,7 @@ def test_audit_3_hallazgo_2_demo_mode_notification_isolation(tmp_path):
         assert mock_post.call_count == 0, "No debe realizarse ninguna petición HTTP externa en modo DEMO"
 
     # Probar que NtfyAlertDispatcher y DiscordAlertDispatcher respetan simulation_mode
-    ntfy = NtfyAlertDispatcher(simulation_mode=True)
+    ntfy = NtfyAlertDispatcher(simulation_mode=True, enabled=True, topic="test_topic")
     discord = DiscordAlertDispatcher(simulation_mode=True, webhook_url="https://discord.com/api/webhooks/real/path")
 
     sample_product = ProductItem(
@@ -742,12 +742,13 @@ def test_audit_4_hallazgo_e_calibrated_confidence_and_verification_level(tmp_pat
     )
     alert = pipeline.process_product(item, send_notifications=False)
     assert alert is not None
-    assert alert.verification_level in (VerificationLevel.COMPRABLE, VerificationLevel.VERIFICADO)
+    # El enlace Sniper generado no se valida contra la tienda: nunca debe elevar a COMPRABLE
+    assert alert.verification_level == VerificationLevel.VERIFICADO
 
     # Verificar que el registro en radar refleja el score real
     recent = db.get_recent_glitches()
     assert len(recent) == 1
-    assert recent[0]["verification_level"] in ("COMPRABLE", "VERIFICADO")
+    assert recent[0]["verification_level"] == "VERIFICADO"
     assert recent[0]["confidence_score"] == alert.verdict.confidence_score
 
 

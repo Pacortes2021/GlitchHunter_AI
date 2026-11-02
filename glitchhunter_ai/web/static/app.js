@@ -222,6 +222,8 @@
     const safeCategory = escapeHtml(product.category || 'Tecnología');
     const safeStoreName = escapeHtml(store.name || product.store_name || product.store_id);
     const safeUrl = sanitizeUrl(alert_url || product.url);
+    const rawCartUrl = item.add_to_cart_url ? sanitizeUrl(item.add_to_cart_url) : '#';
+    const safeCartUrl = rawCartUrl !== '#' ? rawCartUrl : '';
     const rawImage = product.image_url ? String(product.image_url).trim() : '';
     const safeImageUrl = (rawImage && /^https?:\/\//i.test(rawImage)) ? sanitizeUrl(rawImage) : FALLBACK_IMAGE;
 
@@ -319,7 +321,7 @@
 
       <!-- Botones de Compra Directo / Sniper 1-Clic -->
       <div>
-        ${item.add_to_cart_url && item.add_to_cart_url !== safeUrl ? `
+        ${safeCartUrl && safeCartUrl !== safeUrl ? `
           <div class="grid grid-cols-2 gap-2">
             <a href="${safeUrl}" 
                target="_blank" 
@@ -328,7 +330,7 @@
               <span>Ver Tienda</span>
               <i data-lucide="external-link" class="w-3 h-3"></i>
             </a>
-            <a href="${item.add_to_cart_url}" 
+            <a href="${safeCartUrl}" 
                target="_blank" 
                rel="noopener noreferrer" 
                class="py-2 px-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs text-center transition flex items-center justify-center gap-1 shadow-sm active:scale-95">

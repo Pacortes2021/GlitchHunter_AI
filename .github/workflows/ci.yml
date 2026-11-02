@@ -27,8 +27,7 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r glitchhunter_ai/requirements.txt
-        pip install beautifulsoup4 curl-cffi pytest
+        pip install -r requirements.txt
 
     - name: Run Test Suite
       run: |

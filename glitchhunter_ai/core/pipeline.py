@@ -178,10 +178,9 @@ class GlitchHuntingPipeline:
         product.add_to_cart_url = sniper_url
 
         # Cadena de Confiabilidad LIVE: Determinar nivel operativo (Punto 4 de Auditoría)
-        direct_checkout_keywords = ("cart", "carro", "checkout", "comprar-ahora", "cart-add")
-        if sniper_url and any(kw in sniper_url for kw in direct_checkout_keywords) and sniper_url != str(product.url):
-            verif_level = VerificationLevel.COMPRABLE
-        elif product.in_stock:
+        # El enlace Sniper se construye localmente a partir de patrones de URL y nunca se valida
+        # contra la tienda, por lo que no basta para declarar la oferta COMPRABLE.
+        if product.in_stock:
             verif_level = VerificationLevel.VERIFICADO
         else:
             verif_level = VerificationLevel.DETECTADO

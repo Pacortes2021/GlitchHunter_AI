@@ -29,7 +29,7 @@ class VerificationLevel(str, Enum):
     """
     DETECTADO = "DETECTADO"    # Anomalía de precio capturada por scraper o catálogo
     VERIFICADO = "VERIFICADO"  # Confirmado en stock y vigente en el retail
-    COMPRABLE = "COMPRABLE"    # Enlace directo de compra instantánea (Sniper 1-Clic) validado
+    COMPRABLE = "COMPRABLE"    # Reservado: requiere validar el enlace de compra contra la tienda (hoy no se asigna)
 
 
 class ProductItem(BaseModel):
