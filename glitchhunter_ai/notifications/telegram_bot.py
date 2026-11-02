@@ -212,9 +212,14 @@ class TelegramAlertDispatcher:
             f"🔥 **Descuento:** {discount_percentage:.1f}%",
             f"💰 **Ahorro Directo:** ${savings:,.0f} CLP",
             f"🧠 **Certeza IA:** {confidence_score:.0f}% ({reason})",
+        ]
+        if getattr(alert, "market_median_price", None):
+            match_str = f" por {alert.market_matched_model}" if alert.market_matched_model else (" vía SoloTodo" if alert.market_match_method == "solotodo" else "")
+            lines.append(f"🌐 **Ref. Mercado:** ${alert.market_median_price:,.0f} CLP ({alert.market_stores_count} tiendas{match_str})".replace(",", "."))
+        lines.extend([
             "",
             "⚠️ *Aviso de stock limitado. Comprar antes de corrección manual del retailer.*",
-        ]
+        ])
 
         return "\n".join(lines)
 
@@ -246,9 +251,14 @@ class TelegramAlertDispatcher:
             f"🔥 <b>Descuento:</b> {discount_percentage:.1f}%",
             f"💰 <b>Ahorro Directo:</b> ${savings:,.0f} CLP",
             f"🧠 <b>Certeza IA:</b> {confidence_score:.0f}% ({reason})",
+        ]
+        if getattr(alert, "market_median_price", None):
+            match_str = f" por {html.escape(str(alert.market_matched_model))}" if alert.market_matched_model else (" vía SoloTodo" if alert.market_match_method == "solotodo" else "")
+            lines.append(f"🌐 <b>Ref. Mercado:</b> ${alert.market_median_price:,.0f} CLP ({alert.market_stores_count} tiendas{match_str})".replace(",", "."))
+        lines.extend([
             "",
             "⚠️ <i>Aviso de stock limitado. Comprar antes de corrección manual del retailer.</i>",
-        ]
+        ])
 
         return "\n".join(lines)
 

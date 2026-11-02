@@ -327,6 +327,11 @@ def format_glitch_record(row: Dict[str, Any]) -> Dict[str, Any]:
         "alert_url": prod_url,
         "add_to_cart_url": sniper_url,
         "is_watchlist_match": is_watchlist,
+        "market_median_price": float(row["market_median_price"]) if row.get("market_median_price") is not None and float(row["market_median_price"]) > 0 else None,
+        "market_discount_pct": float(row["market_discount_pct"]) if row.get("market_discount_pct") is not None else None,
+        "market_stores_count": int(row.get("market_stores_count") or 0),
+        "market_match_method": row.get("market_match_method"),
+        "market_matched_model": row.get("market_matched_model"),
         "telegram_sent": bool(row.get("telegram_sent") or False),
         "product": {
             "id": prod_id,

@@ -119,6 +119,12 @@ class GlitchVerdict(BaseModel):
     is_fake_inflation: bool = Field(default=False, description="True si el precio normal fue inflado artificialmente antes")
     semantic_check: SemanticClassificationResult = Field(..., description="Desglose del análisis semántico")
     verification_level: VerificationLevel = Field(default=VerificationLevel.DETECTADO, description="Nivel en la cadena de confiabilidad")
+    market_median_price: Optional[float] = Field(default=None, description="Precio mediano en tiendas competidoras con stock")
+    market_normal_median_price: Optional[float] = Field(default=None, description="Precio normal mediano en tiendas competidoras")
+    market_discount_pct: Optional[float] = Field(default=None, description="Porcentaje de descuento respecto a la mediana del mercado")
+    market_stores_count: int = Field(default=0, description="Cantidad de tiendas competidoras con stock")
+    market_match_method: Optional[str] = Field(default=None, description="Método de emparejamiento ('solotodo' o 'model_code')")
+    market_matched_model: Optional[str] = Field(default=None, description="Código de modelo exacto emparejado")
     reason: str = Field(..., description="Explicación detallada del veredicto para el usuario / log")
 
 
@@ -136,6 +142,11 @@ class GlitchAlert(BaseModel):
     add_to_cart_url: Optional[str] = Field(default=None, description="URL directa para compra Sniper en 1 clic")
     verification_level: VerificationLevel = Field(default=VerificationLevel.DETECTADO, description="Nivel en la cadena de confiabilidad: DETECTADO, VERIFICADO o COMPRABLE")
     is_watchlist_match: bool = Field(default=False, description="True si coincide con palabras clave monitoreadas por el usuario")
+    market_median_price: Optional[float] = Field(default=None, description="Precio mediano de referencia de mercado")
+    market_discount_pct: Optional[float] = Field(default=None, description="Descuento respecto al mercado")
+    market_stores_count: int = Field(default=0, description="Cantidad de tiendas competidoras consideradas")
+    market_match_method: Optional[str] = Field(default=None, description="Método de emparejamiento ('solotodo' o 'model_code')")
+    market_matched_model: Optional[str] = Field(default=None, description="Código de modelo emparejado")
     telegram_sent: bool = Field(default=False, description="Indica si la alerta ya fue despachada por Telegram")
 
 
