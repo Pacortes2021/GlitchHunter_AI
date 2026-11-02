@@ -61,8 +61,8 @@ class GlitchHuntingPipeline:
         """
         # Fase 0: Verificación de Stock (Productos sin stock no generan alertas)
         if not product.in_stock:
-            if hasattr(self.db, "check_and_update_deal_status"):
-                self.db.check_and_update_deal_status(product)
+            if hasattr(self.db, "mark_deal_out_of_stock") and self.db.get_deal_status(product.id) == "ACTIVE":
+                self.db.mark_deal_out_of_stock(product.id)
             logger.debug(f"📦 [Sin Stock Omitido] {product.title} ({product.id}) no tiene stock disponible.")
             return None
 
@@ -70,11 +70,19 @@ class GlitchHuntingPipeline:
         baseline_price = self.db.get_baseline_price(product.id, days=30)
         self.db.upsert_product(product)
 
-        # Fase 1.5: Verificación de corrección de ofertas activas previas
-        # Si este producto ya estaba en tracked_deals y subió de precio, marcarlo como CORRECTED inmediatamente
-        if hasattr(self.db, "check_and_update_deal_status"):
-            prior_status = self.db.check_and_update_deal_status(product)
-            if prior_status == "CORRECTED":
+        # Fase 2: Detector Matemático de Anomalías (Porcentaje y Missing Zero Bug)
+        math_eval = self.math_detector.evaluate(product, baseline_price=baseline_price)
+        is_candidate = (
+            math_eval.get("is_glitch_candidate")
+            or math_eval.get("is_math_glitch")
+            or math_eval.get("is_suspicious")
+        )
+
+        if not is_candidate:
+            # Si el producto estaba ACTIVO en el radar y el precio ya no es glitch,
+            # la tienda corrigió el precio (volvió a precio normal / liquidación común)
+            if self.db.get_deal_status(product.id) == "ACTIVE":
+                self.db.mark_deal_corrected(product.id, product.best_price)
                 logger.info(
                     f"🔄 [Oferta Corregida] {product.title} ({product.id}) subió a ${product.best_price:,.0f} CLP. "
                     f"Estado en radar transicionado a CORRECTED."
@@ -88,17 +96,6 @@ class GlitchHuntingPipeline:
                         })
                     except Exception:
                         pass
-                return None
-
-        # Fase 2: Detector Matemático de Anomalías (Porcentaje y Missing Zero Bug)
-        math_eval = self.math_detector.evaluate(product, baseline_price=baseline_price)
-        is_candidate = (
-            math_eval.get("is_glitch_candidate")
-            or math_eval.get("is_math_glitch")
-            or math_eval.get("is_suspicious")
-        )
-
-        if not is_candidate:
             return None
 
         # Fase 3: Verificación de Inflación Artificial (Fake CyberDay Deals)
@@ -198,19 +195,28 @@ class GlitchHuntingPipeline:
             logger.warning(f"No se pudo registrar alerta en BD: {e}")
 
         # Despacho por Telegram (Modo Simulación o Live)
+        telegram_ok = False
         try:
             dispatch_ok = self.telegram_dispatcher.send_alert(alert)
-            if bool(dispatch_ok):
+            telegram_ok = bool(dispatch_ok)
+            if telegram_ok:
                 self.db.mark_telegram_sent(alert.alert_id)
                 alert.telegram_sent = True
         except Exception as e:
             logger.error(f"Error despachando alerta de Telegram para {alert_id}: {e}")
 
         # Despacho push a celular vía ntfy (con apertura automática de URL al presionar)
+        ntfy_ok = False
         try:
-            self.ntfy_dispatcher.send_alert(alert)
+            ntfy_ok = bool(self.ntfy_dispatcher.send_alert(alert))
         except Exception as e:
             logger.error(f"Error despachando notificación push ntfy para {alert_id}: {e}")
+
+        # Confirmación de despacho en el radar tracked_deals
+        is_sim = getattr(self.telegram_dispatcher, "is_simulation", False)
+        if telegram_ok or ntfy_ok or is_sim:
+            if hasattr(self.db, "mark_deal_dispatched"):
+                self.db.mark_deal_dispatched(product.id)
 
         # Callback a clientes WebSocket si está conectado
         if self.on_glitch_callback:

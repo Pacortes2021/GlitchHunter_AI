@@ -122,6 +122,85 @@ def test_audit_issue_3_corrected_price_transitions_to_corrected_state(tmp_path):
     active_glitches_after = db.get_recent_glitches()
     assert not any(g["product_id"] == "audit-macbook-01" for g in active_glitches_after)
 
+    # 3. 🎯 HALLAZGO AUDITORÍA 2: Reactivación de la oferta (vuelve a bajar a $89.990)
+    # Debe reactivarse de CORRECTED -> ACTIVE y emitir una nueva alerta
+    reactivated_item = ProductItem(
+        id="audit-macbook-01",
+        store_id="falabella",
+        store_name="Falabella Chile",
+        title="Apple MacBook Pro 16 M3 Max 36GB 1TB",
+        category="notebooks",
+        current_price=89990.0,
+        normal_price=899990.0,
+        url="https://falabella.com/p/audit-01",
+        in_stock=True,
+    )
+
+    alert_reactivated = pipeline.process_product(reactivated_item)
+    assert alert_reactivated is not None, "La reactivación de una oferta corregida debe emitir alerta"
+    assert db.get_deal_status("audit-macbook-01") == "ACTIVE"
+
+    # Ahora sí debe volver a aparecer en el radar
+    active_glitches_reborn = db.get_recent_glitches()
+    assert any(g["product_id"] == "audit-macbook-01" for g in active_glitches_reborn)
+
+
+def test_audit_issue_3_partial_price_increase_retains_active_status(tmp_path):
+    """
+    3. Verifica que una subida de precio parcial que AÚN conserve un descuento masivo
+    (ej: de $10.000 a $15.000 sobre un producto de $100.000 = 85% de ahorro)
+    permanezca como ACTIVE y NO se marque erróneamente como CORRECTED.
+    """
+    db_file = tmp_path / "test_partial_increase.db"
+    db = PriceDatabase(db_path=db_file)
+    db.init_db()
+
+    pipeline = GlitchHuntingPipeline(db=db)
+
+    # 1. Producto detectado inicialmente a $10.000 (90% OFF)
+    deal_item = ProductItem(
+        id="partial-inc-01",
+        store_id="ripley",
+        store_name="Ripley Chile",
+        title="Audífonos Sony WH-1000XM5 Cancelación Ruido",
+        category="tecnologia",
+        current_price=10000.0,
+        normal_price=100000.0,
+        url="https://ripley.cl/p/sony-xm5",
+        in_stock=True,
+    )
+
+    alert_1 = pipeline.process_product(deal_item)
+    assert alert_1 is not None
+    assert db.get_deal_status("partial-inc-01") == "ACTIVE"
+
+    # 2. El precio sube a $15.000 (+50% de subida, pero 85% de descuento)
+    deal_item_step2 = ProductItem(
+        id="partial-inc-01",
+        store_id="ripley",
+        store_name="Ripley Chile",
+        title="Audífonos Sony WH-1000XM5 Cancelación Ruido",
+        category="tecnologia",
+        current_price=15000.0,
+        normal_price=100000.0,
+        url="https://ripley.cl/p/sony-xm5",
+        in_stock=True,
+    )
+
+    alert_2 = pipeline.process_product(deal_item_step2)
+    # No emite alerta duplicada innecesaria (es ajuste menor)
+    assert alert_2 is None
+
+    # Pero CRUCIAL: El estado DEBE SEGUIR SIENDO 'ACTIVE', NUNCA 'CORRECTED'!
+    status = db.get_deal_status("partial-inc-01")
+    assert status == "ACTIVE", f"Se esperaba ACTIVE pero se obtuvo {status}"
+
+    # El precio registrado en el radar debe reflejar los $15.000
+    recent = db.get_recent_glitches()
+    target_row = next((g for g in recent if g["product_id"] == "partial-inc-01"), None)
+    assert target_row is not None
+    assert float(target_row["current_price"]) == 15000.0
+
 
 def test_audit_issue_3_stale_deals_auto_expiration(tmp_path):
     """3. Verifica que ofertas no vistas durante más de 12 horas expiren automáticamente."""
@@ -216,21 +295,35 @@ def test_audit_issue_5_card_price_recorded_accurately(tmp_path):
 
     with db.get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT glitch_price, reason FROM tracked_deals WHERE product_id = 'card-test-01';")
+        cursor.execute("SELECT glitch_price, reason, card_price FROM tracked_deals WHERE product_id = 'card-test-01';")
         row = cursor.fetchone()
         assert row is not None
         assert float(row["glitch_price"]) == 89990.0, "glitch_price debe ser el precio tarjeta reducido"
+        assert float(row["card_price"]) == 89990.0, "card_price en tracked_deals debe guardar el precio tarjeta"
         assert "Tarjeta" in row["reason"]
 
+    # Verificar que get_recent_glitches expone card_price para el frontend
+    recent_deals = db.get_recent_glitches()
+    card_deal_radar = next((g for g in recent_deals if g["product_id"] == "card-test-01"), None)
+    assert card_deal_radar is not None
+    assert card_deal_radar["card_price"] == 89990.0, "get_recent_glitches debe exponer card_price fidedigno"
 
-def test_audit_issue_6_telegram_dispatch_failure_does_not_mark_sent(tmp_path):
-    """6. Verifica que si el despacho de Telegram falla, NO se marque telegram_sent en la base de datos."""
+
+def test_audit_issue_6_telegram_dispatch_failure_and_retry(tmp_path):
+    """
+    6. Verifica que si el despacho de Telegram falla:
+    - glitch_alerts.telegram_sent es 0.
+    - tracked_deals.alert_dispatched es 0 (no 1).
+    - get_recent_glitches().telegram_sent es False (no True).
+    - En el siguiente escaneo, el sistema reintenta el despacho exitosamente.
+    """
     db_file = tmp_path / "test_tg.db"
     db = PriceDatabase(db_path=db_file)
     db.init_db()
 
     mock_dispatcher = MagicMock()
-    # Simula fallo HTTP o de red en Telegram
+    mock_dispatcher.is_simulation = False
+    # 1. Simular fallo HTTP o de red en Telegram
     mock_dispatcher.send_alert.return_value = False
 
     pipeline = GlitchHuntingPipeline(db=db, telegram_dispatcher=mock_dispatcher)
@@ -249,10 +342,32 @@ def test_audit_issue_6_telegram_dispatch_failure_does_not_mark_sent(tmp_path):
 
     alert = pipeline.process_product(item)
     assert alert is not None
-    # No debe haberse marcado como enviado
+
     with db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT telegram_sent FROM glitch_alerts WHERE product_id = 'tg-fail-01';")
         row = cursor.fetchone()
         assert row is not None
-        assert row["telegram_sent"] == 0
+        assert row["telegram_sent"] == 0, "glitch_alerts.telegram_sent debe ser 0 si falló"
+
+        cursor.execute("SELECT alert_dispatched FROM tracked_deals WHERE product_id = 'tg-fail-01';")
+        t_row = cursor.fetchone()
+        assert t_row is not None
+        assert t_row["alert_dispatched"] == 0, "tracked_deals.alert_dispatched debe ser 0 si falló"
+
+    # Comprobar que el radar reporta telegram_sent como False
+    recent = db.get_recent_glitches()
+    tg_deal = next((g for g in recent if g["product_id"] == "tg-fail-01"), None)
+    assert tg_deal is not None
+    assert tg_deal["telegram_sent"] is False, "get_recent_glitches debe reportar False si no se despachó"
+
+    # 2. Reintento en siguiente ciclo: ahora Telegram responde exitosamente
+    mock_dispatcher.send_alert.return_value = True
+    alert_retry = pipeline.process_product(item)
+    assert alert_retry is not None, "El revisor debe reintentar el despacho si el anterior falló"
+
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT alert_dispatched FROM tracked_deals WHERE product_id = 'tg-fail-01';")
+        t_row_after = cursor.fetchone()
+        assert t_row_after["alert_dispatched"] == 1, "alert_dispatched debe confirmarse en 1 tras despacho exitoso"

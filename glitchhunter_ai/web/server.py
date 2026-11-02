@@ -263,6 +263,7 @@ def format_glitch_record(row: Dict[str, Any]) -> Dict[str, Any]:
         "origin": "SIMULACION" if "test" in (row.get("product_id") or "").lower() or "sim" in (row.get("product_id") or "").lower() or row.get("product_id", "").startswith(("fal-", "rip-", "par-", "lid-", "mlc-", "pcf-")) else "EN_VIVO",
         "pipeline_latency_ms": 14,
         "alert_url": row.get("url") or "",
+        "telegram_sent": bool(row.get("telegram_sent") or False),
         "product": {
             "id": row.get("product_id") or "",
             "store_id": store_id,
@@ -271,7 +272,7 @@ def format_glitch_record(row: Dict[str, Any]) -> Dict[str, Any]:
             "category": row.get("category") or "General",
             "current_price": current_price,
             "normal_price": normal_price,
-            "card_price": float(row["card_price"]) if row.get("card_price") is not None else None,
+            "card_price": float(row["card_price"]) if row.get("card_price") is not None and float(row["card_price"]) > 0 else None,
             "url": row.get("url") or "",
             "image_url": row.get("image_url") or "",
             "in_stock": True,
@@ -374,11 +375,12 @@ async def get_deals(
 @app.post("/api/scan")
 async def trigger_scan(use_live: bool = USE_LIVE_SCRAPING):
     """
-    Dispara un ciclo de escaneo inmediato a través de los scrapers retail.
-    Evalúa anomalías matemáticas, filtra carcasas con IA y difunde nuevos hallazgos.
+    Dispara un ciclo de escaneo inmediato descargado en un hilo de trabajo (run_in_executor)
+    para evitar bloquear el event loop principal del servidor web.
     """
     logger.info(f"⚡ Escaneo manual solicitado vía API (use_live={use_live})")
-    detected = pipeline.run_scan(use_live=use_live)
+    loop = asyncio.get_running_loop()
+    detected = await loop.run_in_executor(None, pipeline.run_scan, use_live)
 
     # Broadcast de cada nuevo glitch por WebSockets
     for alert in detected:

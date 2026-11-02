@@ -225,6 +225,10 @@ class PriceDatabase:
                 cursor.execute("ALTER TABLE products ADD COLUMN in_stock INTEGER DEFAULT 1;")
             except Exception:
                 pass
+            try:
+                cursor.execute("ALTER TABLE tracked_deals ADD COLUMN card_price REAL;")
+            except Exception:
+                pass
 
             cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals;")
             if cursor.fetchone()["cnt"] == 0:
@@ -507,10 +511,11 @@ class PriceDatabase:
         card_price = prod_data.get("card_price")
 
         # Determinar el precio efectivo de glitch (considerando precio exclusivo con tarjeta)
+        card_price_val = float(card_price) if (card_price is not None and float(card_price) > 0) else None
         effective_glitch_price = current_price
         is_card_price = False
-        if card_price is not None and 0.0 < float(card_price) < current_price:
-            effective_glitch_price = float(card_price)
+        if card_price_val is not None and card_price_val < current_price:
+            effective_glitch_price = card_price_val
             is_card_price = True
 
         if hasattr(verdict, "model_dump"):
@@ -541,54 +546,86 @@ class PriceDatabase:
             row = cursor.fetchone()
 
             if not row:
-                # 🎯 Oferta genuinamente NUEVA: registrar y habilitar notificación única
+                # 🎯 Oferta genuinamente NUEVA: registrar con alert_dispatched=0 para confirmar despacho
                 cursor.execute("""
                     INSERT INTO tracked_deals (
                         product_id, store_id, title, category,
-                        normal_price, glitch_price, discount_pct, savings_clp,
+                        normal_price, glitch_price, card_price, discount_pct, savings_clp,
                         severity, reason, status, first_detected_at, last_seen_at,
                         alert_dispatched, alert_id, url, image_url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, 1, ?, ?, ?);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, 0, ?, ?, ?);
                 """, (
                     prod_id, store_id, title, category,
-                    normal_price, effective_glitch_price, discount_pct, savings_clp,
+                    normal_price, effective_glitch_price, card_price_val, discount_pct, savings_clp,
                     severity, reason, now_str, now_str,
                     alert_id, url, image_url
                 ))
                 return True, "NEW_DEAL"
 
             old_glitch_price = float(row["glitch_price"])
+            old_status = str(row["status"])
+            alert_dispatched = int(row["alert_dispatched"] or 0)
 
-            # 1. Si la tienda corrigió el precio (subió a precio normal o subió > 40% sobre el glitch anterior)
-            if (normal_price > 0 and effective_glitch_price >= normal_price * 0.8) or (effective_glitch_price >= old_glitch_price * 1.4):
+            # 1. CASO REACTIVACIÓN:
+            # Si la oferta fue marcada como CORRECTED, EXPIRED o OUT_OF_STOCK previamente,
+            # y ahora vuelve a presentarse como un glitch activo confirmado:
+            if old_status in ("CORRECTED", "EXPIRED", "OUT_OF_STOCK"):
                 cursor.execute("""
                     UPDATE tracked_deals
-                    SET status = 'CORRECTED', last_seen_at = ?
+                    SET glitch_price = ?, card_price = ?, savings_clp = ?, discount_pct = ?,
+                        severity = ?, reason = ?, status = 'ACTIVE', last_seen_at = ?,
+                        alert_id = ?, alert_dispatched = 0
                     WHERE product_id = ?;
-                """, (now_str, prod_id))
-                return False, "CORRECTED"
+                """, (
+                    effective_glitch_price, card_price_val, savings_clp, discount_pct,
+                    severity, reason, now_str, alert_id, prod_id
+                ))
+                return True, "REACTIVATED"
 
-            # 2. Si el precio bajó aún más (más de 3% adicional sobre el precio del glitch previo)
+            # 2. CASO CAÍDA DE PRECIO AÚN MAYOR (>3% adicional sobre el glitch previo):
             if effective_glitch_price < old_glitch_price * 0.97:
                 cursor.execute("""
                     UPDATE tracked_deals
-                    SET glitch_price = ?, savings_clp = ?, discount_pct = ?,
+                    SET glitch_price = ?, card_price = ?, savings_clp = ?, discount_pct = ?,
                         severity = ?, reason = ?, status = 'ACTIVE', last_seen_at = ?,
-                        alert_id = ?
+                        alert_id = ?, alert_dispatched = 0
                     WHERE product_id = ?;
                 """, (
-                    effective_glitch_price, savings_clp, discount_pct,
+                    effective_glitch_price, card_price_val, savings_clp, discount_pct,
                     severity, reason, now_str, alert_id, prod_id
                 ))
                 return True, "PRICE_DROP"
 
-            # 3. Oferta ya conocida y activa: actualizar presencia silenciosamente
-            # CERO NOTIFICACIONES, CERO SPAM
+            # 3. CASO REINTENTO DE DESPACHO PENDIENTE O FALLIDO:
+            # Si el deal está activo pero el despacho anterior no se confirmó, reintentar alertar
+            if alert_dispatched == 0:
+                cursor.execute("""
+                    UPDATE tracked_deals
+                    SET last_seen_at = ?, glitch_price = ?, card_price = ?, status = 'ACTIVE'
+                    WHERE product_id = ?;
+                """, (now_str, effective_glitch_price, card_price_val, prod_id))
+                return True, "RETRY_DISPATCH"
+
+            # 4. CASO AJUSTE MENOR DE PRECIO (subió levemente pero el detector validó que SIGUE siendo un glitch masivo):
+            if abs(effective_glitch_price - old_glitch_price) > 0.01:
+                cursor.execute("""
+                    UPDATE tracked_deals
+                    SET glitch_price = ?, card_price = ?, savings_clp = ?, discount_pct = ?,
+                        last_seen_at = ?, status = 'ACTIVE'
+                    WHERE product_id = ?;
+                """, (
+                    effective_glitch_price, card_price_val, savings_clp, discount_pct,
+                    now_str, prod_id
+                ))
+                return False, "PRICE_ADJUSTED"
+
+            # 5. CASO OFERTA YA CONOCIDA Y NOTIFICADA AL MISMO PRECIO:
+            # Actualizar last_seen_at silenciosamente (cero spam)
             cursor.execute("""
                 UPDATE tracked_deals
-                SET last_seen_at = ?, status = 'ACTIVE'
+                SET last_seen_at = ?, status = 'ACTIVE', card_price = COALESCE(?, card_price)
                 WHERE product_id = ?;
-            """, (now_str, prod_id))
+            """, (now_str, card_price_val, prod_id))
             return False, "ALREADY_ACTIVE"
 
     def check_and_update_deal_status(
@@ -633,8 +670,8 @@ class PriceDatabase:
                     """, (now_str, prod_id))
                 return "OUT_OF_STOCK"
 
-            # Si el precio subió a >= 80% del precio de lista o subió >= 40% sobre el precio de glitch detectado:
-            if (normal_price > 0 and best_price >= normal_price * 0.8) or (best_price >= old_glitch_price * 1.4):
+            # Si el precio subió a >= 80% del precio de lista, volvió a la normalidad:
+            if normal_price > 0 and best_price >= normal_price * 0.8:
                 if current_status == "ACTIVE":
                     cursor.execute("""
                         UPDATE tracked_deals
@@ -654,15 +691,38 @@ class PriceDatabase:
             return row["status"] if row else None
 
     def mark_deal_corrected(self, product_id: str, new_price: Optional[float] = None) -> bool:
-        """Marca manualmente o por pipeline una oferta como 'CORRECTED'."""
+        """Marca una oferta activa como 'CORRECTED' al comprobar que el precio volvió a la normalidad."""
         now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE tracked_deals
                 SET status = 'CORRECTED', last_seen_at = ?
-                WHERE product_id = ?;
+                WHERE product_id = ? AND status = 'ACTIVE';
             """, (now_str, product_id))
+            return cursor.rowcount > 0
+
+    def mark_deal_out_of_stock(self, product_id: str) -> bool:
+        """Marca una oferta activa como 'OUT_OF_STOCK' al comprobar que no tiene stock."""
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE tracked_deals
+                SET status = 'OUT_OF_STOCK', last_seen_at = ?
+                WHERE product_id = ? AND status = 'ACTIVE';
+            """, (now_str, product_id))
+            return cursor.rowcount > 0
+
+    def mark_deal_dispatched(self, product_id: str) -> bool:
+        """Marca una oferta en tracked_deals como despachada exitosamente por canales de alerta."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE tracked_deals
+                SET alert_dispatched = 1
+                WHERE product_id = ?;
+            """, (product_id,))
             return cursor.rowcount > 0
 
     def expire_stale_deals(self, max_hours: int = 12) -> int:
@@ -766,17 +826,19 @@ class PriceDatabase:
                         t.savings_clp,
                         t.reason,
                         t.first_detected_at AS timestamp,
-                        1 AS telegram_sent,
+                        t.alert_dispatched AS telegram_sent,
                         t.store_id,
                         t.title,
                         t.category,
                         t.url,
                         t.image_url,
                         t.glitch_price AS current_price,
+                        COALESCE(t.card_price, p.card_price) AS card_price,
                         t.normal_price,
                         t.status,
                         t.last_seen_at
                     FROM tracked_deals t
+                    LEFT JOIN products p ON t.product_id = p.id
                     WHERE t.status = 'ACTIVE'
                     ORDER BY t.first_detected_at DESC
                     LIMIT ?;
@@ -785,7 +847,8 @@ class PriceDatabase:
                 results = []
                 for row in rows:
                     item = dict(row)
-                    item["telegram_sent"] = bool(item.get("telegram_sent", 1))
+                    item["telegram_sent"] = bool(item.get("telegram_sent", 0))
+                    item["card_price"] = float(item["card_price"]) if item.get("card_price") is not None and float(item["card_price"]) > 0 else None
                     results.append(item)
                 return results
 
@@ -807,6 +870,7 @@ class PriceDatabase:
                     p.url,
                     p.image_url,
                     p.current_price,
+                    p.card_price,
                     p.normal_price
                 FROM glitch_alerts g
                 INNER JOIN (
@@ -824,6 +888,7 @@ class PriceDatabase:
             for row in rows:
                 item = dict(row)
                 item["telegram_sent"] = bool(item.get("telegram_sent", 0))
+                item["card_price"] = float(item["card_price"]) if item.get("card_price") is not None and float(item["card_price"]) > 0 else None
                 results.append(item)
             return results
 

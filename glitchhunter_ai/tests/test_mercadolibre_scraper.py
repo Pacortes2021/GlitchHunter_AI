@@ -47,7 +47,12 @@ def test_mercadolibre_simulated_catalog():
 
 def test_mercadolibre_live_fallback():
     scraper = MercadoLibreScraper(request_timeout=2)
-    # Debe retornar items válidos ya sea por live o fallback seguro
-    catalog = scraper.fetch_catalog(use_live=True)
-    assert isinstance(catalog, list)
-    assert len(catalog) > 0
+    # 1. En modo simulación (use_live=False) retorna el catálogo simulado completo
+    sim_catalog = scraper.fetch_catalog(use_live=False)
+    assert isinstance(sim_catalog, list)
+    assert len(sim_catalog) >= 8
+
+    # 2. En modo live (use_live=True) retorna lista de productos reales o [] si la red/WAF está bloqueada
+    # Garantiza la regla de oro: NUNCA inyectar mocks sintéticos cuando se solicita LIVE
+    live_catalog = scraper.fetch_catalog(use_live=True)
+    assert isinstance(live_catalog, list)

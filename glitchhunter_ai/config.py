@@ -45,8 +45,9 @@ NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "glitchhunter_pablo_chile")
 
 # Configuración del Servidor Web
-WEB_HOST = "127.0.0.1"
-WEB_PORT = 8080
+WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
+WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
+API_AUTH_KEY = os.getenv("API_AUTH_KEY", "")  # Token de acceso opcional para endpoints administrativos (/api/scan, etc.)
 
 # Intervalo del Escaneo Automático en Segundo Plano (en segundos)
 # 60s = cada 1 minuto (solicitado para monitoreo rápido y oportuno)
