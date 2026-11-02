@@ -53,7 +53,7 @@ def create_dummy_alert(severity=GlitchSeverity.CRITICO, is_missing_zero=True):
 
 
 def test_ntfy_format_title_and_body():
-    dispatcher = NtfyAlertDispatcher(topic="test_topic")
+    dispatcher = NtfyAlertDispatcher(topic="test_topic", enabled=True)
     alert = create_dummy_alert()
 
     title = dispatcher.format_title(alert)
@@ -69,7 +69,7 @@ def test_ntfy_format_title_and_body():
 
 
 def test_ntfy_send_alert_mocked():
-    dispatcher = NtfyAlertDispatcher(topic="test_topic")
+    dispatcher = NtfyAlertDispatcher(topic="test_topic", enabled=True)
     alert = create_dummy_alert()
 
     with patch("requests.post") as mock_post:

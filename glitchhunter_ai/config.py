@@ -20,8 +20,8 @@ except ImportError:
     pass
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR = Path(os.getenv("GLITCHHUNTER_DATA_DIR") or BASE_DIR / "data")  # Sobrescribible para aislar tests
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "glitchhunter.db"
 
 # Umbrales de Detección de Glitch
@@ -40,15 +40,18 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "@glitchhunter_chile_alerts")
 TELEGRAM_SIMULATION_MODE = os.getenv("TELEGRAM_SIMULATION_MODE", "true").lower() in ("true", "1", "yes")
 
 # Configuración de Notificaciones Push Móviles vía ntfy (https://ntfy.sh)
-NTFY_ENABLED = os.getenv("NTFY_ENABLED", "true").lower() in ("true", "1", "yes")
+# Los topics de ntfy.sh son públicos: cualquiera que conozca el nombre puede leerlos o publicar.
+# No hay topic por defecto; define uno largo y aleatorio en .env (ntfy queda desactivado sin él).
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
-NTFY_TOPIC = os.getenv("NTFY_TOPIC", "glitchhunter_pablo_chile")
+NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
+NTFY_ENABLED = os.getenv("NTFY_ENABLED", "true").lower() in ("true", "1", "yes") and bool(NTFY_TOPIC)
 
 # Configuración del Servidor Web
 WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
 WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 API_AUTH_KEY = os.getenv("API_AUTH_KEY", "")  # Token de acceso opcional para endpoints administrativos (/api/scan, etc.)
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")  # Orígenes permitidos (ej: "http://localhost:3000,https://midominio.com" o "*")
+# Orígenes permitidos (ej: "http://localhost:3000,https://midominio.com"). Por defecto solo el propio dashboard.
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", f"http://127.0.0.1:{WEB_PORT},http://localhost:{WEB_PORT}")
 ALLOW_TEST_GLITCH = os.getenv("ALLOW_TEST_GLITCH", "true").lower() in ("true", "1", "yes")
 
 # Configuración de Discord Webhook

@@ -76,8 +76,8 @@ class NtfyAlertDispatcher:
         Al tocar la notificación en tu móvil se abre de inmediato la URL del producto.
         En modo simulación o para alertas de test, no emite peticiones HTTP reales.
         """
-        if not self.enabled:
-            logger.debug("Notificaciones ntfy desactivadas en configuración.")
+        if not self.enabled or not self.topic:
+            logger.debug("Notificaciones ntfy desactivadas en configuración (o sin NTFY_TOPIC).")
             return False
 
         p = alert.product

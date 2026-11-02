@@ -7,6 +7,7 @@ Provee:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -178,10 +179,13 @@ async def lifespan(app: FastAPI):
     db.init_db()
 
     # Si la base de datos está vacía, correr un primer escaneo en segundo plano para poblar el radar
+    # Si la base de datos está vacía, el primer escaneo corre en un hilo de trabajo
+    # para no bloquear el arranque del servidor mientras se scrapean las tiendas
     stats = db.get_stats()
+    initial_scan = None
     if stats.get("total_products", 0) == 0:
         logger.info("📡 Inicializando radar: ejecutando primer escaneo LIVE de catálogo retail chileno...")
-        pipeline.run_scan(use_live=USE_LIVE_SCRAPING)
+        initial_scan = MAIN_EVENT_LOOP.run_in_executor(None, pipeline.run_scan, USE_LIVE_SCRAPING)
 
     # Iniciar la tarea de escaneo periódico en segundo plano
     scanner_task = asyncio.create_task(background_scanner_loop())
@@ -194,6 +198,9 @@ async def lifespan(app: FastAPI):
         await scanner_task
     except asyncio.CancelledError:
         pass
+    if initial_scan is not None and not initial_scan.done():
+        logger.info("⏳ Esperando a que finalice el escaneo inicial en curso...")
+        await asyncio.wait([initial_scan])
     logger.info("🛑 Apagando Radar Web GlitchHunter AI...")
 
 
@@ -238,8 +245,6 @@ app = FastAPI(
 
 # Configuración de CORS dinámica según configuración de entorno
 parsed_origins = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
-if not parsed_origins:
-    parsed_origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -307,13 +312,16 @@ def format_glitch_record(row: Dict[str, Any]) -> Dict[str, Any]:
     sniper_url = generate_direct_add_to_cart_url(store_id, prod_url, prod_id)
     is_watchlist = bool(db.is_in_watchlist(title)) if hasattr(db, "is_in_watchlist") else False
     real_latency = global_store_health.get_store_latency(store_id)
-    verif_level = row.get("verification_level") or ("COMPRABLE" if sniper_url and "cart" in sniper_url else "VERIFICADO")
+    verif_level = row.get("verification_level") or "VERIFICADO"
+    if verif_level == "COMPRABLE":
+        # Registros antiguos marcados COMPRABLE solo por el patrón del enlace Sniper (sin validar)
+        verif_level = "VERIFICADO"
 
     return {
         "alert_id": row.get("id") or f"ALT-{store_id.upper()}-{uuid.uuid4().hex[:6].upper()}",
         "created_at": row.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "detected_at_exact": row.get("timestamp") or datetime.now(timezone.utc).isoformat(),
-        "origin": "SIMULACION" if "test" in (row.get("product_id") or "").lower() or "sim" in (row.get("product_id") or "").lower() or row.get("product_id", "").startswith(("fal-", "rip-", "par-", "lid-", "mlc-", "pcf-")) else "EN_VIVO",
+        "origin": "SIMULACION" if "test" in prod_id.lower() or "sim" in prod_id.lower() or prod_id.startswith(("fal-", "rip-", "par-", "lid-", "mlc-", "pcf-")) else "EN_VIVO",
         "pipeline_latency_ms": real_latency,
         "verification_level": verif_level,
         "alert_url": prod_url,
@@ -386,7 +394,7 @@ def format_commercial_deal_record(row: Dict[str, Any]) -> Dict[str, Any]:
     is_watchlist = bool(db.is_in_watchlist(title)) if hasattr(db, "is_in_watchlist") else False
 
     return {
-        "alert_id": f"DEAL-{store_id.upper()}-{abs(hash(row.get('product_id', ''))) % 100000000}",
+        "alert_id": f"DEAL-{store_id.upper()}-{int(hashlib.sha1(prod_id.encode()).hexdigest(), 16) % 100000000}",
         "created_at": row.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "origin": "OFERTA_COMERCIAL",
         "alert_url": prod_url,
@@ -458,11 +466,8 @@ async def trigger_scan(use_live: bool = USE_LIVE_SCRAPING):
 
     logger.info(f"⚡ Escaneo manual solicitado vía API (use_live={use_live})")
     loop = asyncio.get_running_loop()
+    # Cada nuevo glitch ya se difunde por WebSocket vía pipeline.on_glitch_callback
     detected = await loop.run_in_executor(None, pipeline.run_scan, use_live)
-
-    # Broadcast de cada nuevo glitch por WebSockets
-    for alert in detected:
-        await manager.broadcast(alert.model_dump(mode="json"))
 
     return {
         "status": "success",
@@ -536,11 +541,10 @@ async def inject_test_glitch():
         in_stock=True,
     )
 
+    # El broadcast WebSocket lo realiza pipeline.on_glitch_callback
     alert = pipeline.process_product(product, send_notifications=False)
     if alert:
-        payload = alert.model_dump(mode="json")
-        await manager.broadcast(payload)
-        return payload
+        return alert.model_dump(mode="json")
 
     return {"status": "error", "message": "No se pudo generar glitch de prueba"}
 

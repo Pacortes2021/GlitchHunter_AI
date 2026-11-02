@@ -50,7 +50,9 @@ venv.bak/
 htmlcov/
 .tox/
 
-# SQLite journals (preserves main .db)
+# Datos de ejecución locales (BD SQLite, logs de alertas)
+glitchhunter_ai/data/*.db
+glitchhunter_ai/data/*.jsonl
 *.db-wal
 *.db-shm
 *.db-journal
