@@ -1305,24 +1305,38 @@ class PriceDatabase:
         self,
         model_code: str,
         exclude_store_id: str,
+        max_age_hours: float = 48.0,
     ) -> Optional[Dict[str, Any]]:
         """
         Busca en la tabla local de productos otras tiendas que tengan el mismo modelo.
         Excluye la tienda actual y exige al menos 2 tiendas distintas con stock.
+        Solo considera precios vistos en las últimas `max_age_hours` y omite SoloTodo,
+        cuyos precios ya provienen de otros retailers y se contarían dos veces.
         """
         import statistics
+        from glitchhunter_ai.core.model_extractor import normalize_model_code, extract_model_code
+
+        target = normalize_model_code(model_code)
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).strftime("%Y-%m-%d %H:%M:%S")
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT store_id, current_price, normal_price
+                SELECT store_id, title, current_price, normal_price
                 FROM products
-                WHERE store_id != ? AND in_stock = 1 AND current_price > 0
+                WHERE store_id != ? AND store_id != 'solotodo'
+                  AND in_stock = 1 AND current_price > 0
+                  AND last_updated >= ?
                   AND title LIKE ?;
-            """, (exclude_store_id, f"%{model_code}%"))
+            """, (exclude_store_id, cutoff, f"%{model_code}%"))
             rows = cursor.fetchall()
 
             store_prices: Dict[str, Dict[str, float]] = {}
             for r in rows:
+                # El LIKE es solo un prefiltro: "iPhone 15" también calza con "iPhone 15 Pro Max".
+                # Se exige que el título del otro producto produzca exactamente el mismo código.
+                row_code = extract_model_code(r["title"])
+                if not row_code or normalize_model_code(row_code) != target:
+                    continue
                 sid = r["store_id"]
                 cur_p = float(r["current_price"])
                 norm_p = float(r["normal_price"] or cur_p)
@@ -1391,27 +1405,15 @@ class PriceDatabase:
                         s_id = s_id or p_row["store_id"]
                         cat = cat or p_row["category"]
 
-            # Registrar en deal_feedback
+            # Un voto por oferta: un nuevo voto reemplaza al anterior en vez de acumularse,
+            # para que clics repetidos no distorsionen el modificador de confianza por categoría
+            cursor.execute("DELETE FROM deal_feedback WHERE deal_id = ?;", (deal_id,))
             cursor.execute("""
                 INSERT INTO deal_feedback (deal_id, product_id, store_id, category, vote, reason)
                 VALUES (?, ?, ?, ?, ?, ?);
             """, (deal_id, p_id, s_id, cat, normalized_vote, reason))
 
-            # Actualizar contadores en tracked_deals si existe
-            if normalized_vote == "up":
-                cursor.execute("""
-                    UPDATE tracked_deals
-                    SET upvotes = COALESCE(upvotes, 0) + 1
-                    WHERE alert_id = ? OR product_id = ?;
-                """, (deal_id, deal_id))
-            else:
-                cursor.execute("""
-                    UPDATE tracked_deals
-                    SET downvotes = COALESCE(downvotes, 0) + 1
-                    WHERE alert_id = ? OR product_id = ?;
-                """, (deal_id, deal_id))
-
-            # Consultar totales acumulados para este deal
+            # Consultar totales para este deal y sincronizar contadores en tracked_deals
             cursor.execute("""
                 SELECT 
                     SUM(CASE WHEN vote = 'up' THEN 1 ELSE 0 END) AS ups,
@@ -1420,6 +1422,11 @@ class PriceDatabase:
                 WHERE deal_id = ?;
             """, (deal_id,))
             totals = cursor.fetchone()
+            cursor.execute("""
+                UPDATE tracked_deals
+                SET upvotes = ?, downvotes = ?
+                WHERE alert_id = ? OR product_id = ?;
+            """, (totals["ups"] or 0, totals["downs"] or 0, deal_id, deal_id))
             conn.commit()
 
             return {

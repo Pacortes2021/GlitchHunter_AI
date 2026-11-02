@@ -51,6 +51,7 @@ from glitchhunter_ai.core.models import (
 from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
 from glitchhunter_ai.core.store_health import global_store_health
 from glitchhunter_ai.notifications.telegram_bot import TelegramAlertDispatcher
+from glitchhunter_ai.notifications.telegram_feedback import TelegramFeedbackPoller
 
 logger = logging.getLogger("GlitchHunter.Server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -178,7 +179,6 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Iniciando Radar Web GlitchHunter AI...")
     db.init_db()
 
-    # Si la base de datos está vacía, correr un primer escaneo en segundo plano para poblar el radar
     # Si la base de datos está vacía, el primer escaneo corre en un hilo de trabajo
     # para no bloquear el arranque del servidor mientras se scrapean las tiendas
     stats = db.get_stats()
@@ -190,7 +190,16 @@ async def lifespan(app: FastAPI):
     # Iniciar la tarea de escaneo periódico en segundo plano
     scanner_task = asyncio.create_task(background_scanner_loop())
 
+    # Receptor de votos 👍/👎 de Telegram (solo con un bot real, fuera del modo simulación)
+    feedback_poller = None
+    if not pipeline.telegram_dispatcher.is_simulation:
+        feedback_poller = TelegramFeedbackPoller(pipeline.telegram_dispatcher.bot_token, db)
+        feedback_poller.start()
+
     yield
+
+    if feedback_poller:
+        feedback_poller.stop()
 
     # Cancelar tarea al apagar el servidor
     scanner_task.cancel()

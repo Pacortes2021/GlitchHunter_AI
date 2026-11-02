@@ -63,10 +63,16 @@ def test_record_deal_feedback_and_counters(temp_db):
     assert res_up["downvotes"] == 0
 
     # 2. Voto negativo (👎)
+    # Un segundo voto sobre la misma oferta reemplaza al anterior (no se acumula)
     res_down = temp_db.record_deal_feedback(alert_id, "down", reason="Precio inflado")
     assert res_down["vote"] == "down"
-    assert res_down["upvotes"] == 1
+    assert res_down["upvotes"] == 0
     assert res_down["downvotes"] == 1
+
+    # Clics repetidos no inflan el conteo
+    temp_db.record_deal_feedback(alert_id, "down")
+    res_again = temp_db.record_deal_feedback(alert_id, "down")
+    assert res_again["downvotes"] == 1
 
     # 3. Voto inválido
     with pytest.raises(ValueError, match="Voto inválido"):

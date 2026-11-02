@@ -14,21 +14,39 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from glitchhunter_ai.core.model_extractor import extract_model_code
+from glitchhunter_ai.core.model_extractor import extract_model_code, normalize_model_code
 from glitchhunter_ai.core.models import ProductItem
 from glitchhunter_ai.scrapers.stealth_client import default_stealth_client
 
 logger = logging.getLogger("glitchhunter.core.market_reference")
 
-# Mapeo de tiendas conocidas para exclusión estricta
+# Mapeo de tiendas conocidas para exclusión estricta: dominios y IDs de tienda en SoloTodo.
+# SoloTodo registra a veces la misma tienda con varios IDs (ej: Falabella 9 y 8147),
+# por lo que el dominio de external_url es la referencia principal y el ID es un respaldo.
 STORE_DOMAINS: Dict[str, List[str]] = {
-    "falabella": ["falabella.com", "falabella.cl", "9"],
-    "ripley": ["ripley.cl", "simple.ripley.cl", "18"],
-    "paris": ["paris.cl", "11"],
-    "lider": ["lider.cl", "walmart", "43"],
-    "mercadolibre": ["mercadolibre.cl", "mercadolibre", "260"],
-    "pcfactory": ["pcfactory.cl", "12"],
+    "falabella": ["falabella.com", "falabella.cl"],
+    "ripley": ["ripley.cl"],
+    "paris": ["paris.cl"],
+    "lider": ["lider.cl", "walmart.cl"],
+    "mercadolibre": ["mercadolibre.cl"],
+    "pcfactory": ["pcfactory.cl"],
 }
+SOLOTODO_STORE_IDS: Dict[str, List[str]] = {
+    "falabella": ["9"],
+    "ripley": ["18"],
+    "paris": ["11"],
+    "lider": ["43"],
+    "mercadolibre": ["260"],
+    "pcfactory": ["12"],
+}
+
+NEW_CONDITION = "https://schema.org/NewCondition"
+
+
+def _domain_matches(url: str, domains: List[str]) -> bool:
+    """True si el host de la URL es uno de los dominios (o un subdominio de ellos)."""
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    return any(host == d or host.endswith("." + d) for d in domains)
 
 
 @dataclass
@@ -74,7 +92,8 @@ class MarketReferenceService:
             logger.debug("No se pudo extraer código de modelo para: %s", product.title)
             return None
 
-        cache_key = f"mkt_ref:{model_code.lower()}"
+        # La mediana se calcula excluyendo la tienda evaluada, así que la caché es por (modelo, tienda)
+        cache_key = f"mkt_ref:{normalize_model_code(model_code)}:{exclude_store_id.lower()}"
 
         # 2. Consultar caché local de base de datos (TTL 8 horas)
         if db:
@@ -146,19 +165,17 @@ class MarketReferenceService:
             if not results:
                 return None
 
-            # Encontrar el producto más representativo
+            # Exigir que el nombre del producto en SoloTodo contenga el código de modelo.
+            # Sin coincidencia no se usa ningún resultado: una mediana de otro producto es peor que None.
+            target = normalize_model_code(model_code)
             prod_id = None
             for r in results:
                 entries = r.get("product_entries", [])
                 if entries:
                     prod = entries[0].get("product", {})
-                    p_name = prod.get("name", "").lower()
-                    if model_code.lower() in p_name:
+                    if target and target in normalize_model_code(prod.get("name", "")):
                         prod_id = prod.get("id")
                         break
-            if not prod_id:
-                # Tomar el primer resultado si no hay match exacto en nombre
-                prod_id = results[0].get("product_entries", [{}])[0].get("product", {}).get("id")
 
             if not prod_id:
                 return None
@@ -171,27 +188,39 @@ class MarketReferenceService:
 
             entities = ent_resp.json()
             store_prices: Dict[str, Dict[str, float]] = {}
-            exclude_keywords = STORE_DOMAINS.get(exclude_store_id.lower(), [exclude_store_id.lower()])
+            store_key = exclude_store_id.lower()
+            exclude_domains = STORE_DOMAINS.get(store_key, [])
+            exclude_ids = SOLOTODO_STORE_IDS.get(store_key, [])
 
             for e in entities:
                 reg = e.get("active_registry")
                 if not reg or not reg.get("is_available"):
                     continue
+                # Solo productos nuevos: reacondicionados y open-box bajan artificialmente la mediana
+                if (e.get("condition") or NEW_CONDITION) != NEW_CONDITION:
+                    continue
 
                 sid = str(e.get("store_id") or e.get("store") or "")
-                ext_url = (e.get("external_url") or "").lower()
+                ext_url = e.get("external_url") or ""
 
                 # Regla 1: Excluir estrictamente la propia tienda que se está evaluando
-                is_excluded = any(kw in ext_url or kw == sid for kw in exclude_keywords)
-                if is_excluded:
+                # (comparación exacta de ID y de dominio, nunca por subcadena)
+                if sid in exclude_ids or _domain_matches(ext_url, exclude_domains):
                     continue
+
+                # Agrupar por dominio para no contar dos veces la misma tienda con distintos IDs
+                host = (urllib.parse.urlparse(ext_url).hostname or "").lower()
+                store_group = next(
+                    (name for name, doms in STORE_DOMAINS.items() if _domain_matches(ext_url, doms)),
+                    host or sid,
+                )
 
                 offer_p = float(reg.get("offer_price", 0.0))
                 norm_p = float(reg.get("normal_price") or offer_p)
 
                 if offer_p > 0:
-                    if sid not in store_prices or offer_p < store_prices[sid]["offer"]:
-                        store_prices[sid] = {"offer": offer_p, "normal": norm_p}
+                    if store_group not in store_prices or offer_p < store_prices[store_group]["offer"]:
+                        store_prices[store_group] = {"offer": offer_p, "normal": norm_p}
 
             # Regla 2: Exigir al menos 2 tiendas distintas con stock
             if len(store_prices) < 2:

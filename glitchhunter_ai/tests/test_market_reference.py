@@ -4,7 +4,8 @@ Cubre:
 1. Extracción estricta de códigos de modelo (TVs, GPUs, CPUs, Audio, Smartphones).
 2. Exclusión estricta de la propia tienda y exigencia de >= 2 tiendas competidoras con stock.
 3. Señal 1: Modulación de confianza (+5 por anomalía confirmada, -10 por precio estándar).
-4. Señal 2: Detección de falsa inflación cruzada (precio normal > 1.8x mediana de mercado).
+4. Señal 2: Detección de falsa inflación cruzada (precio normal > 1.8x mediana de mercado),
+   que marca la alerta y penaliza su confianza sin descartarla ni enviar push.
 5. Caché SQLite con TTL y fallback transparente a None en caso de timeout o error.
 """
 
@@ -39,7 +40,9 @@ def test_extract_model_code_accuracy():
     # Audio & Smartphones
     assert extract_model_code("Audífonos Sony WH-1000XM5 Cancelación Ruido") == "WH-1000XM5"
     assert extract_model_code("Celular Samsung Galaxy S24 Ultra SM-S928B 512GB") == "SM-S928B"
-    assert extract_model_code("Apple iPhone 15 Pro Max 256GB Titanio") == "iPhone 15 Pro Max"
+    assert extract_model_code("Apple iPhone 15 Pro Max 256GB Titanio") == "iPhone 15 Pro Max 256GB"
+    # Sin capacidad no hay modelo comparable (128GB y 1TB no valen lo mismo)
+    assert extract_model_code("Apple iPhone 15 Pro Max Titanio") is None
 
     # Corchetes explícitos y filtros de tags de marketing
     assert extract_model_code("Notebook HP Omen 14-FB0004LA [A0DH7LA]") == "A0DH7LA"
@@ -51,6 +54,19 @@ def test_extract_model_code_accuracy():
     assert extract_model_code("Funda Silicona Roja para Smartphone") is None
     assert extract_model_code("Cable HDMI 2.1 Ultra High Speed 2 metros") is None
     assert extract_model_code("Soporte de Pared Fijo para Televisores") is None
+
+
+def test_extract_model_code_rejects_component_codes_in_host_devices():
+    """Un chip (GPU/CPU) dentro de un notebook o PC no identifica al equipo completo."""
+    assert extract_model_code("Notebook ASUS TUF Gaming F15 Intel Core i7 RTX 4060 16GB 512GB") is None
+    assert extract_model_code("Notebook Lenovo IdeaPad Slim 3 Intel Core i5-12450H 16GB") is None
+    assert extract_model_code("PC Gamer Ryzen 7 7800X3D RTX 4070 32GB") is None
+    assert extract_model_code("Apple MacBook Air 13 Chip M2 256GB") is None
+    # El mismo chip vendido como componente sí es un modelo válido
+    assert extract_model_code("Tarjeta de Video ASUS Dual GeForce RTX 4060 8GB") == "RTX 4060"
+    # Nombres de línea de consola aparecen en controles y juegos: no se usan
+    assert extract_model_code("Control DualSense PlayStation 5 Blanco") is None
+    assert extract_model_code("PlayStation 5 Slim 1TB") is None
 
 
 # =====================================================================
@@ -143,7 +159,7 @@ def test_market_reference_sqlite_cache_ttl(tmp_path):
 
     # 1. Guardar en caché previamente
     db.save_cached_market_reference(
-        cache_key="mkt_ref:rtx 4070 super",
+        cache_key="mkt_ref:rtx4070super:pcfactory",
         median_price=689990.0,
         median_normal_price=749990.0,
         stores_count=4,
@@ -161,6 +177,12 @@ def test_market_reference_sqlite_cache_ttl(tmp_path):
         assert res.matched_model == "RTX 4070 Super"
         # No debió hacer petición HTTP a SoloTodo
         mock_solotodo.assert_not_called()
+
+    # 3. Para otra tienda la mediana cacheada no sirve (incluía a esa tienda): se vuelve a consultar
+    item_ripley = item.model_copy(update={"id": "rip-gpu-01", "store_id": "ripley"})
+    with patch.object(service, "_query_solotodo", return_value=None) as mock_solotodo:
+        assert service.get_market_reference(item_ripley, exclude_store_id="ripley", db=db) is None
+        mock_solotodo.assert_called_once()
 
 
 # =====================================================================
@@ -247,16 +269,21 @@ def test_pipeline_market_signal_1_confidence_modulation(tmp_path):
 # =====================================================================
 # 5. Pruebas de Señal 2: Detección de Falsa Inflación Inter-Tiendas
 # =====================================================================
-def test_pipeline_market_signal_2_fake_inflation_rejection(tmp_path):
+def test_pipeline_market_signal_2_fake_inflation_flags_without_push(tmp_path):
     """
     Verifica que si una tienda infla artificialmente su precio normal (> 1.8x la mediana de mercado)
-    para aparentar un descuento de 70%, pero el precio actual es el precio comercial común del mercado,
-    el pipeline rechace la oferta como falsa inflación inter-tiendas.
+    para aparentar un descuento de 70%, el pipeline NO descarte la alerta (un match erróneo no debe
+    ocultar un glitch real), sino que la marque como inflada, penalice su confianza y omita el push.
     """
     db = PriceDatabase(db_path=tmp_path / "test_signal_2.db")
     db.init_db()
 
-    pipeline = GlitchHuntingPipeline(db=db)
+    telegram = MagicMock(simulation_mode=False, is_simulation=False)
+    ntfy = MagicMock()
+    discord = MagicMock()
+    pipeline = GlitchHuntingPipeline(
+        db=db, telegram_dispatcher=telegram, ntfy_dispatcher=ntfy, discord_dispatcher=discord
+    )
 
     # Tienda infla el precio normal a $500.000 y lo ofrece a $149.990 (70% dcto artificial)
     fake_bait_item = ProductItem(
@@ -285,9 +312,98 @@ def test_pipeline_market_signal_2_fake_inflation_rejection(tmp_path):
     )
 
     with patch("glitchhunter_ai.core.pipeline.default_market_reference.get_market_reference", return_value=ref_fake):
-        alert = pipeline.process_product(fake_bait_item, send_notifications=False)
-        # Debe ser descartado por falsa inflación inter-tiendas (retorna None)
-        assert alert is None
+        alert = pipeline.process_product(fake_bait_item, send_notifications=True)
+
+    assert alert is not None
+    assert alert.verdict.is_fake_inflation is True
+    assert "inflado vs mercado" in alert.verdict.reason
+    assert alert.verdict.confidence_score <= 75.0
+    telegram.send_alert.assert_not_called()
+    ntfy.send_alert.assert_not_called()
+    discord.send_alert.assert_not_called()
+
+
+# =====================================================================
+# 5b. Consulta a SoloTodo con respuestas reales (exclusión, condición, match de nombre)
+# =====================================================================
+def _mock_response(payload, status=200):
+    resp = MagicMock()
+    resp.status_code = status
+    resp.json.return_value = payload
+    return resp
+
+
+def _entity(store, url, price, available=True, condition="https://schema.org/NewCondition"):
+    return {
+        "store": store,
+        "store_id": store,
+        "external_url": url,
+        "condition": condition,
+        "active_registry": {"is_available": available, "offer_price": str(price), "normal_price": str(price)},
+    }
+
+
+def test_query_solotodo_excludes_only_own_store_and_used_items():
+    """
+    Estructura real de /products/{id}/entities/:
+    - Excluye la tienda evaluada por ID exacto y por dominio (incluye IDs alternativos como 8147).
+    - No excluye otras tiendas solo porque su URL contenga dígitos como "9".
+    - Ignora productos reacondicionados y open-box.
+    """
+    service = MarketReferenceService()
+    browse = {"results": [{"product_entries": [{"product": {"id": 140261, "name": "Sony WH-1000XM5 Wireless Headphone"}}]}]}
+    entities = [
+        _entity(9, "https://www.falabella.com/falabella-cl/product/119/x", 199990),
+        _entity(8147, "https://www.falabella.com/falabella-cl/product/999/y", 189990),
+        _entity(11, "https://www.paris.cl/audifonos-sony-wh-1000xm5-999999999.html", 229990),
+        _entity(18, "https://simple.ripley.cl/audifonos-sony-wh-1000xm5-2000390119p", 239990),
+        _entity(8510, "https://simple.ripley.cl/otro-listado-ripley-2000390999p", 249990),
+        _entity(12, "https://www.pcfactory.cl/producto/47938-sony", 219990),
+        _entity(2471, "https://www.reuse.cl/collections/audio/wh-1000xm5", 99990, condition="https://schema.org/RefurbishedCondition"),
+        _entity(5771, "https://bodegaoportunidades.cl/products/wh-1000xm5", 89990, condition="https://schema.org/OpenBoxCondition"),
+    ]
+    service.client = MagicMock()
+    service.client.get.side_effect = [_mock_response(browse), _mock_response(entities)]
+
+    data = service._query_solotodo("WH-1000XM5", exclude_store_id="falabella")
+    assert data is not None
+    # Paris, Ripley (dos IDs, una sola tienda) y PC Factory; sin Falabella ni usados
+    assert sorted(data["sample_stores"]) == ["paris", "pcfactory", "ripley"]
+    assert data["stores_count"] == 3
+    assert data["median_price"] == 229990
+
+
+def test_query_solotodo_returns_none_without_name_match():
+    """Si ningún resultado de búsqueda contiene el código de modelo, no se usa el primero 'a ciegas'."""
+    service = MarketReferenceService()
+    browse = {"results": [{"product_entries": [{"product": {"id": 1, "name": "Sony WH-CH520 Headphone"}}]}]}
+    service.client = MagicMock()
+    service.client.get.side_effect = [_mock_response(browse)]
+
+    assert service._query_solotodo("WH-1000XM5", exclude_store_id="paris") is None
+    assert service.client.get.call_count == 1
+
+
+def test_local_cross_store_reference_requires_same_model_and_fresh_prices(tmp_path):
+    """El fallback local no mezcla variantes (iPhone 15 vs 15 Pro Max) ni usa SoloTodo como tienda."""
+    db = PriceDatabase(db_path=tmp_path / "test_local_ref.db")
+    db.init_db()
+
+    def add(pid, store, title, price):
+        db.upsert_product(ProductItem(
+            id=pid, store_id=store, store_name=store, title=title, category="smartphones",
+            current_price=price, normal_price=price, url=f"https://{store}.cl/{pid}", in_stock=True,
+        ))
+
+    add("p1", "paris", "Apple iPhone 15 128GB Negro", 699990)
+    add("p2", "ripley", "iPhone 15 128GB Azul", 709990)
+    add("p3", "lider", "Apple iPhone 15 Pro Max 1TB", 1899990)   # otra variante: no debe contar
+    add("p4", "solotodo", "Apple iPhone 15 128GB", 649990)       # meta-retailer: no debe contar
+
+    ref = db.find_local_cross_store_reference("iPhone 15 128GB", exclude_store_id="falabella")
+    assert ref is not None
+    assert sorted(ref["sample_stores"]) == ["paris", "ripley"]
+    assert ref["median_price"] == (699990 + 709990) / 2
 
 
 # =====================================================================
