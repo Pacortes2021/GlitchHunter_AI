@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from glitchhunter_ai.config import (
     ALLOW_TEST_GLITCH,
@@ -332,6 +332,8 @@ def format_glitch_record(row: Dict[str, Any]) -> Dict[str, Any]:
         "market_stores_count": int(row.get("market_stores_count") or 0),
         "market_match_method": row.get("market_match_method"),
         "market_matched_model": row.get("market_matched_model"),
+        "upvotes": int(row.get("upvotes") or 0),
+        "downvotes": int(row.get("downvotes") or 0),
         "telegram_sent": bool(row.get("telegram_sent") or False),
         "product": {
             "id": prod_id,
@@ -405,6 +407,8 @@ def format_commercial_deal_record(row: Dict[str, Any]) -> Dict[str, Any]:
         "alert_url": prod_url,
         "add_to_cart_url": sniper_url,
         "is_watchlist_match": is_watchlist,
+        "upvotes": int(row.get("upvotes") or 0),
+        "downvotes": int(row.get("downvotes") or 0),
         "product": {
             "id": prod_id,
             "store_id": store_id,
@@ -588,6 +592,49 @@ async def get_status():
 async def get_store_health():
     """Retorna la matriz de salud, latencia y tiempos de respuesta de cada scraper."""
     return {"stores": global_store_health.get_matrix()}
+
+
+class DealFeedbackRequest(BaseModel):
+    vote: str = Field(..., description="Voto: 'up' (oferta real) o 'down' (falso positivo)")
+    reason: Optional[str] = Field(None, description="Motivo opcional del voto")
+
+
+@app.post("/api/deals/{deal_id}/feedback")
+async def submit_deal_feedback(deal_id: str, payload: DealFeedbackRequest):
+    """
+    Registra el voto de la comunidad sobre un glitch u oferta comercial.
+    No requiere clave administrativa (permite recopilar feedback libre de los usuarios).
+    """
+    try:
+        res = db.record_deal_feedback(
+            deal_id=deal_id,
+            vote=payload.vote,
+            reason=payload.reason,
+        )
+        return {
+            "status": "success",
+            "deal_id": res["deal_id"],
+            "vote": res["vote"],
+            "upvotes": res["upvotes"],
+            "downvotes": res["downvotes"],
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as exc:
+        logger.error(f"Error al registrar feedback para deal {deal_id}: {exc}")
+        raise HTTPException(status_code=500, detail="Error interno al registrar feedback")
+
+
+@app.get("/api/feedback/stats")
+async def get_feedback_statistics():
+    """
+    Retorna métricas globales de satisfacción y precisión del radar según feedback de usuarios.
+    """
+    try:
+        return db.get_feedback_stats()
+    except Exception as exc:
+        logger.error(f"Error al obtener estadísticas de feedback: {exc}")
+        raise HTTPException(status_code=500, detail="Error interno al obtener estadísticas de feedback")
 
 
 class WatchlistRequest(BaseModel):

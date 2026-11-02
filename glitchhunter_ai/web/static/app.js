@@ -368,6 +368,27 @@
           </a>
         `}
       </div>
+
+      <!-- Barra de Feedback de Usuario 👍/👎 (Punto 5) -->
+      <div class="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+        <span class="text-[11px] font-medium text-slate-400">¿Es oferta legítima?</span>
+        <div class="flex items-center gap-1.5 feedback-buttons-bar">
+          <button type="button" 
+                  class="btn-feedback-up px-2 py-0.5 rounded bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600 transition flex items-center gap-1 text-[11px] font-medium active:scale-95" 
+                  title="Confirmar oferta o glitch real (afina confianza positiva)"
+                  data-deal-id="${escapeHtml(item.alert_id || product.id)}">
+            <span>👍</span>
+            <span class="up-count font-mono font-semibold">${item.upvotes || 0}</span>
+          </button>
+          <button type="button" 
+                  class="btn-feedback-down px-2 py-0.5 rounded bg-slate-100 hover:bg-rose-50 hover:text-rose-700 text-slate-600 transition flex items-center gap-1 text-[11px] font-medium active:scale-95" 
+                  title="Reportar falso positivo o engaño (reduce confianza)"
+                  data-deal-id="${escapeHtml(item.alert_id || product.id)}">
+            <span>👎</span>
+            <span class="down-count font-mono font-semibold">${item.downvotes || 0}</span>
+          </button>
+        </div>
+      </div>
     `;
 
     return card;
@@ -755,6 +776,63 @@
       });
     }
 
+    // 8. Delegación de Feedback de Usuario (👍 Oferta Real / 👎 Falso Positivo)
+    document.addEventListener('click', async (e) => {
+      const upBtn = e.target.closest('.btn-feedback-up');
+      const downBtn = e.target.closest('.btn-feedback-down');
+      if (!upBtn && !downBtn) return;
+
+      const btn = upBtn || downBtn;
+      const isUp = Boolean(upBtn);
+      const dealId = btn.getAttribute('data-deal-id');
+      if (!dealId) return;
+
+      const bar = btn.closest('.feedback-buttons-bar') || btn.parentElement;
+      const curUp = bar ? bar.querySelector('.btn-feedback-up') : null;
+      const curDown = bar ? bar.querySelector('.btn-feedback-down') : null;
+
+      if (btn.classList.contains('voted')) {
+        showToast('Ya registraste tu voto para este producto.', 'Feedback');
+        return;
+      }
+
+      try {
+        const vote = isUp ? 'up' : 'down';
+        const res = await fetch(`/api/deals/${encodeURIComponent(dealId)}/feedback`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vote: vote }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (curUp) {
+            const countSpan = curUp.querySelector('.up-count');
+            if (countSpan) countSpan.textContent = data.upvotes;
+            curUp.disabled = true;
+          }
+          if (curDown) {
+            const countSpan = curDown.querySelector('.down-count');
+            if (countSpan) countSpan.textContent = data.downvotes;
+            curDown.disabled = true;
+          }
+
+          if (isUp) {
+            if (curUp) curUp.classList.add('voted', 'bg-emerald-100', 'text-emerald-800', 'border-emerald-300');
+            showToast('¡Gracias! Oferta confirmada como legítima.', '👍 Feedback Registrado');
+          } else {
+            if (curDown) curDown.classList.add('voted', 'bg-rose-100', 'text-rose-800', 'border-rose-300');
+            showToast('¡Gracias! Reporte de falso positivo recibido.', '👎 Feedback Registrado');
+          }
+          await refreshFeedbackStats();
+        } else {
+          showToast('No se pudo registrar tu voto.', 'Error');
+        }
+      } catch (err) {
+        showToast('Error de conexión al enviar feedback.', 'Error');
+      }
+    });
+
     // Audio contexto al primer clic
     document.addEventListener('click', () => {
       sound.init();
@@ -808,11 +886,34 @@
           }).join('');
         }
       }
+
+      // 4. Cargar Estadísticas de Feedback Comunitario (Punto 5)
+      await refreshFeedbackStats();
     } catch {
       // Servidor local offline
     }
 
     renderBothColumns();
+  }
+
+  async function refreshFeedbackStats() {
+    try {
+      const res = await fetch('/api/feedback/stats');
+      if (res.ok) {
+        const stats = await res.json();
+        const accSpan = document.getElementById('feedback-accuracy-pct');
+        const upSpan = document.getElementById('feedback-upvotes-count');
+        const downSpan = document.getElementById('feedback-downvotes-count');
+        const pill = document.getElementById('feedback-stats-pill');
+
+        if (accSpan) accSpan.textContent = `${stats.accuracy_rate_pct}%`;
+        if (upSpan) upSpan.textContent = stats.total_upvotes || 0;
+        if (downSpan) downSpan.textContent = stats.total_downvotes || 0;
+        if (pill && stats.total_votes > 0) pill.classList.remove('hidden');
+      }
+    } catch {
+      // Omitir en offline
+    }
   }
 
   // Inicialización

@@ -125,6 +125,7 @@ class GlitchVerdict(BaseModel):
     market_stores_count: int = Field(default=0, description="Cantidad de tiendas competidoras con stock")
     market_match_method: Optional[str] = Field(default=None, description="Método de emparejamiento ('solotodo' o 'model_code')")
     market_matched_model: Optional[str] = Field(default=None, description="Código de modelo exacto emparejado")
+    user_trust_modifier: Optional[float] = Field(default=None, description="Modificador de confianza (-15 a +5) por feedback histórico")
     reason: str = Field(..., description="Explicación detallada del veredicto para el usuario / log")
 
 
@@ -147,6 +148,8 @@ class GlitchAlert(BaseModel):
     market_stores_count: int = Field(default=0, description="Cantidad de tiendas competidoras consideradas")
     market_match_method: Optional[str] = Field(default=None, description="Método de emparejamiento ('solotodo' o 'model_code')")
     market_matched_model: Optional[str] = Field(default=None, description="Código de modelo emparejado")
+    upvotes: int = Field(default=0, description="Votos positivos de la comunidad")
+    downvotes: int = Field(default=0, description="Votos negativos de la comunidad")
     telegram_sent: bool = Field(default=False, description="Indica si la alerta ya fue despachada por Telegram")
 
 

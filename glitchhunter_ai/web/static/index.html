@@ -168,11 +168,18 @@
 
     </div>
 
-    <!-- ==================== MATRIZ DE SALUD Y LATENCIA (STORE HEALTH) ==================== -->
+    <!-- ==================== MATRIZ DE SALUD Y FEEDBACK COMUNITARIO ==================== -->
     <div id="store-health-panel" class="bg-white border border-slate-200 rounded-xl p-3 sm:p-3.5 mb-6 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-2.5 text-xs">
-      <div class="flex items-center gap-2 text-slate-700 font-semibold">
-        <i data-lucide="activity" class="w-4 h-4 text-emerald-600"></i>
-        <span>Salud Operativa Retail:</span>
+      <div class="flex items-center gap-2.5">
+        <div class="flex items-center gap-2 text-slate-700 font-semibold">
+          <i data-lucide="activity" class="w-4 h-4 text-emerald-600"></i>
+          <span>Salud Retail:</span>
+        </div>
+        <div id="feedback-stats-pill" class="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-200" title="Precisión histórica calculada según votos comunitarios">
+          <span>🎯 Precisión: <strong id="feedback-accuracy-pct">100%</strong></span>
+          <span class="text-indigo-400">•</span>
+          <span>👍 <span id="feedback-upvotes-count">0</span> / 👎 <span id="feedback-downvotes-count">0</span></span>
+        </div>
       </div>
       <div id="store-health-pills" class="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
         <span class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">SoloTodo: 🟢 190ms</span>
