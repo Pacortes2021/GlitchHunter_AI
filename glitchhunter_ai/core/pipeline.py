@@ -113,11 +113,20 @@ class GlitchHuntingPipeline:
             return None
 
         # 🌐 Consulta de Referencia de Mercado Inter-Tiendas (Solo candidatos pre-filtrados)
-        mkt_ref = default_market_reference.get_market_reference(
-            product=product,
-            exclude_store_id=product.store_id,
-            db=self.db,
+        # Productos de prueba/simulación (test-*) omiten consulta externa a SoloTodo
+        is_simulated_test = (
+            product.id.startswith("test-")
+            or product.store_id.startswith("test_")
+            or getattr(product, "is_mock", False)
         )
+        if is_simulated_test:
+            mkt_ref = None
+        else:
+            mkt_ref = default_market_reference.get_market_reference(
+                product=product,
+                exclude_store_id=product.store_id,
+                db=self.db,
+            )
 
         # Señal 2: Verificación cruzada de inflación inter-tiendas
         if mkt_ref and mkt_ref.is_fake_inflation:

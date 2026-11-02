@@ -41,8 +41,11 @@ def test_extract_model_code_accuracy():
     assert extract_model_code("Celular Samsung Galaxy S24 Ultra SM-S928B 512GB") == "SM-S928B"
     assert extract_model_code("Apple iPhone 15 Pro Max 256GB Titanio") == "iPhone 15 Pro Max"
 
-    # Corchetes explícitos
+    # Corchetes explícitos y filtros de tags de marketing
     assert extract_model_code("Notebook HP Omen 14-FB0004LA [A0DH7LA]") == "A0DH7LA"
+    assert extract_model_code("Tarjeta de Video NVIDIA GeForce RTX 4080 Super Gaming 16GB [TEST-766DA8]") == "RTX 4080 Super"
+    assert extract_model_code("Smart TV LG 55 UHD [REACONDICIONADO]") is None
+    assert extract_model_code("Consola de Juegos [OFERTA CYBER]") is None
 
     # Casos sin modelo (no deben inventar o aproximar erróneamente)
     assert extract_model_code("Funda Silicona Roja para Smartphone") is None

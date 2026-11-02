@@ -536,7 +536,7 @@ async def inject_test_glitch():
         id=f"test-{choice['store_id']}-{uid.lower()}",
         store_id=choice["store_id"],
         store_name=choice["store_name"],
-        title=f"{choice['title']} [TEST-{uid}]",
+        title=f"{choice['title']} (Simulación {uid})",
         category=choice["category"],
         normal_price=choice["normal_price"],
         current_price=choice["current_price"],
