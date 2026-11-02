@@ -30,6 +30,8 @@ class StoreHealthTracker:
                     "items_scanned": 0,
                     "glitches_detected": 0,
                     "error_count": 0,
+                    "consecutive_empty": 0,
+                    "empty_alert_dispatched": False,
                     "success_scans": 0,
                     "last_scan_at": None,
                 }
@@ -51,14 +53,19 @@ class StoreHealthTracker:
 
             if error:
                 record["error_count"] += 1
+                record["consecutive_empty"] = 0
                 record["status"] = "OFFLINE" if record["error_count"] >= 3 else "DEGRADED"
             elif blocked:
                 record["error_count"] += 1
+                record["consecutive_empty"] = 0
                 record["status"] = "BLOCKED"
             elif items_count == 0:
                 # Scraper respondió sin excepción pero no obtuvo productos (evita falsos positivos - Hallazgo D de Auditoría 4)
+                record["consecutive_empty"] = record.get("consecutive_empty", 0) + 1
                 record["status"] = "EMPTY_RESPONSE"
             else:
+                record["consecutive_empty"] = 0
+                record["empty_alert_dispatched"] = False
                 record["success_scans"] += 1
                 record["items_scanned"] += items_count
                 record["error_count"] = 0
@@ -74,6 +81,19 @@ class StoreHealthTracker:
                     record["avg_latency_ms"] = round(
                         record["avg_latency_ms"] * 0.7 + record["latency_ms"] * 0.3, 1
                     )
+
+    def should_alert_empty_store(self, store_id: str, threshold: int = 3) -> bool:
+        """Determina si una tienda debe generar alerta administrativa por acumular escaneos vacíos."""
+        with self._lock:
+            record = self._stores.get(store_id)
+            if not record:
+                return False
+            count = record.get("consecutive_empty", 0)
+            already_alerted = record.get("empty_alert_dispatched", False)
+            if count >= threshold and not already_alerted:
+                record["empty_alert_dispatched"] = True
+                return True
+            return False
 
     def get_store_latency(self, store_id: str) -> Optional[float]:
         with self._lock:

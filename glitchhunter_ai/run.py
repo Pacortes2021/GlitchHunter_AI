@@ -12,7 +12,9 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import Optional
 
 # Asegurar que el directorio raíz del proyecto esté en sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -20,11 +22,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 from glitchhunter_ai.config import WEB_HOST, WEB_PORT
 from glitchhunter_ai.core.database import PriceDatabase
 from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
+from glitchhunter_ai.scrapers import get_all_scrapers
 from glitchhunter_ai.web.server import start_server
 
 console = Console()
@@ -82,6 +86,80 @@ def run_tests():
     sys.exit(res.returncode)
 
 
+def run_diagnose(store_filter: Optional[str] = None):
+    print_banner()
+    console.print("[bold cyan]🩺 DIAGNÓSTICO EN VIVO DE CONECTIVIDAD Y SCRAPERS RETAIL[/bold cyan]")
+    console.print("[dim]Verificando endpoints reales, latencias y extracción de datos en vivo de las tiendas...[/dim]\n")
+
+    scrapers = get_all_scrapers()
+    if store_filter:
+        scrapers = [s for s in scrapers if s.store_id.lower() == store_filter.lower()]
+        if not scrapers:
+            console.print(f"[red]Error: Retailer '{store_filter}' no encontrado.[/red]")
+            return
+
+    table = Table(title="📊 Matriz de Diagnóstico en Tiempo Real", border_style="cyan")
+    table.add_column("Retailer", style="bold white", width=18)
+    table.add_column("ID", style="dim cyan", width=13)
+    table.add_column("Estado", justify="center", width=14)
+    table.add_column("Latencia", justify="right", width=11)
+    table.add_column("Ítems", justify="right", width=9)
+    table.add_column("Muestra de Producto Real / Diagnóstico", style="white", width=44)
+
+    total_stores = len(scrapers)
+    operational_stores = 0
+    total_items = 0
+
+    with console.status("[cyan]Sondeando retailers en vivo...[/cyan]"):
+        for scraper in scrapers:
+            s_id = scraper.store_id
+            s_name = scraper.store_name
+            t_start = time.perf_counter()
+            items = []
+            err_msg = None
+            try:
+                items = scraper.fetch_catalog(use_live=True)
+            except Exception as exc:
+                err_msg = str(exc)
+            elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+
+            if items:
+                operational_stores += 1
+                total_items += len(items)
+                status_badge = "[bold green]🟢 OPERATIVO[/bold green]"
+                sample = items[0]
+                price_clp = f"${sample.current_price:,.0f}".replace(",", ".")
+                sample_desc = f"{sample.title[:26]}... ({price_clp})"
+            elif err_msg:
+                status_badge = "[bold red]🔴 ERROR[/bold red]"
+                sample_desc = f"[red]{err_msg[:40]}[/red]"
+            else:
+                status_badge = "[bold yellow]🟡 VACÍO[/bold yellow]"
+                sample_desc = "[yellow]0 productos devueltos (revisar maquetación)[/yellow]"
+
+            table.add_row(
+                s_name,
+                s_id,
+                status_badge,
+                f"{elapsed_ms:,.0f} ms",
+                str(len(items)),
+                sample_desc,
+            )
+
+    console.print(table)
+    console.print()
+
+    rate = (operational_stores / total_stores) * 100.0 if total_stores else 0.0
+    color = "green" if operational_stores == total_stores else "yellow"
+    summary_panel = (
+        f"🏪 [bold]Tiendas evaluadas:[/bold] {total_stores}\n"
+        f"✅ [bold green]Tiendas operativas en vivo:[/bold green] {operational_stores}/{total_stores} ({rate:.1f}%)\n"
+        f"📦 [bold]Total productos extraídos:[/bold] {total_items}\n"
+        f"🛡️ [bold]Resiliencia:[/bold] Fallbacks de feed y evasión anti-bot activos"
+    )
+    console.print(Panel(summary_panel, title="🩺 Resumen del Diagnóstico de Red", border_style=color))
+
+
 def main():
     parser = argparse.ArgumentParser(description="GlitchHunter AI - CLI Master")
     subparsers = parser.add_subparsers(dest="command", help="Comandos disponibles")
@@ -101,6 +179,10 @@ def main():
     # Comando test
     subparsers.add_parser("test", help="Ejecutar suite de tests unitarios")
 
+    # Comando diagnose
+    diagnose_parser = subparsers.add_parser("diagnose", help="Diagnosticar conectividad y extracción real en vivo de los retailers")
+    diagnose_parser.add_argument("--store", help="Filtrar por ID de tienda específica (ej: falabella, solotodo)")
+
     args = parser.parse_args()
 
     if args.command == "demo" or args.command is None:
@@ -114,6 +196,8 @@ def main():
         start_server(host=args.host, port=args.port)
     elif args.command == "test":
         run_tests()
+    elif args.command == "diagnose":
+        run_diagnose(store_filter=args.store)
 
 
 if __name__ == "__main__":

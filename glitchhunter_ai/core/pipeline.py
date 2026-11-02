@@ -353,6 +353,8 @@ class GlitchHuntingPipeline:
                         items_count=len(products),
                         error=has_error,
                     )
+                    if use_live and global_store_health.should_alert_empty_store(scraper.store_id):
+                        self._notify_store_health_alert(scraper.store_id, scraper.store_name)
 
             logger.debug(
                 f"✅ Ciclo concluido: {total_scanned} productos analizados, "
@@ -362,6 +364,30 @@ class GlitchHuntingPipeline:
         finally:
             self.is_scanning = False
             self._scan_lock.release()
+
+    def _notify_store_health_alert(self, store_id: str, store_name: str):
+        """Emite alerta de salud operativa cuando un scraper devuelve 0 productos reiteradamente."""
+        msg = (
+            f"⚠️ [ALERTA DE SISTEMA] {store_name} ({store_id}) ha devuelto 0 productos en 3 escaneos consecutivos. "
+            f"Posible bloqueo anti-bot o cambio de estructura en la tienda."
+        )
+        logger.warning(msg)
+        try:
+            if hasattr(self.ntfy_dispatcher, "enabled") and self.ntfy_dispatcher.enabled and getattr(self.ntfy_dispatcher, "topic", None):
+                import requests
+                headers = {
+                    "Title": f"⚠️ Alerta Salud Retailer: {store_name}",
+                    "Priority": "high",
+                    "Tags": "warning,rotating_light",
+                }
+                requests.post(
+                    f"{self.ntfy_dispatcher.server}/{self.ntfy_dispatcher.topic}",
+                    data=msg.encode("utf-8"),
+                    headers=headers,
+                    timeout=5,
+                )
+        except Exception as exc:
+            logger.debug(f"Error enviando alerta de salud por ntfy: {exc}")
 
     def print_glitch_summary_table(self, glitches: List[GlitchAlert]):
         """Renderiza una tabla ejecutiva de glitches detectados con formato Rich."""

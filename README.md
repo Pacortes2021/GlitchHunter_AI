@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-emerald.svg)](LICENSE)
 [![CI Tests Passing](https://github.com/Pacortes2021/GlitchHunter_AI/actions/workflows/ci.yml/badge.svg)](https://github.com/Pacortes2021/GlitchHunter_AI/actions)
-[![Tests Passing](https://img.shields.io/badge/pytest-92%20passed%20(100%25)-brightgreen.svg)](glitchhunter_ai/tests/)
+[![Tests Passing](https://img.shields.io/badge/pytest-95%20passed%20(100%25)-brightgreen.svg)](glitchhunter_ai/tests/)
 
 Plataforma agéntica y colaborativa de **monitoreo en tiempo real, evasión anti-bot TLS (curl_cffi), detección de anomalías de precios (glitches / bugs de digitación) y compras relámpago con modo Sniper 1-Clic** diseñada específicamente para el ecosistema de e-commerce y retail de Chile.
 
@@ -126,12 +126,17 @@ GlitchHunter AI viene integrado con [ntfy](https://ntfy.sh), una app open source
 
 ## 🧪 Ejecución de Pruebas Automatizadas
 
-El proyecto cuenta con **92 pruebas unitarias e integrales** con 100% de éxito:
+El proyecto cuenta con **95 pruebas unitarias e integrales** con 100% de éxito:
 
 ```bash
 python3 run.py test
 # o directamente:
 pytest glitchhunter_ai/tests/ -v
+```
+
+También puedes ejecutar el diagnóstico de conectividad en vivo:
+```bash
+python3 run.py diagnose
 ```
 
 Cubre:
