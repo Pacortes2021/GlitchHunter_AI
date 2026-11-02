@@ -58,7 +58,11 @@ class GlitchHuntingPipeline:
         self.scrapers = get_all_scrapers()
         self.on_glitch_callback = on_glitch_callback
 
-    def process_product(self, product: ProductItem) -> Optional[GlitchAlert]:
+    def process_product(
+        self,
+        product: ProductItem,
+        send_notifications: bool = True,
+    ) -> Optional[GlitchAlert]:
         """
         Ejecuta el protocolo de análisis para un solo producto.
         Verifica stock, gestiona transiciones de estado (correcciones y caídas)
@@ -212,30 +216,48 @@ class GlitchHuntingPipeline:
         except Exception as e:
             logger.warning(f"No se pudo registrar alerta en BD: {e}")
 
-        # Despacho por Telegram (Modo Simulación o Live)
+        # Despacho de notificaciones (si send_notifications está habilitado y no es producto de prueba)
         telegram_ok = False
-        try:
-            dispatch_ok = self.telegram_dispatcher.send_alert(alert)
-            telegram_ok = bool(dispatch_ok)
-            if telegram_ok:
-                self.db.mark_telegram_sent(alert.alert_id)
-                alert.telegram_sent = True
-        except Exception as e:
-            logger.error(f"Error despachando alerta de Telegram para {alert_id}: {e}")
-
-        # Despacho push a celular vía ntfy (con apertura automática de URL al presionar)
         ntfy_ok = False
-        try:
-            ntfy_ok = bool(self.ntfy_dispatcher.send_alert(alert))
-        except Exception as e:
-            logger.error(f"Error despachando notificación push ntfy para {alert_id}: {e}")
-
-        # Despacho enriquecido a Discord Webhook
         discord_ok = False
-        try:
-            discord_ok = bool(self.discord_dispatcher.send_alert(alert))
-        except Exception as e:
-            logger.error(f"Error despachando alerta a Discord para {alert_id}: {e}")
+        is_test_product = (
+            product.id.startswith("test-")
+            or product.store_id.startswith("test_")
+            or getattr(product, "is_mock", False)
+        )
+
+        if send_notifications and not is_test_product:
+            # Despacho por Telegram
+            try:
+                dispatch_ok = self.telegram_dispatcher.send_alert(alert)
+                telegram_ok = bool(dispatch_ok)
+                if telegram_ok:
+                    self.db.mark_telegram_sent(alert.alert_id)
+                    alert.telegram_sent = True
+            except Exception as e:
+                logger.error(f"Error despachando alerta de Telegram para {alert_id}: {e}")
+
+            # Despacho push a celular vía ntfy (con apertura automática de URL al presionar)
+            try:
+                ntfy_ok = bool(self.ntfy_dispatcher.send_alert(alert))
+            except Exception as e:
+                logger.error(f"Error despachando notificación push ntfy para {alert_id}: {e}")
+
+            # Despacho enriquecido a Discord Webhook
+            try:
+                discord_ok = bool(self.discord_dispatcher.send_alert(alert))
+            except Exception as e:
+                logger.error(f"Error despachando alerta a Discord para {alert_id}: {e}")
+        else:
+            logger.debug(
+                f"ℹ️ [Aislamiento Simulación] Notificaciones push externas omitidas para {alert_id} (send_notifications={send_notifications})"
+            )
+            # En modo simulación o test, invocar los despachadores en modo simulación para validar payloads sin emitir HTTP
+            if getattr(self.telegram_dispatcher, "simulation_mode", False) or getattr(self.telegram_dispatcher, "is_simulation", False):
+                try:
+                    self.telegram_dispatcher.send_alert(alert)
+                except Exception:
+                    pass
 
         # Registro de métrica de salud en matriz
         global_store_health.record_glitch(product.store_id)
@@ -259,11 +281,17 @@ class GlitchHuntingPipeline:
         self,
         use_live: bool = False,
         store_ids: Optional[List[str]] = None,
+        send_notifications: Optional[bool] = None,
     ) -> List[GlitchAlert]:
         """
         Ejecuta un ciclo de escaneo completo a través de todos los scrapers seleccionados.
+        Si use_live es False (modo simulación / demo), send_notifications es False por defecto,
+        garantizando que ninguna alerta de prueba emita notificaciones push a redes reales.
         """
         all_detected_glitches: List[GlitchAlert] = []
+        if send_notifications is None:
+            send_notifications = bool(use_live)
+
         # Expirar ofertas que no han sido vistas en las últimas 12 horas
         if hasattr(self.db, "expire_stale_deals"):
             try:
@@ -278,7 +306,7 @@ class GlitchHuntingPipeline:
             if store_ids is None or s.store_id in store_ids
         ]
 
-        logger.debug(f"🔎 Iniciando ciclo de escaneo en {len(target_scrapers)} tiendas retail...")
+        logger.debug(f"🔎 Iniciando ciclo de escaneo en {len(target_scrapers)} tiendas retail (live={use_live}, notify={send_notifications})...")
 
         total_scanned = 0
         for scraper in target_scrapers:
@@ -289,7 +317,7 @@ class GlitchHuntingPipeline:
                 products = scraper.fetch_catalog(use_live=use_live)
                 total_scanned += len(products)
                 for prod in products:
-                    alert = self.process_product(prod)
+                    alert = self.process_product(prod, send_notifications=send_notifications)
                     if alert:
                         all_detected_glitches.append(alert)
             except Exception as exc:

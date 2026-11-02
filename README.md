@@ -3,9 +3,10 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-emerald.svg)](LICENSE)
-[![Tests Passing](https://img.shields.io/badge/pytest-61%20passed-brightgreen.svg)](tests/)
+[![CI Tests Passing](https://github.com/Pacortes2021/GlitchHunter_AI/actions/workflows/ci.yml/badge.svg)](https://github.com/Pacortes2021/GlitchHunter_AI/actions)
+[![Tests Passing](https://img.shields.io/badge/pytest-87%20passed%20(100%25)-brightgreen.svg)](glitchhunter_ai/tests/)
 
-Plataforma agéntica y colaborativa de **monitoreo en tiempo real, detección de anomalías de precios (glitches / bugs de digitación) y alertas instantáneas** diseñada específicamente para el ecosistema de e-commerce y retail de Chile.
+Plataforma agéntica y colaborativa de **monitoreo en tiempo real, evasión anti-bot TLS (curl_cffi), detección de anomalías de precios (glitches / bugs de digitación) y compras relámpago con modo Sniper 1-Clic** diseñada específicamente para el ecosistema de e-commerce y retail de Chile.
 
 ---
 

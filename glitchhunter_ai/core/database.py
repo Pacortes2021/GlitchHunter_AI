@@ -290,8 +290,8 @@ class PriceDatabase:
         else:
             raise TypeError(f"Tipo de producto no soportado: {type(product)}")
 
-        # Normalizar timestamp a ISO string si es datetime
-        ts = data.get("timestamp") or data.get("last_updated")
+        # Normalizar timestamp a ISO string si es datetime (priorizando last_updated si fue asignado explícitamente)
+        ts = data.get("last_updated") or data.get("timestamp")
         if isinstance(ts, datetime):
             data["last_updated"] = ts.strftime("%Y-%m-%d %H:%M:%S")
         elif ts is None:
@@ -344,9 +344,13 @@ class PriceDatabase:
                 current_price, normal_price, card_price, in_stock, last_updated
             ))
 
-            # Registrar en price_history únicamente si el precio cambió o es el primer registro
+            # Registrar en price_history:
+            # 1. Si es el primer registro del producto.
+            # 2. Si el precio cambió.
+            # 3. Si el precio se mantuvo estable pero han transcurrido >= 12 horas desde la última muestra
+            #    (construye profundidad temporal representativa de 30 días - Hallazgo 4 de Auditoría).
             cursor.execute("""
-                SELECT price FROM price_history
+                SELECT price, timestamp FROM price_history
                 WHERE product_id = ?
                 ORDER BY timestamp DESC, id DESC
                 LIMIT 1;
@@ -360,6 +364,16 @@ class PriceDatabase:
                 last_price = float(last_record["price"])
                 if abs(current_price - last_price) > 0.01:
                     should_record = True
+                else:
+                    try:
+                        last_ts_str = str(last_record["timestamp"])[:19]
+                        curr_ts_str = str(last_updated)[:19]
+                        dt_last = datetime.strptime(last_ts_str, "%Y-%m-%d %H:%M:%S")
+                        dt_curr = datetime.strptime(curr_ts_str, "%Y-%m-%d %H:%M:%S")
+                        if abs((dt_curr - dt_last).total_seconds()) >= 3600 * 12:
+                            should_record = True
+                    except Exception:
+                        pass
 
             if should_record:
                 cursor.execute("""
@@ -379,9 +393,8 @@ class PriceDatabase:
 
         Para constituir un verdadero historial base de 30 días, los registros
         deben tener profundidad temporal (ej. abarcar al menos 12 horas o múltiples días).
-        Muestras repetidas tomadas dentro de una misma sesión reciente no constituyen
-        un historial base de 30 días, por lo que en tal caso se retorna None
-        para evaluar contra el precio normal publicado por la tienda.
+        Soporta productos con precio estable continuo comparando la fecha de inserción
+        con el último avistamiento.
         """
         cutoff_date = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -411,6 +424,23 @@ class PriceDatabase:
                     prices = [float(row["price"]) for row in rows if row["price"] is not None and row["price"] > 0]
                     if len(prices) >= 2:
                         return round(float(statistics.median(prices)), 2)
+
+            elif rows and len(rows) == 1:
+                # Caso precio estable durante 30 días: verificar fecha en tabla products
+                cursor.execute("SELECT last_updated FROM products WHERE id = ?;", (product_id,))
+                prod_row = cursor.fetchone()
+                if prod_row and prod_row["last_updated"]:
+                    try:
+                        t_first = str(rows[0]["timestamp"])[:19]
+                        t_prod = str(prod_row["last_updated"])[:19]
+                        dt_first = datetime.strptime(t_first, "%Y-%m-%d %H:%M:%S")
+                        dt_prod = datetime.strptime(t_prod, "%Y-%m-%d %H:%M:%S")
+                        if abs((dt_prod - dt_first).total_seconds()) >= 3600 * 12:
+                            p_val = float(rows[0]["price"])
+                            if p_val > 0:
+                                return round(p_val, 2)
+                    except Exception:
+                        pass
 
             return None
 
@@ -796,15 +826,16 @@ class PriceDatabase:
 
     def cleanup_duplicate_price_history(self) -> int:
         """
-        Elimina registros duplicados idénticos en price_history acumulados por escaneos repetidos,
-        conservando únicamente la primera observación de cada precio por producto.
+        Elimina registros duplicados idénticos en price_history acumulados por escaneos repetidos en el mismo día,
+        conservando una observación diaria de cada precio por producto para preservar profundidad temporal (Hallazgo 4).
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 DELETE FROM price_history 
                 WHERE id NOT IN (
-                    SELECT MIN(id) FROM price_history GROUP BY product_id, price
+                    SELECT MIN(id) FROM price_history 
+                    GROUP BY product_id, price, substr(timestamp, 1, 10)
                 );
             """)
             deleted_count = cursor.rowcount
@@ -903,10 +934,11 @@ class PriceDatabase:
 
     def get_stats(self) -> Dict[str, Any]:
         """
-        Calcula estadísticas globales del sistema de forma fidedigna y desduplicada:
+        Calcula estadísticas globales del sistema de forma fidedigna y desduplicada (Hallazgo 5):
           - total_products: productos únicos monitoreados
-          - total_glitches: glitches únicos activos
-          - accumulated_savings_clp: ahorro acumulado real de glitches únicos
+          - total_glitches / active_glitches: glitches únicos ACTIVOS en el radar (si todos expiraron o fueron corregidos, es 0)
+          - historical_distinct_glitches / historical_alerts_total: métricas históricas de auditoría
+          - accumulated_savings_clp: ahorro acumulado real de glitches activos
           - breakdown por severidad y tiendas monitoreadas
         """
         with self.get_connection() as conn:
@@ -916,24 +948,39 @@ class PriceDatabase:
             cursor.execute("SELECT COUNT(*) AS cnt FROM products;")
             total_products = cursor.fetchone()["cnt"]
 
-            # Total de glitches únicos activos en tracked_deals
+            # Total de ofertas en tracked_deals y activas
+            cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals;")
+            total_tracked = cursor.fetchone()["cnt"]
+
             cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals WHERE status = 'ACTIVE';")
             active_cnt = cursor.fetchone()["cnt"]
 
-            if active_cnt > 0:
+            # Conteo histórico en glitch_alerts
+            cursor.execute("SELECT COUNT(*) AS cnt FROM glitch_alerts;")
+            historical_alerts_total = cursor.fetchone()["cnt"]
+
+            cursor.execute("SELECT COUNT(DISTINCT product_id) AS cnt FROM glitch_alerts;")
+            historical_distinct_glitches = cursor.fetchone()["cnt"]
+
+            if total_tracked > 0:
+                # Si existen ofertas rastreadas, total_glitches representa ESTRICTAMENTE las activas
                 total_glitches = active_cnt
-                cursor.execute("SELECT COALESCE(SUM(savings_clp), 0.0) AS total_savings FROM tracked_deals WHERE status = 'ACTIVE';")
-                accumulated_savings = float(cursor.fetchone()["total_savings"])
+                if active_cnt > 0:
+                    cursor.execute("SELECT COALESCE(SUM(savings_clp), 0.0) AS total_savings FROM tracked_deals WHERE status = 'ACTIVE';")
+                    accumulated_savings = float(cursor.fetchone()["total_savings"])
 
-                cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals WHERE status = 'ACTIVE' AND severity = 'CRITICO';")
-                critical_glitches = cursor.fetchone()["cnt"]
+                    cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals WHERE status = 'ACTIVE' AND severity = 'CRITICO';")
+                    critical_glitches = cursor.fetchone()["cnt"]
 
-                cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals WHERE status = 'ACTIVE' AND severity = 'ALTO';")
-                high_glitches = cursor.fetchone()["cnt"]
+                    cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals WHERE status = 'ACTIVE' AND severity = 'ALTO';")
+                    high_glitches = cursor.fetchone()["cnt"]
+                else:
+                    accumulated_savings = 0.0
+                    critical_glitches = 0
+                    high_glitches = 0
             else:
-                cursor.execute("SELECT COUNT(DISTINCT product_id) AS cnt FROM glitch_alerts;")
-                total_glitches = cursor.fetchone()["cnt"]
-
+                # Caso base de datos recién inicializada (migración)
+                total_glitches = historical_distinct_glitches
                 cursor.execute("""
                     SELECT COALESCE(SUM(g.savings_clp), 0.0) AS total_savings
                     FROM glitch_alerts g
@@ -971,6 +1018,9 @@ class PriceDatabase:
         return {
             "total_products": total_products,
             "total_glitches": total_glitches,
+            "active_glitches": active_cnt,
+            "historical_alerts_total": historical_alerts_total,
+            "historical_distinct_glitches": historical_distinct_glitches,
             "moderate_deals": moderate_deals,
             "accumulated_savings_clp": accumulated_savings,
             "savings_clp": accumulated_savings,

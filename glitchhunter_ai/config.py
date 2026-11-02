@@ -48,6 +48,8 @@ NTFY_TOPIC = os.getenv("NTFY_TOPIC", "glitchhunter_pablo_chile")
 WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
 WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 API_AUTH_KEY = os.getenv("API_AUTH_KEY", "")  # Token de acceso opcional para endpoints administrativos (/api/scan, etc.)
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")  # Orígenes permitidos (ej: "http://localhost:3000,https://midominio.com" o "*")
+ALLOW_TEST_GLITCH = os.getenv("ALLOW_TEST_GLITCH", "true").lower() in ("true", "1", "yes")
 
 # Configuración de Discord Webhook
 DISCORD_ENABLED = os.getenv("DISCORD_ENABLED", "true").lower() in ("true", "1", "yes")

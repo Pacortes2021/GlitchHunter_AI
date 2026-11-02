@@ -33,6 +33,7 @@ class DiscordAlertDispatcher:
         self,
         webhook_url: Optional[str] = None,
         enabled: Optional[bool] = None,
+        simulation_mode: bool = False,
         timeout: float = 6.0,
     ):
         self.webhook_url = webhook_url or os.getenv("DISCORD_WEBHOOK_URL")
@@ -40,6 +41,7 @@ class DiscordAlertDispatcher:
             self.enabled = enabled
         else:
             self.enabled = os.getenv("DISCORD_ENABLED", "false").lower() in ("true", "1", "yes")
+        self.simulation_mode = simulation_mode
         self.timeout = timeout
 
     def format_embed(self, alert: GlitchAlert) -> Dict[str, Any]:
@@ -98,13 +100,29 @@ class DiscordAlertDispatcher:
     def send_alert(self, alert: GlitchAlert) -> bool:
         """
         Envía la alerta al webhook configurado en Discord de forma sincrónica.
+        En modo simulación o con webhook de pruebas, valida el payload sin emitir peticiones de red reales.
         """
-        if not self.enabled or not self.webhook_url:
-            logger.debug("Discord webhook desactivado o sin URL configurada.")
+        # Si está explícitamente deshabilitado y NO en modo simulación
+        if not self.enabled and not self.simulation_mode:
+            logger.debug("Discord webhook desactivado en configuración.")
             return False
 
-        # Si es una URL de prueba/simulada
-        if "mock" in self.webhook_url.lower() or "example" in self.webhook_url.lower():
+        if not self.webhook_url and not self.simulation_mode:
+            logger.debug("Discord webhook sin URL configurada.")
+            return False
+
+        # Si está en modo simulación o el producto es de prueba
+        p = alert.product
+        is_simulated = (
+            self.simulation_mode
+            or p.id.startswith("test-")
+            or p.store_id.startswith("test_")
+            or getattr(alert, "is_simulation", False)
+            or getattr(p, "is_mock", False)
+            or (self.webhook_url and "mock" in self.webhook_url.lower())
+            or (self.webhook_url and "example" in self.webhook_url.lower())
+        )
+        if is_simulated:
             logger.info("📡 [Discord Simulación] Embed despachado correctamente para: %s", alert.product.title)
             return True
 

@@ -14,6 +14,8 @@ uvicorn[standard]>=0.23.0
 # Clientes HTTP & Scrapers en Vivo
 requests>=2.31.0
 httpx>=0.24.0
+beautifulsoup4>=4.12.0
+curl-cffi>=0.7.0
 
 # Salida Rica en Terminal & Formateo Ejecutivo
 rich>=13.4.0

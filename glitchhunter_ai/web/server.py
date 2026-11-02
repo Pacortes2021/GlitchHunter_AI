@@ -18,14 +18,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import uvicorn
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Security, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from glitchhunter_ai.config import (
+    ALLOW_TEST_GLITCH,
+    API_AUTH_KEY,
     AUTO_SCAN_ENABLED,
+    CORS_ORIGINS,
     DATA_DIR,
     MIN_DISCOUNT_PERCENTAGE,
     SCAN_INTERVAL_SECONDS,
@@ -175,7 +179,7 @@ async def lifespan(app: FastAPI):
 
     # Si la base de datos está vacía, correr un primer escaneo en segundo plano para poblar el radar
     stats = db.get_stats()
-    if stats.get("total_glitches", 0) == 0:
+    if stats.get("total_products", 0) == 0:
         logger.info("📡 Inicializando radar: ejecutando primer escaneo LIVE de catálogo retail chileno...")
         pipeline.run_scan(use_live=USE_LIVE_SCRAPING)
 
@@ -193,6 +197,38 @@ async def lifespan(app: FastAPI):
     logger.info("🛑 Apagando Radar Web GlitchHunter AI...")
 
 
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def verify_admin_key(
+    api_key: Optional[str] = Security(api_key_header),
+    authorization: Optional[str] = Header(None),
+) -> bool:
+    """
+    Control de Acceso Administrativo (Hallazgo 3 de Auditoría):
+    Protege rutas de escaneo e inyección. Si API_AUTH_KEY está configurada en .env,
+    exige coincidencia con 'X-API-Key' o 'Authorization: Bearer <key>'.
+    En modo desarrollo local (API_AUTH_KEY vacía), permite acceso transparente.
+    """
+    if not API_AUTH_KEY:
+        return True
+
+    provided_key = api_key
+    if not provided_key and authorization:
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            provided_key = parts[1]
+        elif len(parts) == 1:
+            provided_key = parts[0]
+
+    if not provided_key or provided_key != API_AUTH_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Autenticación administrativa requerida: API Key inválida o ausente.",
+        )
+    return True
+
+
 app = FastAPI(
     title="GlitchHunter AI - Retail Glitch Radar",
     description="Plataforma de detección en tiempo real de errores de precio y bugs retail en Chile",
@@ -200,9 +236,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Configuración de CORS dinámica según configuración de entorno
+parsed_origins = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
+if not parsed_origins:
+    parsed_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=parsed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -394,11 +435,12 @@ async def get_deals(
     return [format_commercial_deal_record(d) for d in raw_deals]
 
 
-@app.post("/api/scan")
+@app.post("/api/scan", dependencies=[Depends(verify_admin_key)])
 async def trigger_scan(use_live: bool = USE_LIVE_SCRAPING):
     """
     Dispara un ciclo de escaneo inmediato descargado en un hilo de trabajo (run_in_executor)
     para evitar bloquear el event loop principal del servidor web.
+    Protegido administrativamente si API_AUTH_KEY está configurada.
     """
     logger.info(f"⚡ Escaneo manual solicitado vía API (use_live={use_live})")
     loop = asyncio.get_running_loop()
@@ -416,12 +458,18 @@ async def trigger_scan(use_live: bool = USE_LIVE_SCRAPING):
     }
 
 
-@app.post("/api/test-glitch")
+@app.post("/api/test-glitch", dependencies=[Depends(verify_admin_key)])
 async def inject_test_glitch():
     """
     Inyecta un glitch de prueba representativo para verificar en vivo
     la animación de radar, el sonido chiptune y el broadcast WebSocket.
+    Aislado estrictamente de notificaciones push externas (send_notifications=False).
     """
+    if not ALLOW_TEST_GLITCH:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="La inyección de glitches de prueba está deshabilitada en este entorno.",
+        )
     sample_catalog = [
         {
             "store_id": "falabella",
@@ -474,7 +522,7 @@ async def inject_test_glitch():
         in_stock=True,
     )
 
-    alert = pipeline.process_product(product)
+    alert = pipeline.process_product(product, send_notifications=False)
     if alert:
         payload = alert.model_dump(mode="json")
         await manager.broadcast(payload)
@@ -522,7 +570,7 @@ async def get_watchlist():
     return {"keywords": db.get_watchlist_keywords() if hasattr(db, "get_watchlist_keywords") else []}
 
 
-@app.post("/api/watchlist")
+@app.post("/api/watchlist", dependencies=[Depends(verify_admin_key)])
 async def add_watchlist(payload: WatchlistRequest):
     """Agrega una nueva palabra clave a la watchlist del usuario."""
     success = db.add_watchlist_keyword(payload.keyword) if hasattr(db, "add_watchlist_keyword") else False
@@ -532,7 +580,7 @@ async def add_watchlist(payload: WatchlistRequest):
     }
 
 
-@app.delete("/api/watchlist/{keyword}")
+@app.delete("/api/watchlist/{keyword}", dependencies=[Depends(verify_admin_key)])
 async def delete_watchlist(keyword: str):
     """Elimina una palabra clave de la watchlist."""
     removed = db.remove_watchlist_keyword(keyword) if hasattr(db, "remove_watchlist_keyword") else False

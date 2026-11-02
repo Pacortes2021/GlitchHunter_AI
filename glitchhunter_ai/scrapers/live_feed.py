@@ -77,26 +77,77 @@ DEFAULT_HEADERS = {
 
 
 def parse_clp_price(val: Any) -> float:
-    """Parsea un precio numérico o string en pesos chilenos a float."""
+    """
+    Parsea un precio numérico o string en pesos chilenos (CLP) a float.
+    
+    En el mercado chileno:
+    - Los precios de retail NO tienen centavos.
+    - El punto '.' suele ser separador de miles ('99.990', '899.990', '1.299.990').
+    - Algunas APIs retornan strings con decimales técnicos '.00' ('59990.00').
+    - Algunas fuentes usan coma ',' como separador de miles ('99,990').
+    """
     if val is None:
         return 0.0
     if isinstance(val, (int, float)):
-        return float(val)
+        return round(float(val), 2)
+
     val_str = str(val).strip()
     if not val_str:
         return 0.0
 
-    # Formato decimal estándar API como '59990.00'
-    if re.match(r"^\d+(\.\d+)?$", val_str):
-        return round(float(val_str), 2)
-
+    # Limpiar símbolos monetarios, letras y espacios
     cleaned = re.sub(r"[^\d,\.]", "", val_str)
-    if "," in cleaned and "." in cleaned:
-        cleaned = cleaned.replace(".", "").replace(",", ".")
-    elif "." in cleaned and len(cleaned.split(".")[-1]) == 3:
-        cleaned = cleaned.replace(".", "")
-    elif "," in cleaned and len(cleaned.split(",")[-1]) == 3:
-        cleaned = cleaned.replace(",", "")
+    if not cleaned:
+        return 0.0
+
+    # Caso 1: Tiene tanto '.' como ',' (ej: '1.299.990,00' o '1,299,990.00')
+    if "." in cleaned and "," in cleaned:
+        if cleaned.rfind(".") > cleaned.rfind(","):
+            # '1,299,990.00'
+            cleaned = cleaned.replace(",", "")
+        else:
+            # '1.299.990,00'
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        try:
+            return round(float(cleaned), 2)
+        except Exception:
+            return 0.0
+
+    # Caso 2: Solo contiene puntos '.'
+    if "." in cleaned:
+        parts = cleaned.split(".")
+        if len(parts) > 2:
+            # '1.299.990' -> miles
+            cleaned = cleaned.replace(".", "")
+        else:
+            # Distinguir '99.990' (miles) vs '59990.00' (decimal API)
+            last_part = parts[-1]
+            if len(last_part) == 3:
+                cleaned = cleaned.replace(".", "")
+            else:
+                pass
+        try:
+            return round(float(cleaned), 2)
+        except Exception:
+            return 0.0
+
+    # Caso 3: Solo contiene comas ','
+    if "," in cleaned:
+        parts = cleaned.split(",")
+        if len(parts) > 2:
+            cleaned = cleaned.replace(",", "")
+        else:
+            last_part = parts[-1]
+            if len(last_part) == 3:
+                cleaned = cleaned.replace(",", "")
+            else:
+                cleaned = cleaned.replace(",", ".")
+        try:
+            return round(float(cleaned), 2)
+        except Exception:
+            return 0.0
+
+    # Caso 4: Solo dígitos
     try:
         return round(float(cleaned), 2)
     except Exception:

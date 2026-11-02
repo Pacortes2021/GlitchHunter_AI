@@ -46,8 +46,8 @@ def run_demo():
     db = PriceDatabase()
     pipeline = GlitchHuntingPipeline(db=db)
 
-    console.print("🔍 [cyan]Paso 1: Extracción simultánea desde los 6 retailers chilenos...[/cyan]")
-    glitches = pipeline.run_scan(use_live=False)
+    console.print("🔍 [cyan]Paso 1: Extracción simultánea desde los retailers chilenos (modo demo seguro)...[/cyan]")
+    glitches = pipeline.run_scan(use_live=False, send_notifications=False)
 
     console.print("\n📊 [cyan]Paso 2: Resumen Ejecutivo de Glitches Detectados[/cyan]")
     pipeline.print_glitch_summary_table(glitches)

@@ -371,3 +371,227 @@ def test_audit_issue_6_telegram_dispatch_failure_and_retry(tmp_path):
         cursor.execute("SELECT alert_dispatched FROM tracked_deals WHERE product_id = 'tg-fail-01';")
         t_row_after = cursor.fetchone()
         assert t_row_after["alert_dispatched"] == 1, "alert_dispatched debe confirmarse en 1 tras despacho exitoso"
+
+
+# ==============================================================================
+# 🎯 PRUEBAS DE REGRESIÓN: AUDITORÍA 3 (GITHUB AUDIT - NOVIEMBRE 2026)
+# ==============================================================================
+
+def test_audit_3_hallazgo_1_chilean_price_parser_thousands_and_decimals():
+    """
+    Hallazgo 1 (Crítico): Verifica que parse_clp_price() no confunda separadores
+    de miles con decimales en pesos chilenos.
+    """
+    from glitchhunter_ai.scrapers.live_feed import parse_clp_price
+
+    # Casos críticos señalados en auditoría
+    assert parse_clp_price("99.990") == 99990.0, "99.990 debe ser $99.990 CLP, nunca 99.99"
+    assert parse_clp_price("899.990") == 899990.0, "899.990 debe ser $899.990 CLP, nunca 899.99"
+    assert parse_clp_price("1.299.990") == 1299990.0, "1.299.990 debe ser $1.299.990 CLP"
+    assert parse_clp_price("99,990") == 99990.0, "99,990 con coma de miles debe ser $99.990 CLP"
+
+    # Formatos de API con decimales técnicos (.00 o .0)
+    assert parse_clp_price("59990.00") == 59990.0
+    assert parse_clp_price("59990.0") == 59990.0
+
+    # Texto con formato moneda y espacios
+    assert parse_clp_price("$ 1.499.990 CLP") == 1499990.0
+    assert parse_clp_price("$89.990") == 89990.0
+
+    # Tipos numéricos directos y valores nulos
+    assert parse_clp_price(49990) == 49990.0
+    assert parse_clp_price(49990.5) == 49990.5
+    assert parse_clp_price(None) == 0.0
+    assert parse_clp_price("") == 0.0
+
+
+def test_audit_3_hallazgo_2_demo_mode_notification_isolation(tmp_path):
+    """
+    Hallazgo 2 (Crítico): Verifica que el modo demostración y las alertas de prueba
+    estén estrictamente aislados de llamadas de red de notificaciones reales (ntfy, Discord, Telegram).
+    """
+    from glitchhunter_ai.notifications.ntfy_client import NtfyAlertDispatcher
+    from glitchhunter_ai.notifications.discord_webhook import DiscordAlertDispatcher
+
+    db = PriceDatabase(db_path=tmp_path / "test_demo_iso.db")
+    db.init_db()
+
+    pipeline = GlitchHuntingPipeline(db=db)
+
+    # Monitorear que requests.post NUNCA sea llamado al correr en modo use_live=False
+    with patch("requests.post") as mock_post:
+        glitches = pipeline.run_scan(use_live=False, send_notifications=False)
+        assert len(glitches) >= 0
+        # Cero llamadas a servidores push externos
+        assert mock_post.call_count == 0, "No debe realizarse ninguna petición HTTP externa en modo DEMO"
+
+    # Probar que NtfyAlertDispatcher y DiscordAlertDispatcher respetan simulation_mode
+    ntfy = NtfyAlertDispatcher(simulation_mode=True)
+    discord = DiscordAlertDispatcher(simulation_mode=True, webhook_url="https://discord.com/api/webhooks/real/path")
+
+    sample_product = ProductItem(
+        id="test-sim-01",
+        store_id="test_store",
+        store_name="Tienda Test",
+        title="Producto Simulado",
+        category="notebooks",
+        current_price=99990.0,
+        normal_price=999990.0,
+        url="https://tienda.cl/prod",
+    )
+    sample_alert = pipeline.process_product(sample_product, send_notifications=False)
+
+    with patch("requests.post") as mock_post:
+        assert ntfy.send_alert(sample_alert) is True
+        assert discord.send_alert(sample_alert) is True
+        assert mock_post.call_count == 0, "En modo simulación no debe haber llamadas HTTP a redes de terceros"
+
+
+def test_audit_3_hallazgo_3_admin_endpoint_security_and_auth():
+    """
+    Hallazgo 3 (Alta): Verifica que los endpoints administrativos requieran autenticación
+    cuando API_AUTH_KEY esté configurada, y que ALLOW_TEST_GLITCH controle el endpoint de test.
+    """
+    from fastapi.testclient import TestClient
+    from glitchhunter_ai.web import server
+
+    client = TestClient(server.app)
+
+    # 1. Con API_AUTH_KEY vacía (entorno local por defecto): acceso permitido
+    with patch.object(server, "API_AUTH_KEY", ""):
+        resp = client.get("/api/status")
+        assert resp.status_code == 200
+
+    # 2. Con API_AUTH_KEY configurada: rechaza peticiones sin header con 401
+    with patch.object(server, "API_AUTH_KEY", "super_secret_hunter_key_123"):
+        # Petición no autenticada a /api/scan
+        resp_unauth = client.post("/api/scan")
+        assert resp_unauth.status_code == 401
+        assert "Autenticación administrativa requerida" in resp_unauth.json()["detail"]
+
+        # Petición autenticada vía X-API-Key
+        with patch.object(server.pipeline, "run_scan", return_value=[]):
+            resp_auth = client.post("/api/scan", headers={"X-API-Key": "super_secret_hunter_key_123"})
+            assert resp_auth.status_code == 200
+
+        # Petición autenticada vía Authorization Bearer
+        with patch.object(server.pipeline, "run_scan", return_value=[]):
+            resp_bearer = client.post("/api/scan", headers={"Authorization": "Bearer super_secret_hunter_key_123"})
+            assert resp_bearer.status_code == 200
+
+    # 3. Verificación de ALLOW_TEST_GLITCH deshabilitado
+    with patch.object(server, "ALLOW_TEST_GLITCH", False):
+        resp_blocked = client.post("/api/test-glitch")
+        assert resp_blocked.status_code == 403
+
+
+def test_audit_3_hallazgo_4_baseline_history_depth_for_stable_price(tmp_path):
+    """
+    Hallazgo 4 (Alta): Verifica que productos con precio estable continuo durante días
+    construyan y mantengan profundidad temporal utilizable para get_baseline_price().
+    """
+    db = PriceDatabase(db_path=tmp_path / "test_baseline_depth.db")
+    db.init_db()
+
+    prod_id = "tv-samsung-stable"
+    now = datetime.utcnow()
+    day_start = now - timedelta(days=20)
+
+    # 1. Producto visto hace 20 días a $599.990
+    prod_old = ProductItem(
+        id=prod_id,
+        store_id="falabella",
+        store_name="Falabella Chile",
+        title="Smart TV Samsung 55 UHD",
+        category="televisores",
+        current_price=599990.0,
+        normal_price=599990.0,
+        url="https://falabella.com/tv",
+        timestamp=day_start,
+    )
+    db.upsert_product(prod_old)
+
+    # 2. Escaneos repetidos manteniendo el mismo precio en fechas intermedias
+    day_mid = now - timedelta(days=10)
+    prod_mid = ProductItem(
+        id=prod_id,
+        store_id="falabella",
+        store_name="Falabella Chile",
+        title="Smart TV Samsung 55 UHD",
+        category="televisores",
+        current_price=599990.0,
+        normal_price=599990.0,
+        url="https://falabella.com/tv",
+        timestamp=day_mid,
+    )
+    db.upsert_product(prod_mid)
+
+    # Verificar que el baseline histórico detecta la profundidad de $599.990
+    baseline = db.get_baseline_price(prod_id, days=30)
+    assert baseline is not None
+    assert baseline == 599990.0, "El precio base debe calcularse correctamente sobre el precio estable histórico"
+
+
+def test_audit_3_hallazgo_5_stats_separation_active_vs_historical(tmp_path):
+    """
+    Hallazgo 5 (Media-Alta): Verifica que get_stats() no muestre alertas antiguas
+    como glitches activos cuando todas las ofertas están corregidas o expiradas.
+    """
+    db = PriceDatabase(db_path=tmp_path / "test_stats_sep.db")
+    db.init_db()
+
+    pipeline = GlitchHuntingPipeline(db=db)
+
+    # 1. Registrar una oferta glitch activa
+    item = ProductItem(
+        id="item-stat-01",
+        store_id="ripley",
+        store_name="Ripley Chile",
+        title="iPad Air M2",
+        category="tablets",
+        current_price=74990.0,
+        normal_price=749990.0,
+        url="https://ripley.cl/ipad",
+        in_stock=True,
+    )
+    alert = pipeline.process_product(item, send_notifications=False)
+    assert alert is not None
+
+    stats_active = db.get_stats()
+    assert stats_active["total_glitches"] == 1
+    assert stats_active["active_glitches"] == 1
+    assert stats_active["historical_distinct_glitches"] == 1
+
+    # 2. La tienda corrige el precio a $749.990 (transición a CORRECTED)
+    item_corrected = ProductItem(
+        id="item-stat-01",
+        store_id="ripley",
+        store_name="Ripley Chile",
+        title="iPad Air M2",
+        category="tablets",
+        current_price=749990.0,
+        normal_price=749990.0,
+        url="https://ripley.cl/ipad",
+        in_stock=True,
+    )
+    pipeline.process_product(item_corrected, send_notifications=False)
+
+    stats_after = db.get_stats()
+    # Con la oferta corregida, el radar activo DEBE marcar 0 glitches activos
+    assert stats_after["total_glitches"] == 0, "total_glitches debe ser 0 cuando no hay ofertas activas"
+    assert stats_after["active_glitches"] == 0
+    assert stats_after["accumulated_savings_clp"] == 0.0
+    # Pero el histórico conserva la traza de la alerta
+    assert stats_after["historical_distinct_glitches"] == 1
+
+
+def test_audit_3_hallazgo_6_mercadolibre_bs4_dependency():
+    """
+    Hallazgo 6 (Media): Verifica que BeautifulSoup esté disponible
+    y se importe sin errores para el scraper de Mercado Libre.
+    """
+    from bs4 import BeautifulSoup
+    import bs4
+    assert BeautifulSoup is not None
+    assert bs4.__version__ is not None
+

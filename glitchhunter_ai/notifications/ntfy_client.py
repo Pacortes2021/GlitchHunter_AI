@@ -35,11 +35,13 @@ class NtfyAlertDispatcher:
         server_url: str = NTFY_SERVER,
         topic: str = NTFY_TOPIC,
         enabled: bool = NTFY_ENABLED,
+        simulation_mode: bool = False,
         timeout: int = 8,
     ):
         self.server_url = server_url.rstrip("/")
         self.topic = topic
         self.enabled = enabled
+        self.simulation_mode = simulation_mode
         self.timeout = timeout
         self.endpoint = f"{self.server_url}/{self.topic}"
 
@@ -72,6 +74,7 @@ class NtfyAlertDispatcher:
         """
         Envía la alerta push a tu teléfono de forma síncrona.
         Al tocar la notificación en tu móvil se abre de inmediato la URL del producto.
+        En modo simulación o para alertas de test, no emite peticiones HTTP reales.
         """
         if not self.enabled:
             logger.debug("Notificaciones ntfy desactivadas en configuración.")
@@ -79,6 +82,18 @@ class NtfyAlertDispatcher:
 
         p = alert.product
         v = alert.verdict
+
+        # Aislamiento estricto de simulación / tests: no enviar push real a celulares
+        is_simulated = (
+            self.simulation_mode
+            or p.id.startswith("test-")
+            or p.store_id.startswith("test_")
+            or getattr(alert, "is_simulation", False)
+            or getattr(p, "is_mock", False)
+        )
+        if is_simulated:
+            logger.info("📱 [ntfy Simulación] Notificación push omitida para producto simulado: %s", p.title)
+            return True
         title = self.format_title(alert)
         body = self.format_body(alert)
 
