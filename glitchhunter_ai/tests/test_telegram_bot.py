@@ -2,7 +2,7 @@
 Pruebas unitarias para TelegramAlertDispatcher (Subagente 13 - GlitchHunter AI).
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import pytest
 
@@ -19,7 +19,7 @@ from glitchhunter_ai.notifications.telegram_bot import TelegramAlertDispatcher, 
 
 @pytest.fixture
 def sample_alert() -> GlitchAlert:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     product = ProductItem(
         id="FAL-12345",
         store_id="falabella",

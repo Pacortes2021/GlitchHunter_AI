@@ -8,7 +8,7 @@ previa (CyberDay bait), y almacenamiento de alertas de glitches.
 from __future__ import annotations
 
 import contextlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
 import sqlite3
@@ -368,7 +368,7 @@ class PriceDatabase:
         if isinstance(ts, datetime):
             data["last_updated"] = ts.strftime("%Y-%m-%d %H:%M:%S")
         elif ts is None:
-            data["last_updated"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            data["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         else:
             data["last_updated"] = str(ts)
 
@@ -469,7 +469,7 @@ class PriceDatabase:
         Soporta productos con precio estable continuo comparando la fecha de inserción
         con el último avistamiento.
         """
-        cutoff_date = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
 
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -536,7 +536,7 @@ class PriceDatabase:
             elif ts:
                 timestamp = str(ts)
             else:
-                timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             telegram_sent = 1 if alert.get("telegram_sent") else 0
         else:
             # Es una instancia de GlitchAlert (Pydantic)
@@ -569,7 +569,7 @@ class PriceDatabase:
             elif ts:
                 timestamp = str(ts)
             else:
-                timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
             telegram_sent = 1 if getattr(alert, "telegram_sent", False) else 0
 
@@ -656,7 +656,7 @@ class PriceDatabase:
         mkt_method = v_data.get("market_match_method")
         mkt_model = v_data.get("market_matched_model")
 
-        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -791,7 +791,7 @@ class PriceDatabase:
         normal_price = float(prod_data.get("normal_price") or current_price)
         card_price = prod_data.get("card_price")
         best_price = float(card_price) if (card_price is not None and 0.0 < float(card_price) < current_price) else current_price
-        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -838,7 +838,7 @@ class PriceDatabase:
 
     def mark_deal_corrected(self, product_id: str, new_price: Optional[float] = None) -> bool:
         """Marca una oferta activa como 'CORRECTED' al comprobar que el precio volvió a la normalidad."""
-        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -850,7 +850,7 @@ class PriceDatabase:
 
     def mark_deal_out_of_stock(self, product_id: str) -> bool:
         """Marca una oferta activa como 'OUT_OF_STOCK' al comprobar que no tiene stock."""
-        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -1262,7 +1262,7 @@ class PriceDatabase:
     # =========================================================================
     def get_cached_market_reference(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """Obtiene una referencia de mercado en caché si aún no ha expirado."""
-        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -1286,7 +1286,7 @@ class PriceDatabase:
         ttl_hours: float = 8.0,
     ) -> None:
         """Guarda una referencia de mercado en caché con tiempo de expiración."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         now_str = now.strftime("%Y-%m-%d %H:%M:%S")
         exp_str = (now + timedelta(hours=ttl_hours)).strftime("%Y-%m-%d %H:%M:%S")
         with self.get_connection() as conn:
@@ -1583,7 +1583,7 @@ if __name__ == "__main__":
         cursor = conn.cursor()
         # Insertar precios históricos para la TV simulando días anteriores
         for day_offset, hist_price in [(25, 899990.0), (20, 879990.0), (15, 899990.0), (5, 949990.0)]:
-            ts = (datetime.utcnow() - timedelta(days=day_offset)).strftime("%Y-%m-%d %H:%M:%S")
+            ts = (datetime.now(timezone.utc) - timedelta(days=day_offset)).strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute(
                 "INSERT INTO price_history (product_id, price, timestamp) VALUES (?, ?, ?);",
                 (p1.id, hist_price, ts)

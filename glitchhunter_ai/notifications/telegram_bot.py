@@ -10,7 +10,7 @@ un modo de simulación de alta fidelidad para desarrollo local con trazabilidad 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import html
 import json
 import logging
@@ -312,7 +312,7 @@ class TelegramAlertDispatcher:
         Registra la alerta despachada de manera estructurada en data/telegram_sent_alerts.jsonl.
         """
         record = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "alert_id": alert.alert_id,
             "store_id": alert.product.store_id,
             "store_name": alert.product.store_name,
@@ -517,7 +517,7 @@ def create_sample_glitch_alert() -> GlitchAlert:
     Crea una alerta de glitch simulada de alta fidelidad para pruebas del bot de Telegram.
     Simula un error de omisión de un cero (Missing Zero Bug) en un Smart TV OLED de alta gama en Ripley.
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     product = ProductItem(
         id="RIP-2000390111",
         store_id="ripley",

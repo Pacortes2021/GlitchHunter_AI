@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import urllib.parse
 
@@ -264,7 +264,7 @@ class LiveRetailFeed:
                             url=ext_url,
                             image_url=img_url,
                             in_stock=True,
-                            timestamp=datetime.utcnow(),
+                            timestamp=datetime.now(timezone.utc),
                         )
                     )
         except Exception as exc:
@@ -316,7 +316,7 @@ class LiveRetailFeed:
                                         url=ext_url,
                                         image_url=img_url,
                                         in_stock=True,
-                                        timestamp=datetime.utcnow(),
+                                        timestamp=datetime.now(timezone.utc),
                                     )
                                 )
                     except Exception as exc:
@@ -390,7 +390,7 @@ class LiveRetailFeed:
                             url=ext_url,
                             image_url=k_item.get("images"),
                             in_stock=True,
-                            timestamp=datetime.utcnow(),
+                            timestamp=datetime.now(timezone.utc),
                         )
                     )
         except Exception as exc:

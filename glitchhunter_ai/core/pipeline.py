@@ -77,7 +77,7 @@ class GlitchHuntingPipeline:
         """
         # Fase 0: Verificación de Stock (Productos sin stock no generan alertas)
         if not product.in_stock:
-            if hasattr(self.db, "mark_deal_out_of_stock") and self.db.get_deal_status(product.id) == "ACTIVE":
+            if self.db.get_deal_status(product.id) == "ACTIVE":
                 self.db.mark_deal_out_of_stock(product.id)
             logger.debug(f"📦 [Sin Stock Omitido] {product.title} ({product.id}) no tiene stock disponible.")
             return None
@@ -193,13 +193,12 @@ class GlitchHuntingPipeline:
 
         # Modulación según Feedback Histórico del Usuario (Punto 5)
         trust_mod = 0.0
-        if hasattr(self.db, "get_category_trust_modifier"):
-            try:
-                trust_mod = self.db.get_category_trust_modifier(product.store_id, product.category)
-                if trust_mod != 0.0:
-                    confidence = max(20.0, min(99.0, confidence + trust_mod))
-            except Exception as e:
-                logger.warning(f"Error al calcular trust modifier para {product.store_id}/{product.category}: {e}")
+        try:
+            trust_mod = self.db.get_category_trust_modifier(product.store_id, product.category)
+            if trust_mod != 0.0:
+                confidence = max(20.0, min(99.0, confidence + trust_mod))
+        except Exception as e:
+            logger.warning(f"Error al calcular trust modifier para {product.store_id}/{product.category}: {e}")
 
         # Construcción del veredicto estructurado
         verdict = GlitchVerdict(
@@ -242,26 +241,21 @@ class GlitchHuntingPipeline:
         # 🧠 MOTOR DE EXCELENCIA: Revisor Continuo y Registro de Estado
         # Consulta si la oferta ya está registrada y notificada previamente.
         # Si ya existe al mismo precio, actualiza su presencia sin reenviar notificaciones al celular.
-        if hasattr(self.db, "register_or_update_deal"):
-            is_new_deal, deal_reason = self.db.register_or_update_deal(
-                product=product,
-                verdict=verdict,
-                alert_id=alert_id
+        is_new_deal, deal_reason = self.db.register_or_update_deal(
+            product=product,
+            verdict=verdict,
+            alert_id=alert_id
+        )
+        if not is_new_deal:
+            logger.debug(
+                f"ℹ️ [Revisor Continuo] Oferta {product.id} ya activa ({deal_reason}). "
+                f"Preservada en el radar, omitiendo notificación repetida."
             )
-            if not is_new_deal:
-                logger.debug(
-                    f"ℹ️ [Revisor Continuo] Oferta {product.id} ya activa ({deal_reason}). "
-                    f"Preservada en el radar, omitiendo notificación repetida."
-                )
-                return None
-        elif hasattr(self.db, "is_duplicate_alert") and self.db.is_duplicate_alert(product.id, product.best_price):
-            logger.debug(f"🔁 [Glitch Activo Existente] Omitiendo duplicado de {product.title} ({product.id}).")
             return None
 
         # ⭐ REVISIÓN DE WATCHLIST: Prioridad especial sin corromper la certeza matemática (Hallazgo E de Auditoría 4)
-        is_watchlist = False
-        if hasattr(self.db, "is_in_watchlist") and self.db.is_in_watchlist(product.title):
-            is_watchlist = True
+        is_watchlist = self.db.is_in_watchlist(product.title)
+        if is_watchlist:
             logger.info("⭐ [WATCHLIST HIT] %s coincide con las palabras clave de seguimiento prioritario!", product.title)
 
         alert = GlitchAlert(
@@ -277,7 +271,7 @@ class GlitchHuntingPipeline:
             market_stores_count=mkt_ref.stores_count if mkt_ref else 0,
             market_match_method=mkt_ref.match_method if mkt_ref else None,
             market_matched_model=mkt_ref.matched_model if mkt_ref else None,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             telegram_sent=False,
         )
 
@@ -336,8 +330,7 @@ class GlitchHuntingPipeline:
         # Confirmación de despacho en el radar tracked_deals
         is_sim = getattr(self.telegram_dispatcher, "is_simulation", False)
         if telegram_ok or ntfy_ok or discord_ok or is_sim:
-            if hasattr(self.db, "mark_deal_dispatched"):
-                self.db.mark_deal_dispatched(product.id)
+            self.db.mark_deal_dispatched(product.id)
 
         # Callback a clientes WebSocket si está conectado
         if self.on_glitch_callback:
@@ -374,13 +367,12 @@ class GlitchHuntingPipeline:
                 send_notifications = bool(use_live)
 
             # Expirar ofertas que no han sido vistas en las últimas 12 horas
-            if hasattr(self.db, "expire_stale_deals"):
-                try:
-                    expired = self.db.expire_stale_deals(max_hours=12)
-                    if expired > 0:
-                        logger.info(f"⏳ [Expiración Automática] {expired} oferta(s) no vistas en >12h transicionadas a EXPIRED.")
-                except Exception as e:
-                    logger.debug(f"Error en expire_stale_deals: {e}")
+            try:
+                expired = self.db.expire_stale_deals(max_hours=12)
+                if expired > 0:
+                    logger.info(f"⏳ [Expiración Automática] {expired} oferta(s) no vistas en >12h transicionadas a EXPIRED.")
+            except Exception as e:
+                logger.debug(f"Error en expire_stale_deals: {e}")
 
             target_scrapers = [
                 s for s in self.scrapers
@@ -471,9 +463,6 @@ class GlitchHuntingPipeline:
         if send_notifications is None:
             send_notifications = bool(use_live)
 
-        if not hasattr(self.db, "get_watchlist_keywords"):
-            return []
-
         keywords = self.db.get_watchlist_keywords()
         if not keywords:
             logger.debug("ℹ️ [Watchlist Scan] No hay palabras clave registradas en la watchlist.")
@@ -512,7 +501,7 @@ class GlitchHuntingPipeline:
         """Genera productos simulados de alta fidelidad que coinciden con la palabra clave para tests y demo."""
         clean_kw = keyword.strip()
         uid = uuid.uuid4().hex[:6].upper()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         return [
             ProductItem(
                 id=f"test-wl-{uid.lower()}",

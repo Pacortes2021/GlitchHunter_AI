@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from glitchhunter_ai.core.models import ProductItem
@@ -117,7 +117,7 @@ class SoloTodoScraper:
                         url=prod_url,
                         image_url=img_url,
                         in_stock=True,
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                     )
                 )
         except Exception as exc:
@@ -174,7 +174,7 @@ class SoloTodoScraper:
 
     def get_simulated_catalog(self) -> List[ProductItem]:
         """Catálogo simulado para pruebas de integración y benchmarks."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         return [
             # Glitch crítico genuino (~90% off - Missing Zero Bug)
             ProductItem(

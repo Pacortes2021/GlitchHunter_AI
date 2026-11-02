@@ -15,7 +15,7 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import urllib.parse
@@ -253,7 +253,7 @@ class FalabellaScraper:
                 url=full_url,
                 image_url=image_url,
                 in_stock=in_stock,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
         except Exception as exc:
             logger.debug("Error extrayendo producto individual de Falabella: %s", exc)
@@ -307,7 +307,7 @@ class FalabellaScraper:
         4. Casos trampa de carcasas/accesorios (para verificar que el filtro de IA no los confunda con el equipo).
         5. Casos de precio inflado artificial (CyberDay bait) y sin stock.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         return [
             # =========================================================================

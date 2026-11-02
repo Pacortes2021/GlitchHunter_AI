@@ -13,7 +13,7 @@ Soporta:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional
@@ -183,7 +183,7 @@ class ParisScraper:
                 url=url,
                 image_url=image_url,
                 in_stock=available_qty > 0,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
             )
         except Exception as exc:
             logger.debug("Error al parsear item VTEX: %s", exc)
@@ -195,7 +195,7 @@ class ParisScraper:
         Incluye productos representativos de Paris.cl, precios normales, ofertas con Tarjeta Cencosud,
         glitches por error de tipeo/caída de ceros y casos trampa de accesorios/repuestos.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         raw_catalog = [
             # 1. 🚨 GLITCH CRÍTICO 1: Reloj Garmin Fenix 7 Solar (Pérdida de cero: $699.990 -> $69.990)
             {

@@ -13,7 +13,7 @@ from glitchhunter_ai.core.database import PriceDatabase
 from glitchhunter_ai.core.models import ProductItem
 from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
 from glitchhunter_ai.core.store_health import StoreHealthTracker
-from glitchhunter_ai.run import run_diagnose
+from glitchhunter_ai.cli import run_diagnose
 
 
 def test_store_health_consecutive_empty_alert_and_recovery():
@@ -99,6 +99,6 @@ def test_run_diagnose_cli_with_mocked_scraper():
     mock_scraper.store_name = "PC Factory"
     mock_scraper.fetch_catalog.return_value = [sample_product]
 
-    with patch("glitchhunter_ai.run.get_all_scrapers", return_value=[mock_scraper]):
+    with patch("glitchhunter_ai.cli.get_all_scrapers", return_value=[mock_scraper]):
         # No debe lanzar ninguna excepción
         run_diagnose(store_filter="pcfactory")

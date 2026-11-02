@@ -1,7 +1,7 @@
 import os
 import tempfile
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
@@ -195,7 +195,7 @@ def test_telegram_inline_keyboard_includes_feedback():
         product=product,
         verdict=verdict,
         alert_url=product.url,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
 
     markup = dispatcher.build_inline_keyboard(alert)

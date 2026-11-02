@@ -2,7 +2,7 @@
 Pruebas unitarias para el verificador de inflación artificial de precios (InflationVerifier).
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pytest
 
 from glitchhunter_ai.ai_detector.inflation_verifier import InflationVerifier
@@ -94,9 +94,9 @@ def test_verify_without_baseline(verifier):
 
 def test_compute_baseline_from_records(verifier):
     records = [
-        PriceHistoryRecord(product_id="prod-1", price=50000.0, store_id="paris", recorded_at=datetime.utcnow() - timedelta(days=2)),
-        PriceHistoryRecord(product_id="prod-1", price=52000.0, store_id="paris", recorded_at=datetime.utcnow() - timedelta(days=10)),
-        PriceHistoryRecord(product_id="prod-1", price=48000.0, store_id="paris", recorded_at=datetime.utcnow() - timedelta(days=20)),
+        PriceHistoryRecord(product_id="prod-1", price=50000.0, store_id="paris", recorded_at=datetime.now(timezone.utc) - timedelta(days=2)),
+        PriceHistoryRecord(product_id="prod-1", price=52000.0, store_id="paris", recorded_at=datetime.now(timezone.utc) - timedelta(days=10)),
+        PriceHistoryRecord(product_id="prod-1", price=48000.0, store_id="paris", recorded_at=datetime.now(timezone.utc) - timedelta(days=20)),
     ]
     baseline = verifier.compute_baseline_from_records(records, max_days=30)
     assert baseline == 50000.0

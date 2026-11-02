@@ -6,7 +6,7 @@ y detección de anomalías de precio en Mercado Libre Chile.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import re
@@ -174,7 +174,7 @@ class MercadoLibreScraper:
                 url=permalink or f"https://articulo.mercadolibre.cl/{item_id}",
                 image_url=thumbnail,
                 in_stock=True,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
             )
         except Exception:
             return None
@@ -223,7 +223,7 @@ class MercadoLibreScraper:
                         url=url,
                         image_url=img_url,
                         in_stock=True,
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                     )
                 )
         except Exception as exc:
@@ -255,7 +255,7 @@ class MercadoLibreScraper:
         2. Glitches críticos reales (ej: omisión de un cero / ~90% descuento en equipos caros).
         3. Casos trampa de accesorios / láminas / fundas para probar los filtros semánticos anti-falso positivo.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         return [
             # =========================================================================

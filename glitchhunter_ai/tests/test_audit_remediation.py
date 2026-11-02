@@ -9,7 +9,7 @@ Pruebas de verificación y regresión para los 7 hallazgos de la Auditoría Téc
 7. Sanitización y seguridad de datos.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -209,7 +209,7 @@ def test_audit_issue_3_stale_deals_auto_expiration(tmp_path):
     db.init_db()
 
     # Insertar un deal activo con fecha de hace 15 horas
-    stale_date = (datetime.utcnow() - timedelta(hours=15)).strftime("%Y-%m-%d %H:%M:%S")
+    stale_date = (datetime.now(timezone.utc) - timedelta(hours=15)).strftime("%Y-%m-%d %H:%M:%S")
     with db.get_connection() as conn:
         cursor = conn.cursor()
     # Insertar primero en products para satisfacer la foreign key
@@ -494,7 +494,7 @@ def test_audit_3_hallazgo_4_baseline_history_depth_for_stable_price(tmp_path):
     db.init_db()
 
     prod_id = "tv-samsung-stable"
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     day_start = now - timedelta(days=20)
 
     # 1. Producto visto hace 20 días a $599.990

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import urllib.parse
@@ -178,7 +178,7 @@ class LiderScraper:
                             url=full_url,
                             image_url=image_url,
                             in_stock=in_stock,
-                            timestamp=datetime.utcnow()
+                            timestamp=datetime.now(timezone.utc)
                         )
                     )
             except Exception as e:
@@ -198,7 +198,7 @@ class LiderScraper:
         4. Casos trampa de accesorios (para verificar que el filtro de IA no alerte erróneamente).
         5. Casos de precios inflados (Cyber Bait) y productos sin stock.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         simulated_data = [
             # 🚨 GLITCH CRÍTICO 1: Smart TV LG 55" 4K - Error de falta de un cero ($429.990 -> $42.990)
