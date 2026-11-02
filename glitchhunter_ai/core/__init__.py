@@ -13,8 +13,11 @@ from .models import (
     TelegramAlertPayload,
 )
 from .database import PriceDatabase
+from .catalog_rotator import CatalogRotator, CategoryBatch, SortStrategy, default_catalog_rotator
 
 __all__ = [
+    "CatalogRotator",
+    "CategoryBatch",
     "GlitchAlert",
     "GlitchSeverity",
     "GlitchVerdict",
@@ -22,5 +25,7 @@ __all__ = [
     "PriceHistoryRecord",
     "ProductItem",
     "SemanticClassificationResult",
+    "SortStrategy",
     "TelegramAlertPayload",
+    "default_catalog_rotator",
 ]

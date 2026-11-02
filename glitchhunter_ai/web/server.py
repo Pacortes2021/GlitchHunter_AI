@@ -453,10 +453,14 @@ async def get_deals(
 
 
 @app.post("/api/scan", dependencies=[Depends(verify_admin_key)])
-async def trigger_scan(use_live: bool = USE_LIVE_SCRAPING):
+async def trigger_scan(
+    use_live: bool = USE_LIVE_SCRAPING,
+    watchlist_only: bool = False,
+):
     """
     Dispara un ciclo de escaneo inmediato descargado en un hilo de trabajo (run_in_executor)
     para evitar bloquear el event loop principal del servidor web.
+    Soporta modo general con rotación de catálogo o escaneo prioritario de watchlist.
     Protegido contra concurrencia con cerrojo atómico (Hallazgo F de Auditoría 4).
     """
     if pipeline.is_scanning:
@@ -469,10 +473,13 @@ async def trigger_scan(use_live: bool = USE_LIVE_SCRAPING):
             },
         )
 
-    logger.info(f"⚡ Escaneo manual solicitado vía API (use_live={use_live})")
+    logger.info(f"⚡ Escaneo manual solicitado vía API (use_live={use_live}, watchlist_only={watchlist_only})")
     loop = asyncio.get_running_loop()
     # Cada nuevo glitch ya se difunde por WebSocket vía pipeline.on_glitch_callback
-    detected = await loop.run_in_executor(None, pipeline.run_scan, use_live)
+    if watchlist_only:
+        detected = await loop.run_in_executor(None, pipeline.run_watchlist_scan, use_live)
+    else:
+        detected = await loop.run_in_executor(None, pipeline.run_scan, use_live)
 
     return {
         "status": "success",
@@ -611,6 +618,32 @@ async def delete_watchlist(keyword: str):
         "success": removed,
         "keywords": db.get_watchlist_keywords() if hasattr(db, "get_watchlist_keywords") else [],
     }
+
+
+@app.post("/api/watchlist/scan", dependencies=[Depends(verify_admin_key)])
+async def scan_watchlist_endpoint():
+    """Ejecuta un escaneo bajo demanda exclusivo de las palabras clave de la watchlist."""
+    if not pipeline:
+        raise HTTPException(status_code=503, detail="Pipeline no inicializado")
+    loop = asyncio.get_running_loop()
+    glitches = await loop.run_in_executor(
+        None,
+        lambda: pipeline.run_watchlist_scan(use_live=USE_LIVE_SCRAPING),
+    )
+    return {
+        "status": "success",
+        "scanned_keywords": db.get_watchlist_keywords() if hasattr(db, "get_watchlist_keywords") else [],
+        "glitches_found": len(glitches),
+        "glitches": [g.model_dump(mode="json") for g in glitches],
+    }
+
+
+@app.get("/api/catalog/rotation")
+async def get_catalog_rotation():
+    """Retorna el estado de la rotación Round-Robin de categorías y ordenamiento prioritario."""
+    if not pipeline or not pipeline.catalog_rotator:
+        return {"status": "inactive"}
+    return pipeline.catalog_rotator.get_status()
 
 
 def start_server(host: str = WEB_HOST, port: int = WEB_PORT):

@@ -66,6 +66,17 @@ STORE_MAPPING: Dict[str, Dict[str, Any]] = {
     },
 }
 
+KNASTA_TO_STORE_ID: Dict[str, str] = {
+    v["knasta_name"]: k for k, v in STORE_MAPPING.items()
+}
+KNASTA_TO_STORE_ID.update({
+    "pc factory": "pcfactory",
+    "mercado libre": "mercadolibre",
+    "paris.cl": "paris",
+    "lider.cl": "lider",
+    "falabella.com": "falabella",
+})
+
 DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -187,9 +198,13 @@ class LiveRetailFeed:
         self,
         store_id: str,
         limit: int = 50,
+        sort_strategy: Optional[str] = None,
+        category_id: Optional[int] = None,
     ) -> List[ProductItem]:
         """
         Obtiene productos reales con stock y links verificados para una tienda específica.
+        Soporta parametrización de ordenamiento ('price_asc' o 'discount_desc')
+        y filtrado por categoría.
         """
         config = STORE_MAPPING.get(store_id.lower())
         if not config:
@@ -202,7 +217,12 @@ class LiveRetailFeed:
         # 1. Extracción desde SoloTodo (Live Entities de la tienda)
         solotodo_id = config["solotodo_id"]
         try:
-            url = f"https://api.solotodo.com/entities/?is_available=1&stores={solotodo_id}&page_size={limit}"
+            st_ordering = "offer_price_usd" if sort_strategy == "price_asc" else "-discount_percentage"
+            cat_param = f"&categories={category_id}" if category_id else ""
+            url = (
+                f"https://api.solotodo.com/entities/?is_available=1&stores={solotodo_id}"
+                f"&ordering={st_ordering}{cat_param}&page_size={limit}"
+            )
             resp = self.session.get(url, timeout=self.timeout)
             if resp.status_code == 200:
                 results = resp.json().get("results", [])
@@ -250,13 +270,14 @@ class LiveRetailFeed:
         except Exception as exc:
             logger.debug(f"Error consultando SoloTodo para {store_id}: {exc}")
 
-        # 2. Extracción desde Knasta Deals (Ofertas destacadas con descuento)
+        # 2. Extracción desde Knasta Deals (Ofertas destacadas con descuento u orden por precio)
         try:
             knasta_name = config.get("knasta_name")
             if knasta_name:
+                k_order = "price_asc" if sort_strategy == "price_asc" else "discount"
                 for page_num in (1, 2, 3):
                     try:
-                        k_url = f"https://knasta.cl/api/results?page={page_num}&order=discount"
+                        k_url = f"https://knasta.cl/api/results?page={page_num}&order={k_order}"
                         resp = self.session.get(k_url, timeout=self.timeout)
                         if resp.status_code == 200:
                             for k_item in resp.json().get("products", []):
@@ -302,5 +323,79 @@ class LiveRetailFeed:
                         logger.debug(f"Error consultando Knasta página {page_num} para {store_id}: {exc}")
         except Exception as exc:
             logger.debug(f"Error consultando Knasta para {store_id}: {exc}")
+
+        return products
+
+    def search_live_products(
+        self,
+        query: str,
+        store_ids: Optional[List[str]] = None,
+        order: str = "price_asc",
+        limit: int = 40,
+    ) -> List[ProductItem]:
+        """
+        Búsqueda proactiva en vivo por término o palabra clave (ej: para Watchlist).
+        Consulta Knasta y SoloTodo ordenando por 'price_asc' o 'discount' para
+        identificar errores de precio en productos específicos buscados por el usuario.
+        """
+        clean_q = query.strip()
+        if not clean_q:
+            return []
+
+        products: List[ProductItem] = []
+        seen_urls: set = set()
+        encoded_q = urllib.parse.quote(clean_q)
+
+        # 1. Consulta proactiva en Knasta (agrupador multi-retailer con orden por precio)
+        try:
+            k_order = "price_asc" if order == "price_asc" else "discount"
+            k_url = f"https://knasta.cl/api/results?q={encoded_q}&order={k_order}"
+            resp = self.session.get(k_url, timeout=self.timeout)
+            if resp.status_code == 200:
+                raw_products = resp.json().get("products", [])
+                for k_item in raw_products:
+                    retail_raw = str(k_item.get("retail", "")).lower().strip()
+                    target_store = KNASTA_TO_STORE_ID.get(retail_raw)
+                    if not target_store:
+                        continue
+                    if store_ids and target_store not in store_ids:
+                        continue
+
+                    ext_url = k_item.get("url")
+                    if not ext_url or ext_url in seen_urls:
+                        continue
+                    seen_urls.add(ext_url)
+
+                    curr_price = parse_clp_price(k_item.get("price_value"))
+                    norm_price = parse_clp_price(k_item.get("price_tm"))
+                    if curr_price <= 0.0:
+                        continue
+                    if norm_price <= 0.0:
+                        norm_price = curr_price
+
+                    title = str(k_item.get("title", "")).strip()
+                    if not title:
+                        continue
+
+                    cfg = STORE_MAPPING.get(target_store, {})
+                    products.append(
+                        ProductItem(
+                            id=f"{target_store}-k{k_item.get('product_id')}",
+                            store_id=target_store,
+                            store_name=cfg.get("name", target_store.capitalize()),
+                            title=title,
+                            category=infer_category(title),
+                            current_price=curr_price,
+                            normal_price=norm_price,
+                            url=ext_url,
+                            image_url=k_item.get("images"),
+                            in_stock=True,
+                            timestamp=datetime.utcnow(),
+                        )
+                    )
+        except Exception as exc:
+            logger.debug("Error en búsqueda proactiva Knasta para '%s': %s", clean_q, exc)
+
+        return products[:limit]
 
         return products
