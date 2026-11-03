@@ -34,6 +34,9 @@ from glitchhunter_ai.config import (
     DIRECT_SCAN_CATEGORIES,
     DIRECT_SCAN_ENABLED,
     DIRECT_SCAN_INTERVAL_SECONDS,
+    EVENT_DIRECT_SCAN_INTERVAL_SECONDS,
+    EVENT_MODE,
+    EVENT_WINDOWS,
     DATA_DIR,
     MIN_DISCOUNT_PERCENTAGE,
     SCAN_INTERVAL_SECONDS,
@@ -52,6 +55,7 @@ from glitchhunter_ai.core.models import (
     SemanticClassificationResult,
 )
 from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
+from glitchhunter_ai.core.price_signals import active_event, is_odd_price, parse_event_windows, risk_tier
 from glitchhunter_ai.core.store_health import global_store_health
 from glitchhunter_ai.notifications.telegram_bot import TelegramAlertDispatcher
 from glitchhunter_ai.notifications.telegram_feedback import TelegramFeedbackPoller
@@ -175,6 +179,16 @@ async def background_scanner_loop():
             logger.error(f"❌ Error en ciclo de escaneo automático: {exc}")
 
 
+EVENT_WINDOW_LIST = parse_event_windows(EVENT_WINDOWS)
+
+
+def current_direct_interval() -> int:
+    """Intervalo del escaneo directo: más frecuente mientras hay un evento comercial activo."""
+    if active_event(EVENT_WINDOW_LIST, EVENT_MODE):
+        return min(DIRECT_SCAN_INTERVAL_SECONDS, EVENT_DIRECT_SCAN_INTERVAL_SECONDS)
+    return DIRECT_SCAN_INTERVAL_SECONDS
+
+
 async def direct_scanner_loop():
     """
     Escaneo directo frecuente de Falabella y Ripley (modo híbrido): watchlist y categorías
@@ -184,9 +198,17 @@ async def direct_scanner_loop():
         f"⚡ Escaneo directo {', '.join(s.title() for s in DIRECT_STORES)} activo (cada {DIRECT_SCAN_INTERVAL_SECONDS}s, "
         f"categorías: {', '.join(DIRECT_SCAN_CATEGORIES) or 'solo watchlist'})."
     )
+    last_event = None
     while True:
         try:
-            await asyncio.sleep(DIRECT_SCAN_INTERVAL_SECONDS)
+            event = active_event(EVENT_WINDOW_LIST, EVENT_MODE)
+            if event != last_event:
+                if event:
+                    logger.info(f"🎯 Modo evento ACTIVO ({event}): escaneo directo cada {current_direct_interval()}s.")
+                elif last_event:
+                    logger.info(f"🎯 Modo evento terminado: escaneo directo vuelve a cada {DIRECT_SCAN_INTERVAL_SECONDS}s.")
+                last_event = event
+            await asyncio.sleep(current_direct_interval())
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None, lambda: pipeline.run_direct_scan(categories=DIRECT_SCAN_CATEGORIES)
@@ -561,6 +583,11 @@ def format_feed_post(post: Dict[str, Any]) -> Dict[str, Any]:
     product["store_name"] = STORE_NAMES.get(product.get("store_id") or post["store_id"], product.get("store_name"))
     card["feed_id"] = post["id"]
     card["feed_kind"] = post["kind"]
+    # Señales históricas: nivel de riesgo de anulación y cifra de precio inusual
+    verdict = card.get("verdict") or {}
+    discount = verdict.get("discount_percentage", post.get("discount_pct"))
+    card["risk_tier"] = risk_tier(discount)
+    card["odd_price"] = is_odd_price(post.get("best_price"), post.get("store_id"))
     card["status"] = post.get("status") or "active"
     card["expired_reason"] = post.get("expired_reason")
     card["status_changed_at"] = post.get("status_changed_at")
@@ -739,6 +766,11 @@ async def get_status():
         "auto_scan_enabled": AUTO_SCAN_ENABLED,
         "scan_interval_seconds": SCAN_INTERVAL_SECONDS,
         "scan_interval_minutes": round(SCAN_INTERVAL_SECONDS / 60, 1),
+        "direct_scan_interval_seconds": current_direct_interval(),
+        "event_mode": active_event(EVENT_WINDOW_LIST, EVENT_MODE),
+        "event_windows": [
+            {"name": w.name, "start": w.start.isoformat(), "end": w.end.isoformat()} for w in EVENT_WINDOW_LIST
+        ],
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 

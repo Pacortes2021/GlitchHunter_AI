@@ -318,6 +318,10 @@ button { cursor: pointer; }
 .tag-watch { background: var(--warn-soft); color: var(--warn-ink); }
 .tag-verified { background: var(--info-soft); color: var(--info-ink); }
 .tag-zero { background: var(--warn-soft); color: var(--warn-ink); }
+.tag-risk-high { background: var(--danger-soft); color: var(--danger-ink); }
+.tag-risk-ok { background: var(--accent-soft); color: var(--accent-ink); }
+.tag-odd { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
+.tips { margin: 6px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
 .tag-test { background: var(--text); color: var(--bg); letter-spacing: .04em; }
 .post.is-test { border: 2px dashed var(--border-strong); border-left-width: 4px; opacity: .92; }
 
