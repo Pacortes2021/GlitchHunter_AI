@@ -28,7 +28,7 @@ from glitchhunter_ai.scrapers.stealth_client import default_stealth_client
 
 logger = logging.getLogger("glitchhunter.scrapers.direct_reader")
 
-DIRECT_STORES = ("falabella", "ripley", "paris", "abc", "sodimac", "pcfactory")
+DIRECT_STORES = ("falabella", "ripley", "paris", "abc", "jumbo", "sodimac", "pcfactory")
 
 # PC Factory expone una API JSON pública (la que usa su propio sitio): búsqueda, catálogo completo
 # paginado (search=*) y detalle por id. El catálogo (~3.000 productos, 48 por página) se recorre
@@ -43,13 +43,14 @@ _BOT_CHALLENGE_MARKERS = ("captcha", "perimeterx", "px-captcha", "are you a robo
 
 STORE_NAMES = {
     "falabella": "Falabella", "ripley": "Ripley", "paris": "Paris", "abc": "ABC",
-    "sodimac": "Sodimac", "pcfactory": "PC Factory",
+    "jumbo": "Jumbo", "sodimac": "Sodimac", "pcfactory": "PC Factory",
 }
 STORE_BASE = {
     "falabella": "https://www.falabella.com",
     "ripley": "https://simple.ripley.cl",
     "paris": "https://www.paris.cl",
     "abc": "https://www.abc.cl",
+    "jumbo": "https://www.jumbo.cl",
     "sodimac": "https://www.sodimac.cl",
     "pcfactory": "https://www.pcfactory.cl",
 }
@@ -86,6 +87,12 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
         "smartphones": "/tecnologia/celulares/?sz=48",
         "linea_blanca": "/linea-blanca/refrigeradores/?sz=48",
         "notebooks": "/on/demandware.store/Sites-Abc-Site/es_CL/Search-Show?q=notebook&sz=48",
+    },
+    # Jumbo (Cencosud; Next.js App Router): solo vende electro pequeño y accesorios de tecnología.
+    # Su búsqueda responde 404 a peticiones directas, así que se leen estas dos categorías (~50 por página).
+    "jumbo": {
+        "linea_blanca": "/hogar-electro-y-libreria/electro-y-tecnologia/electrodomesticos",
+        "notebooks": "/hogar-electro-y-libreria/electro-y-tecnologia/tecnologia",
     },
     "ripley": {
         "smartphones": "/tecno/celulares",
@@ -222,10 +229,7 @@ def _paris_products(html: str) -> List[Dict[str, Any]]:
     Productos del flujo RSC de Next.js App Router de Paris (self.__next_f): objetos con formato
     commercetools ('masterVariant.prices' con regular / offer / paymentMethod).
     """
-    chunks = _NEXT_F_RE.findall(html or "")
-    if not chunks:
-        raise BlockedError("página sin self.__next_f")
-    flight = "".join(json.loads('"' + c + '"') for c in chunks)
+    flight = _next_flight(html)
     decoder = json.JSONDecoder()
     found: Dict[str, Dict[str, Any]] = {}
     for m in re.finditer(r'"masterVariant"', flight):
@@ -290,6 +294,64 @@ def parse_paris_product(html: str, url: str) -> Optional[ProductItem]:
     """Página de producto de Paris: el producto de la URL entre los objetos del flujo RSC."""
     target = canonical_product_id("paris", url)
     for item in parse_paris_listing(html):
+        if item.id == target:
+            return item
+    return None
+
+
+def _next_flight(html: str) -> str:
+    """Texto del flujo RSC de Next.js App Router (self.__next_f) de la página."""
+    chunks = _NEXT_F_RE.findall(html or "")
+    if not chunks:
+        raise BlockedError("página sin self.__next_f")
+    return "".join(json.loads('"' + c + '"') for c in chunks)
+
+
+def parse_jumbo_listing(html: str, category_hint: str = "tecnologia") -> List[ProductItem]:
+    """
+    Productos de Jumbo: objetos "product" del flujo RSC con items[0].price (precio actual),
+    listPrice (normal) y stock. La ficha usa los mismos objetos (el producto y sus relacionados).
+    """
+    flight = _next_flight(html)
+    decoder = json.JSONDecoder()
+    items: List[ProductItem] = []
+    seen: set = set()
+    now = datetime.now(timezone.utc)
+    for m in re.finditer(r'"product":\{"productId"', flight):
+        try:
+            raw, _ = decoder.raw_decode(flight, m.start() + len('"product":'))
+        except ValueError:
+            continue
+        slug = str(raw.get("slug") or "").strip()
+        sku = (raw.get("items") or [{}])[0] or {}
+        url = f"{STORE_BASE['jumbo']}/{slug}/p"
+        pid = canonical_product_id("jumbo", url)
+        if not pid or pid in seen:
+            continue
+        title = " ".join(str(sku.get("name") or "").split())
+        try:
+            current = float(sku.get("price") or 0)
+            normal = float(sku.get("listPrice") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not title or current <= 0:
+            continue
+        seen.add(pid)
+        images = sku.get("images") or []
+        items.append(ProductItem(
+            id=pid, store_id="jumbo", store_name=STORE_NAMES["jumbo"], title=title,
+            category=_infer_category(title, category_hint), current_price=current,
+            normal_price=max(normal, current), card_price=None, url=url,
+            image_url=images[0] if images and str(images[0]).startswith("http") else None,
+            in_stock=bool(sku.get("stock", True)), timestamp=now, source="direct",
+        ))
+    return items
+
+
+def parse_jumbo_product(html: str, url: str) -> Optional[ProductItem]:
+    """Ficha de Jumbo: el producto de la URL entre los objetos del flujo RSC."""
+    target = canonical_product_id("jumbo", url)
+    for item in parse_jumbo_listing(html):
         if item.id == target:
             return item
     return None
@@ -525,6 +587,7 @@ LISTING_PARSERS = {
     "ripley": parse_ripley_listing,
     "paris": parse_paris_listing,
     "abc": parse_abc_listing,
+    "jumbo": parse_jumbo_listing,
     "sodimac": parse_sodimac_listing,
 }
 PRODUCT_PARSERS = {
@@ -532,6 +595,7 @@ PRODUCT_PARSERS = {
     "ripley": parse_ripley_product,
     "paris": parse_paris_product,
     "abc": parse_abc_product,
+    "jumbo": parse_jumbo_product,
     "sodimac": parse_sodimac_product,
 }
 
@@ -620,7 +684,7 @@ class DirectStoreReader:
         if status != 200:
             return None
         html = resp.text or ""
-        data_marker = {"paris": "self.__next_f", "abc": "data-pid"}.get(store_id, "__NEXT_DATA__")
+        data_marker = {"paris": "self.__next_f", "jumbo": "self.__next_f", "abc": "data-pid"}.get(store_id, "__NEXT_DATA__")
         if data_marker not in html:
             lower = html[:20000].lower()
             reason = "verificación anti-bot" if any(m in lower for m in _BOT_CHALLENGE_MARKERS) else "página sin datos"
@@ -658,6 +722,8 @@ class DirectStoreReader:
             url = f"{STORE_BASE['abc']}/on/demandware.store/Sites-Abc-Site/es_CL/Search-Show?q={q}&sz=48"
         elif store_id == "sodimac":
             url = f"{STORE_BASE['sodimac']}/sodimac-cl/search?Ntt={q}"
+        elif store_id == "jumbo":
+            return []   # la búsqueda de Jumbo responde 404 a peticiones directas
         elif store_id == "pcfactory":
             return self._pcfactory_items(
                 self._pcfactory_query({"page": 0, "size": PCFACTORY_PAGE_SIZE, "search": keyword.strip()})

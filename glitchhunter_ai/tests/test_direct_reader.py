@@ -239,7 +239,7 @@ def test_run_direct_scan_searches_watchlist_in_all_direct_stores(tmp_path):
     alerts = pipeline.run_direct_scan(keywords=["galaxy s25"], send_notifications=False)
     assert len(alerts) == 1
     searched = sorted(c.args[0] for c in reader.search.call_args_list)
-    assert searched == ["abc", "falabella", "paris", "pcfactory", "ripley", "sodimac"]
+    assert searched == ["abc", "falabella", "jumbo", "paris", "pcfactory", "ripley", "sodimac"]
 
     # Sin watchlist ni categorías no consulta nada
     reader.search.reset_mock()
@@ -311,7 +311,7 @@ def test_direct_scan_includes_sodimac(tmp_path):
     reader.fetch_category.return_value = []
     pipeline = _pipeline(tmp_path, reader)
     pipeline.run_direct_scan(keywords=["refrigerador"], send_notifications=False)
-    assert sorted(c.args[0] for c in reader.search.call_args_list) == ["abc", "falabella", "paris", "pcfactory", "ripley", "sodimac"]
+    assert sorted(c.args[0] for c in reader.search.call_args_list) == ["abc", "falabella", "jumbo", "paris", "pcfactory", "ripley", "sodimac"]
 
 
 # =====================================================================
@@ -434,3 +434,27 @@ def test_parse_abc_product_page():
 
 def test_abc_canonical_id():
     assert canonical_product_id("abc", "https://www.abc.cl/smart-tv-43-lg/29592535.html") == "abc-29592535"
+
+
+def test_parse_jumbo_listing_prices_and_url():
+    from glitchhunter_ai.scrapers.direct_reader import parse_jumbo_listing
+
+    items = {i.id: i for i in parse_jumbo_listing(_fixture("jumbo_listing.html"), "linea_blanca")}
+    assert set(items) == {"jumbo-licuadora-3-en-1-n-2086981", "jumbo-mini-pimer-ursus-trotter-ut-klot400p"}
+    ninja = items["jumbo-licuadora-3-en-1-n-2086981"]
+    assert (ninja.current_price, ninja.normal_price, ninja.card_price) == (219990, 279990, None)
+    assert ninja.url == "https://www.jumbo.cl/licuadora-3-en-1-n-2086981/p"
+    assert ninja.title == "Licuadora Ninja 3 en 1" and ninja.in_stock and ninja.source == "direct"
+
+
+def test_parse_jumbo_product_picks_url_product():
+    from glitchhunter_ai.scrapers.direct_reader import parse_jumbo_product
+
+    item = parse_jumbo_product(_fixture("jumbo_listing.html"), "https://www.jumbo.cl/mini-pimer-ursus-trotter-ut-klot400p/p")
+    assert item is not None and item.id == "jumbo-mini-pimer-ursus-trotter-ut-klot400p"
+    assert item.current_price == item.normal_price == 34990
+
+
+def test_jumbo_canonical_id():
+    assert canonical_product_id("jumbo", "https://www.jumbo.cl/licuadora-3-en-1-n-2086981/p") == "jumbo-licuadora-3-en-1-n-2086981"
+    assert canonical_product_id("jumbo", "https://www.jumbo.cl/hogar-electro-y-libreria/electro-y-tecnologia") is None
