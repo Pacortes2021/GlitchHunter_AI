@@ -103,5 +103,11 @@ STORES = [
     {"id": "jumbo", "name": "Jumbo", "domain": "jumbo.cl"},
     {"id": "hp", "name": "HP", "domain": "hp.com"},
     {"id": "winpy", "name": "Winpy", "domain": "winpy.cl"},
+    {"id": "sony", "name": "Sony Store", "domain": "store.sony.cl"},
+    {"id": "motorola", "name": "Motorola", "domain": "motorola.cl"},
+    {"id": "electrolux", "name": "Electrolux", "domain": "electrolux.cl"},
+    {"id": "fensa", "name": "Fensa", "domain": "tiendafensa.cl"},
+    {"id": "oster", "name": "Oster", "domain": "oster.cl"},
+    {"id": "casaroyal", "name": "Casa Royal", "domain": "casaroyal.cl"},
     {"id": "solotodo", "name": "SoloTodo", "domain": "solotodo.cl"},
 ]

@@ -17,6 +17,7 @@ from glitchhunter_ai.core.database import PriceDatabase
 from glitchhunter_ai.core.models import ProductItem
 from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
 from glitchhunter_ai.scrapers.direct_reader import (
+    VTEX_STORES,
     DirectStoreReader,
     StoreBackoff,
     parse_falabella_listing,
@@ -239,7 +240,7 @@ def test_run_direct_scan_searches_watchlist_in_all_direct_stores(tmp_path):
     alerts = pipeline.run_direct_scan(keywords=["galaxy s25"], send_notifications=False)
     assert len(alerts) == 1
     searched = sorted(c.args[0] for c in reader.search.call_args_list)
-    assert searched == ["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy"]
+    assert searched == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy", *VTEX_STORES])
 
     # Sin watchlist ni categorías no consulta nada
     reader.search.reset_mock()
@@ -311,7 +312,7 @@ def test_direct_scan_includes_sodimac(tmp_path):
     reader.fetch_category.return_value = []
     pipeline = _pipeline(tmp_path, reader)
     pipeline.run_direct_scan(keywords=["refrigerador"], send_notifications=False)
-    assert sorted(c.args[0] for c in reader.search.call_args_list) == ["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy"]
+    assert sorted(c.args[0] for c in reader.search.call_args_list) == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy", *VTEX_STORES])
 
 
 # =====================================================================
@@ -499,3 +500,64 @@ def test_hp_and_winpy_canonical_ids():
     assert canonical_product_id("hp", "https://www.hp.com/cl-es/shop/notebooks.html") is None
     assert canonical_product_id("winpy", "https://www.winpy.cl/venta/notebook-x/") == "winpy-notebook-x"
     assert canonical_product_id("winpy", "https://www.winpy.cl/portatiles/notebooks/") is None
+
+
+def _vtex_response(products, total, status=206):
+    import json as _json
+
+    resp = MagicMock()
+    resp.status_code = status
+    resp.json.return_value = products
+    resp.headers = {"resources": f"0-49/{total}"}
+    return resp
+
+
+def test_parse_vtex_products_sony():
+    import json as _json
+    from glitchhunter_ai.scrapers.direct_reader import parse_vtex_products
+
+    items = parse_vtex_products("sony", _json.loads(_fixture("vtex_sony.json")))
+    assert [i.id for i in items] == ["sony-wf-c510", "sony-wh-ch720n", "sony-wh-ch520"]
+    first = items[0]
+    assert (first.current_price, first.normal_price) == (29990, 49990)
+    assert first.store_name == "Sony Store" and first.url == "https://store.sony.cl/wf-c510/p" and first.in_stock
+
+
+def test_vtex_catalog_slice_rotates_and_wraps():
+    import json as _json
+
+    products = _json.loads(_fixture("vtex_sony.json"))
+    client = MagicMock()
+    client.get.return_value = _vtex_response(products, total=120)
+    reader = DirectStoreReader(client=client, backoff=StoreBackoff(clock=_FakeClock()))
+
+    assert len(reader.fetch_catalog_slice("sony", pages=10)) == 9   # 3 páginas de 50 cubren 120
+    offsets = [c.kwargs["params"]["_from"] for c in client.get.call_args_list]
+    assert offsets == [0, 50, 100]
+    client.get.reset_mock()
+    reader.fetch_catalog_slice("sony", pages=1)
+    assert client.get.call_args.kwargs["params"]["_from"] == 0   # vuelve al inicio
+    assert client.get.call_args.args[0] == "https://store.sony.cl/api/catalog_system/pub/products/search"
+
+
+def test_vtex_fetch_product_and_search():
+    import json as _json
+
+    products = _json.loads(_fixture("vtex_sony.json"))
+    client = MagicMock()
+    client.get.return_value = _vtex_response(products[:1], total=1, status=200)
+    reader = DirectStoreReader(client=client, backoff=StoreBackoff(clock=_FakeClock()))
+
+    item = reader.fetch_product("sony", "https://store.sony.cl/wf-c510/p")
+    assert item is not None and item.id == "sony-wf-c510" and item.current_price == 29990
+    assert client.get.call_args.args[0].endswith("/products/search/wf-c510/p")
+    reader.search("sony", "audifonos")
+    assert client.get.call_args.kwargs["params"]["ft"] == "audifonos"
+
+
+def test_vtex_block_pauses_store():
+    client = MagicMock()
+    client.get.return_value = _vtex_response([], total=0, status=429)
+    reader = DirectStoreReader(client=client, backoff=StoreBackoff(clock=_FakeClock()))
+    assert reader.fetch_catalog_slice("fensa", pages=2) == []
+    assert reader.backoff.is_paused("fensa") and not reader.backoff.is_paused("sony")
