@@ -322,6 +322,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def no_stale_frontend(request: Request, call_next):
+    """
+    La página y sus archivos estáticos se revalidan siempre (no-cache + ETag): sin esto, el
+    navegador puede seguir mostrando una versión antigua de la página después de una actualización.
+    """
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 # Montar archivos estáticos para la interfaz de usuario
 if STATIC_PATH.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_PATH)), name="static")

@@ -192,3 +192,15 @@ def test_same_product_with_different_ids_is_published_once(tmp_path):
     assert db.publish_feed_offer(product_id="mercadolibre-kMLC52057898", payload={"url": url}, **common)
     assert db.publish_feed_offer(product_id="mercadolibre-mlc52057898", payload={"url": url + "?tracking=x"}, **common) is None
     assert len(db.get_feed()) == 1
+
+
+def test_frontend_is_always_revalidated():
+    """Tras actualizar la app, el navegador no debe seguir mostrando la página antigua desde su caché."""
+    from glitchhunter_ai.web import server
+
+    client = TestClient(server.app)
+    for path in ("/", "/static/app.js", "/static/styles.css"):
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert resp.headers.get("cache-control") == "no-cache"
+    assert "no-cache" not in (client.get("/api/status").headers.get("cache-control") or "")
