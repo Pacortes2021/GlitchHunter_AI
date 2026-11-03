@@ -218,3 +218,66 @@ def test_full_scan_waits_for_running_direct_scan(tmp_path):
     assert 0.25 < time.monotonic() - t0 < 4           # esperó y luego corrió
     assert pipeline._scan_lock.acquire(blocking=False)  # y liberó el cerrojo al terminar
     pipeline._scan_lock.release()
+
+
+# =====================================================================
+# Escaneo directo en paralelo y ciclo de inicio a inicio
+# =====================================================================
+def test_direct_scan_fetches_stores_in_parallel_and_survives_a_failing_store(tmp_path):
+    import threading
+    from unittest.mock import MagicMock
+    from glitchhunter_ai.core.database import PriceDatabase
+    from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
+    from glitchhunter_ai.scrapers.direct_reader import DIRECT_STORES
+
+    threads = set()
+    reader = MagicMock()
+
+    def fetch_category(store_id, cat):
+        threads.add(threading.current_thread().name)
+        if store_id == "paris":
+            raise RuntimeError("caída simulada")
+        return []
+
+    reader.fetch_category.side_effect = fetch_category
+    reader.fetch_catalog_slice.return_value = []
+    pipeline = GlitchHuntingPipeline(db=PriceDatabase(str(tmp_path / "t.db")), direct_reader=reader)
+    pipeline.run_direct_scan(keywords=[], categories=["notebooks"], send_notifications=False)
+
+    assert sorted(c.args[0] for c in reader.fetch_category.call_args_list) == sorted(DIRECT_STORES)
+    assert all(name.startswith("direct") for name in threads)
+    assert not pipeline.last_direct_scan_skipped
+
+
+def test_direct_scan_marks_skipped_when_lock_is_held(tmp_path):
+    from unittest.mock import MagicMock
+    from glitchhunter_ai.core.database import PriceDatabase
+    from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
+
+    pipeline = GlitchHuntingPipeline(db=PriceDatabase(str(tmp_path / "t.db")), direct_reader=MagicMock())
+    pipeline._scan_lock.acquire()
+    try:
+        assert pipeline.run_direct_scan(keywords=[], categories=[], send_notifications=False) == []
+        assert pipeline.last_direct_scan_skipped
+    finally:
+        pipeline._scan_lock.release()
+
+
+def test_next_direct_delay_counts_from_scan_start():
+    from glitchhunter_ai.web.server import next_direct_delay
+
+    assert next_direct_delay(60, 50, skipped=False) == 10
+    assert next_direct_delay(60, 75, skipped=False) == 5      # escaneo más largo que el intervalo
+    assert next_direct_delay(180, 40, skipped=True) == 15     # omitido: reintento pronto
+
+
+def test_stealth_client_uses_one_session_per_thread():
+    import threading
+    from glitchhunter_ai.scrapers.stealth_client import StealthHTTPClient
+
+    client = StealthHTTPClient()
+    sessions = []
+    t = threading.Thread(target=lambda: sessions.append(client._session))
+    t.start(); t.join()
+    assert sessions[0] is not client._session
+    assert client._session is client._session

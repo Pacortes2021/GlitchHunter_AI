@@ -11,6 +11,7 @@ import re
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -82,6 +83,7 @@ class GlitchHuntingPipeline:
         self._scan_lock = threading.Lock()
         # Productos con el mismo precio que otros de su tienda en el escaneo en curso (carga masiva)
         self._bulk_price_counts: Dict[str, int] = {}
+        self.last_direct_scan_skipped = False   # True si el último escaneo directo se omitió por otro en curso
         self.is_scanning = False
 
     def process_product(
@@ -693,30 +695,50 @@ class GlitchHuntingPipeline:
         y categorías prioritarias, con precios en tiempo real. Comparte el cerrojo con run_scan,
         por lo que se omite si hay un escaneo completo en curso.
         """
-        from glitchhunter_ai.config import DIRECT_PCFACTORY_PAGES_PER_CYCLE
+        from glitchhunter_ai.config import DIRECT_FETCH_WORKERS, DIRECT_PCFACTORY_PAGES_PER_CYCLE
 
         if not self._scan_lock.acquire(blocking=False):
             logger.debug("Escaneo directo omitido: hay un escaneo en curso.")
+            self.last_direct_scan_skipped = True
             return []
 
+        self.last_direct_scan_skipped = False
         self.is_scanning = True
         self._bulk_price_counts = {}
         detected: List[GlitchAlert] = []
+        started = time.monotonic()
         try:
             if keywords is None:
                 keywords = self.db.get_watchlist_keywords()
             categories = categories or []
 
-            seen: set = set()
-            for store_id in DIRECT_STORES:
+            def fetch_store(store_id: str) -> List[List[ProductItem]]:
                 batches: List[List[ProductItem]] = []
                 for kw in keywords:
                     batches.append(self.direct_reader.search(store_id, kw))
                 for cat in categories:
                     batches.append(self.direct_reader.fetch_category(store_id, cat))
-                # Tiendas con API de catálogo completo (PC Factory): se recorre por tramos en cada ciclo
+                # Tiendas con API de catálogo completo (PC Factory, VTEX): se recorre por tramos en cada ciclo
                 if hasattr(self.direct_reader, "fetch_catalog_slice"):
                     batches.append(self.direct_reader.fetch_catalog_slice(store_id, pages=DIRECT_PCFACTORY_PAGES_PER_CYCLE))
+                return batches
+
+            # Cada tienda es un sitio distinto: se consultan en paralelo (la red es ~80% del escaneo).
+            # El procesamiento y la base de datos siguen en este hilo, en el orden de DIRECT_STORES.
+            fetched: Dict[str, List[List[ProductItem]]] = {}
+            with ThreadPoolExecutor(max_workers=DIRECT_FETCH_WORKERS, thread_name_prefix="direct") as pool:
+                futures = {pool.submit(fetch_store, s): s for s in DIRECT_STORES}
+                for fut in as_completed(futures):
+                    store_id = futures[fut]
+                    try:
+                        fetched[store_id] = fut.result()
+                    except Exception as exc:
+                        logger.warning("⚠️ [Escaneo Directo] %s falló y se omite en este ciclo: %s", store_id, exc)
+                        fetched[store_id] = []
+
+            seen: set = set()
+            for store_id in DIRECT_STORES:
+                batches = fetched.get(store_id, [])
                 store_products: List[ProductItem] = []
                 for products in batches:
                     for prod in products:
@@ -731,8 +753,8 @@ class GlitchHuntingPipeline:
                         detected.append(alert)
 
             logger.info(
-                "⚡ [Escaneo Directo] %d producto(s) revisados en tiempo real en %s, %d alerta(s) nueva(s).",
-                len(seen), ", ".join(STORE_NAMES[s] for s in DIRECT_STORES), len(detected),
+                "⚡ [Escaneo Directo] %d producto(s) revisados en tiempo real en %s, %d alerta(s) nueva(s) (%.0f s).",
+                len(seen), ", ".join(STORE_NAMES[s] for s in DIRECT_STORES), len(detected), time.monotonic() - started,
             )
             self.publish_new_deals()
             self.refresh_feed_statuses()
