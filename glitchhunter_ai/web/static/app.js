@@ -25,6 +25,12 @@
     jumbo: { name: 'Jumbo', color: '#16a34a' },
     hp: { name: 'HP', color: '#0096d6' },
     winpy: { name: 'Winpy', color: '#f59e0b' },
+    sony: { name: 'Sony Store', color: '#111827' },
+    motorola: { name: 'Motorola', color: '#4f46e5' },
+    electrolux: { name: 'Electrolux', color: '#1e3a8a' },
+    fensa: { name: 'Fensa', color: '#0e7490' },
+    oster: { name: 'Oster', color: '#b91c1c' },
+    casaroyal: { name: 'Casa Royal', color: '#9333ea' },
     solotodo: { name: 'SoloTodo', color: '#0d9488' }
   };
   const DEFAULT_STORE_COLOR = '#64748b';

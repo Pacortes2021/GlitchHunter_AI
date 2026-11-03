@@ -1,0 +1,77 @@
+[
+ {
+  "productId": "2131",
+  "productName": "Audífonos True Wireless WF-C510",
+  "link": "https://store.sony.cl/wf-c510/p",
+  "linkText": "wf-c510",
+  "items": [
+   {
+    "itemId": "3054",
+    "images": [
+     {
+      "imageUrl": "https://clsonyb2c.vteximg.com.br/arquivos/ids/466321/GENBA_WF-C510-B_01_MainImage_1000x1000px.jpg?v=638755098201500000"
+     }
+    ],
+    "sellers": [
+     {
+      "commertialOffer": {
+       "Price": 29990.0,
+       "ListPrice": 49990.0,
+       "AvailableQuantity": 264
+      }
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "productId": "1925",
+  "productName": "Audífonos inalámbricos con noise cancelling WH-CH720N",
+  "link": "https://store.sony.cl/wh-ch720n/p",
+  "linkText": "wh-ch720n",
+  "items": [
+   {
+    "itemId": "2804",
+    "images": [
+     {
+      "imageUrl": "https://clsonyb2c.vteximg.com.br/arquivos/ids/465952/00-GENBA-WH-CH720N-W-Main-Image-Sony-Store-Online.jpg.jpg?v=638747953467100000"
+     }
+    ],
+    "sellers": [
+     {
+      "commertialOffer": {
+       "Price": 59990.0,
+       "ListPrice": 99990.0,
+       "AvailableQuantity": 105
+      }
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "productId": "1919",
+  "productName": "Audífonos inalámbricos WH-CH520",
+  "link": "https://store.sony.cl/wh-ch520/p",
+  "linkText": "wh-ch520",
+  "items": [
+   {
+    "itemId": "2794",
+    "images": [
+     {
+      "imageUrl": "https://clsonyb2c.vteximg.com.br/arquivos/ids/465984/00-GENBA-WH-CH520-B-Main-Image-Sony-Store-Online.jpg.jpg?v=638747999320400000"
+     }
+    ],
+    "sellers": [
+     {
+      "commertialOffer": {
+       "Price": 27990.0,
+       "ListPrice": 47990.0,
+       "AvailableQuantity": 66
+      }
+     }
+    ]
+   }
+  ]
+ }
+]

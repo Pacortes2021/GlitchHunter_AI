@@ -28,7 +28,22 @@ from glitchhunter_ai.scrapers.stealth_client import default_stealth_client
 
 logger = logging.getLogger("glitchhunter.scrapers.direct_reader")
 
-DIRECT_STORES = ("falabella", "ripley", "paris", "abc", "jumbo", "hp", "winpy", "sodimac", "pcfactory")
+# Tiendas VTEX: su API pública de catálogo (/api/catalog_system/pub/products/search) entrega precio,
+# precio normal y stock, sin autenticación. Se recorre el catálogo completo por tramos, como PC Factory.
+# id -> (nombre, sitio, categoría por defecto)
+VTEX_STORES: Dict[str, tuple] = {
+    "sony": ("Sony Store", "https://store.sony.cl", "tecnologia"),
+    "motorola": ("Motorola", "https://www.motorola.cl", "smartphones"),
+    "electrolux": ("Electrolux", "https://www.electrolux.cl", "linea_blanca"),
+    "fensa": ("Fensa", "https://www.tiendafensa.cl", "linea_blanca"),
+    "oster": ("Oster", "https://www.oster.cl", "linea_blanca"),
+    "casaroyal": ("Casa Royal", "https://www.casaroyal.cl", "tecnologia"),
+}
+VTEX_PAGE_SIZE = 50          # máximo que acepta la API
+VTEX_MAX_OFFSET = 2500       # VTEX no pagina más allá de _from=2500
+VTEX_PAGES_PER_CYCLE = 4     # 200 productos por tienda y ciclo
+
+DIRECT_STORES = ("falabella", "ripley", "paris", "abc", "jumbo", "hp", "winpy", "sodimac", "pcfactory") + tuple(VTEX_STORES)
 
 # PC Factory expone una API JSON pública (la que usa su propio sitio): búsqueda, catálogo completo
 # paginado (search=*) y detalle por id. El catálogo (~3.000 productos, 48 por página) se recorre
@@ -44,6 +59,7 @@ _BOT_CHALLENGE_MARKERS = ("captcha", "perimeterx", "px-captcha", "are you a robo
 STORE_NAMES = {
     "falabella": "Falabella", "ripley": "Ripley", "paris": "Paris", "abc": "ABC",
     "jumbo": "Jumbo", "hp": "HP", "winpy": "Winpy", "sodimac": "Sodimac", "pcfactory": "PC Factory",
+    **{sid: cfg[0] for sid, cfg in VTEX_STORES.items()},
 }
 STORE_BASE = {
     "falabella": "https://www.falabella.com",
@@ -53,6 +69,7 @@ STORE_BASE = {
     "jumbo": "https://www.jumbo.cl",
     "hp": "https://www.hp.com",
     "winpy": "https://www.winpy.cl",
+    **{sid: cfg[1] for sid, cfg in VTEX_STORES.items()},
     "sodimac": "https://www.sodimac.cl",
     "pcfactory": "https://www.pcfactory.cl",
 }
@@ -366,6 +383,39 @@ def parse_jumbo_product(html: str, url: str) -> Optional[ProductItem]:
         if item.id == target:
             return item
     return None
+
+
+def parse_vtex_products(store_id: str, products: Any) -> List[ProductItem]:
+    """
+    Productos de la API de catálogo VTEX: el primer SKU con su primer vendedor
+    (commertialOffer.Price = actual, ListPrice = normal, AvailableQuantity = stock).
+    """
+    if not isinstance(products, list):
+        raise BlockedError("respuesta VTEX inesperada")
+    name, _, hint = VTEX_STORES[store_id]
+    items: List[ProductItem] = []
+    now = datetime.now(timezone.utc)
+    for raw in products:
+        try:
+            sku = (raw.get("items") or [])[0]
+            offer = (sku.get("sellers") or [])[0].get("commertialOffer") or {}
+            current = float(offer.get("Price") or 0)
+            normal = float(offer.get("ListPrice") or 0)
+        except (AttributeError, IndexError, TypeError, ValueError):
+            continue
+        title = " ".join(str(raw.get("productName") or "").split())
+        url = str(raw.get("link") or "")
+        pid = canonical_product_id(store_id, url)
+        if not pid or not title or current <= 0:
+            continue
+        images = sku.get("images") or []
+        items.append(ProductItem(
+            id=pid, store_id=store_id, store_name=name, title=title,
+            category=_infer_category(title, hint), current_price=current, normal_price=max(normal, current),
+            card_price=None, url=url, image_url=images[0].get("imageUrl") if images else None,
+            in_stock=int(offer.get("AvailableQuantity") or 0) > 0, timestamp=now, source="direct",
+        ))
+    return items
 
 
 def _hp_prices(node: Any) -> tuple:
@@ -787,11 +837,59 @@ class DirectStoreReader:
             return []
         return PCFactoryScraper().parse_pcfactory_json(content.get("items") or [])
 
+    # --- Tiendas VTEX (API pública de catálogo) --------------------------------
+    def _vtex_query(self, store_id: str, path: str = "", params: Optional[Dict[str, Any]] = None) -> Optional[tuple]:
+        """(productos, total) de la API de catálogo VTEX, con el mismo freno automático que las páginas."""
+        if self.backoff.is_paused(store_id):
+            return None
+        url = f"{VTEX_STORES[store_id][1]}/api/catalog_system/pub/products/search{path}"
+        try:
+            resp = self.client.get(url, params=params or {}, timeout=self.timeout)
+        except Exception as exc:
+            logger.debug("Error de red en la API VTEX de %s: %s", store_id, exc)
+            return None
+        status = getattr(resp, "status_code", 0)
+        if status in (403, 429) or status >= 500:
+            self.backoff.record_block(store_id, f"HTTP {status}")
+            return None
+        if status not in (200, 206):   # 206: respuesta paginada
+            return None
+        try:
+            items = parse_vtex_products(store_id, resp.json())
+        except Exception:
+            self.backoff.record_block(store_id, "respuesta no es JSON de catálogo")
+            return None
+        self.backoff.record_success(store_id)
+        resources = str((getattr(resp, "headers", None) or {}).get("resources") or "")
+        total = int(resources.rsplit("/", 1)[-1]) if resources.rsplit("/", 1)[-1].isdigit() else None
+        return items, total
+
+    def _vtex_catalog_slice(self, store_id: str, pages: int) -> List[ProductItem]:
+        items: List[ProductItem] = []
+        offset = self._catalog_cursor.get(store_id, 0)
+        for _ in range(max(1, pages)):
+            result = self._vtex_query(store_id, params={
+                "_from": offset, "_to": offset + VTEX_PAGE_SIZE - 1, "O": "OrderByReleaseDateDESC",
+            })
+            if result is None:
+                break
+            page_items, total = result
+            items.extend(page_items)
+            offset += VTEX_PAGE_SIZE
+            limit = min(total or 0, VTEX_MAX_OFFSET)
+            if not page_items or offset >= limit:
+                offset = 0
+                break
+        self._catalog_cursor[store_id] = offset
+        return items
+
     def fetch_catalog_slice(self, store_id: str, pages: int = 10) -> List[ProductItem]:
         """
         Siguiente tramo del catálogo completo de la tienda (rotación por páginas).
-        Hoy solo PC Factory lo permite: su API lista todo el catálogo con search=*.
+        Lo permiten PC Factory (su API lista todo con search=*) y las tiendas VTEX.
         """
+        if store_id in VTEX_STORES:
+            return self._vtex_catalog_slice(store_id, min(pages, VTEX_PAGES_PER_CYCLE))
         if store_id != "pcfactory":
             return []
         items: List[ProductItem] = []
@@ -861,6 +959,9 @@ class DirectStoreReader:
 
     def search(self, store_id: str, keyword: str) -> List[ProductItem]:
         q = urllib.parse.quote(keyword.strip())
+        if store_id in VTEX_STORES:
+            result = self._vtex_query(store_id, params={"ft": keyword.strip(), "_from": 0, "_to": VTEX_PAGE_SIZE - 1})
+            return result[0] if result else []
         if store_id == "falabella":
             url = f"{STORE_BASE['falabella']}/falabella-cl/search?Ntt={q}"
         elif store_id == "ripley":
@@ -891,6 +992,11 @@ class DirectStoreReader:
                 return None
             content = self._pcfactory_query({"page": 0, "size": 5, "search": pid})
             matches = [i for i in self._pcfactory_items(content) if i.id == f"pcfactory-{pid}"]
+            return matches[0] if matches else None
+        if store_id in VTEX_STORES:
+            slug = (canonical_product_id(store_id, url) or "").split("-", 1)[-1]
+            result = self._vtex_query(store_id, path=f"/{urllib.parse.quote(slug)}/p") if slug else None
+            matches = [i for i in (result[0] if result else []) if i.id == f"{store_id}-{slug}"]
             return matches[0] if matches else None
         if store_id not in PRODUCT_PARSERS:
             return None
