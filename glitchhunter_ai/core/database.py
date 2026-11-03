@@ -319,6 +319,11 @@ class PriceDatabase:
                 );
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_product ON offer_feed(product_id);")
+            # Migración: URL normalizada para deduplicar el mismo producto con IDs distintos
+            cursor.execute("PRAGMA table_info(offer_feed);")
+            if "url_key" not in {r[1] for r in cursor.fetchall()}:
+                cursor.execute("ALTER TABLE offer_feed ADD COLUMN url_key TEXT;")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_url ON offer_feed(url_key);")
 
             # 7. Tabla de Feedback del Usuario (👍 Buena Oferta / 👎 Falso Positivo)
             cursor.execute("""
@@ -1186,11 +1191,15 @@ class PriceDatabase:
         más barato que en su última publicación. Retorna el id de la publicación, o None si ya
         estaba publicada a este precio (o a uno menor) y no corresponde repetirla.
         """
+        # El mismo producto puede llegar con IDs distintos según la fuente o el formato de una
+        # versión anterior: se identifica también por su URL sin parámetros.
+        raw_url = payload.get("url") or (payload.get("product") or {}).get("url") or ""
+        url_key = str(raw_url).split("?")[0].split("#")[0].rstrip("/").lower() or None
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT MIN(best_price) AS min_price FROM offer_feed WHERE product_id = ?;",
-                (product_id,),
+                "SELECT MIN(best_price) AS min_price FROM offer_feed WHERE product_id = ? OR (url_key IS NOT NULL AND url_key = ?);",
+                (product_id, url_key),
             )
             row = cursor.fetchone()
             if row and row["min_price"] is not None:
@@ -1200,10 +1209,10 @@ class PriceDatabase:
                     return None
             received_at = datetime.now(timezone.utc).isoformat()
             cursor.execute("""
-                INSERT INTO offer_feed (kind, product_id, store_id, best_price, discount_pct, received_at, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?);
+                INSERT INTO offer_feed (kind, product_id, store_id, best_price, discount_pct, received_at, payload, url_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             """, (kind, product_id, store_id, float(best_price), float(discount_pct), received_at,
-                  json.dumps(payload, ensure_ascii=False, default=str)))
+                  json.dumps(payload, ensure_ascii=False, default=str), url_key))
             conn.commit()
             return int(cursor.lastrowid)
 

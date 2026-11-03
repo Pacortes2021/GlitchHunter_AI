@@ -180,3 +180,13 @@ def test_non_tech_deals_included_by_default_but_noise_still_blocked(tmp_path):
     db.upsert_product(_product("p-funda", "Funda Silicona iPhone 15 Pro", 9990, 29990))
     pipeline.publish_new_deals()
     assert [p["product_id"] for p in db.get_feed()] == ["p-parka"]
+
+
+def test_same_product_with_different_ids_is_published_once(tmp_path):
+    """Mismo producto con IDs de distintas fuentes o formatos antiguos (ej: mercadolibre-kMLC… y mercadolibre-mlc…)."""
+    db = _db(tmp_path)
+    url = "https://www.mercadolibre.cl/microfono-bitbyte-m7/p/MLC52057898"
+    common = dict(kind="deal", store_id="mercadolibre", best_price=28990.0, discount_pct=42.0)
+    assert db.publish_feed_offer(product_id="mercadolibre-kMLC52057898", payload={"url": url}, **common)
+    assert db.publish_feed_offer(product_id="mercadolibre-mlc52057898", payload={"url": url + "?tracking=x"}, **common) is None
+    assert len(db.get_feed()) == 1
