@@ -371,6 +371,7 @@ class PriceDatabase:
         try:
             self.cleanup_duplicate_glitches()
             self.cleanup_duplicate_price_history()
+            self.remove_legacy_unstable_products()
         except Exception:
             pass
 
@@ -954,6 +955,26 @@ class PriceDatabase:
             if deleted_count > 0:
                 logger.info(f"🧹 Limpieza de alertas duplicadas: se removieron {deleted_count} registros redundantes.")
             return deleted_count
+
+    def remove_legacy_unstable_products(self) -> int:
+        """
+        Borra productos con IDs de formatos antiguos ya reemplazados por IDs canónicos:
+        - 'pcfactory_N': ahora 'pcfactory-N'; además traían un precio normal inflado ('referencia').
+        - 'MLC-HTML-…': IDs de Mercado Libre basados en hash() de Python (cambiaban en cada reinicio).
+        Sin esto, esas filas se seguirían publicando como ofertas hasta expirar.
+        """
+        patterns = ("pcfactory\\_%", "MLC-HTML-%")
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            removed = 0
+            for pattern in patterns:
+                cursor.execute("DELETE FROM price_history WHERE product_id LIKE ? ESCAPE '\\';", (pattern,))
+                cursor.execute("DELETE FROM products WHERE id LIKE ? ESCAPE '\\';", (pattern,))
+                removed += cursor.rowcount
+            if removed:
+                conn.commit()
+                logger.info(f"🧹 {removed} producto(s) con IDs de formato antiguo eliminados.")
+            return removed
 
     def cleanup_duplicate_price_history(self) -> int:
         """

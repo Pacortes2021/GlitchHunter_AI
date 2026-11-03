@@ -155,3 +155,15 @@ def test_watchlist_scan_respects_scan_lock(tmp_path):
         assert pipeline.run_watchlist_scan(use_live=False) == []
     finally:
         pipeline._scan_lock.release()
+
+
+def test_legacy_unstable_ids_are_removed(tmp_path):
+    """Las filas pcfactory_N (precio normal inflado) y MLC-HTML-… (hash inestable) se eliminan al iniciar."""
+    db = _db(tmp_path)
+    for pid, store in (("pcfactory_56531", "pcfactory"), ("MLC-HTML-1-186662", "mercadolibre"),
+                       ("pcfactory-56531", "pcfactory"), ("mercadolibre-mlc123456", "mercadolibre")):
+        db.upsert_product(_product(pid, "Unidad SSD 256GB SU650", 46390, 77990, store=store))
+    assert db.remove_legacy_unstable_products() == 2
+    with db.get_connection() as conn:
+        ids = sorted(r["id"] for r in conn.execute("SELECT id FROM products"))
+    assert ids == ["mercadolibre-mlc123456", "pcfactory-56531"]
