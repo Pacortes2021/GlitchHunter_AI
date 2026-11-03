@@ -334,7 +334,7 @@ def test_audit_issue_6_telegram_dispatch_failure_and_retry(tmp_path):
         store_name="Líder.cl",
         title="Consola Nintendo Switch OLED",
         category="consolas",
-        current_price=29990.0,
+        current_price=34999.0,  # ~10x: error de precio verificado (falta un cero)
         normal_price=349990.0,
         url="https://lider.cl/p/switch",
         in_stock=True,

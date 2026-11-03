@@ -542,6 +542,9 @@ async def get_deals(
     return [format_commercial_deal_record(d) for d in raw_deals]
 
 
+STORE_NAMES: Dict[str, str] = {s["id"]: s["name"] for s in STORES}
+
+
 def format_feed_post(post: Dict[str, Any]) -> Dict[str, Any]:
     """Publicación del canal con el formato de tarjeta que espera app.js (precios y hora fijos)."""
     payload = dict(post["payload"])
@@ -552,6 +555,9 @@ def format_feed_post(post: Dict[str, Any]) -> Dict[str, Any]:
         card["alert_id"] = post["product_id"]
     else:
         card = payload
+    # Un solo nombre por tienda: cada scraper usa el suyo ("Líder" / "Líder Chile", "Paris" / "Paris.cl")
+    product = card.get("product") or {}
+    product["store_name"] = STORE_NAMES.get(product.get("store_id") or post["store_id"], product.get("store_name"))
     card["feed_id"] = post["id"]
     card["feed_kind"] = post["kind"]
     card["created_at"] = post["received_at"]

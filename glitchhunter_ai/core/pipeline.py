@@ -154,6 +154,11 @@ class GlitchHuntingPipeline:
             )
             return None
 
+        # Reacondicionados / usados / open box: la tienda los compara contra el precio de uno nuevo
+        if REFURBISHED_RE.search(product.title):
+            logger.debug(f"♻️ [Reacondicionado Omitido] {product.title} ({product.store_name}).")
+            return None
+
         # ⏱️ Confirmación en tiempo real: los precios del agregador llegan con ~40 min de retraso.
         # Antes de alertar se relee el producto directamente en la tienda (Falabella / Ripley).
         if (
@@ -211,10 +216,21 @@ class GlitchHuntingPipeline:
         market_inflation = bool(mkt_ref and mkt_ref.is_fake_inflation)
         if market_inflation:
             is_fake_inflation = True
-            logger.info(
+            logger.debug(
                 f"⚠️ [Inflación Cruzada] {product.title}: normal ${product.normal_price:,.0f} "
                 f"> 1.8x mediana mercado ${mkt_ref.median_price:,.0f}. Alerta sin push."
             )
+
+        # ¿Hay evidencia INDEPENDIENTE de la tienda de que el precio realmente se desplomó?
+        # El precio tachado lo pone la tienda: perfumes y cremas muestran "-70%" todo el año.
+        # Sin evidencia, el producto se publica como oferta (sin push), no como error de precio.
+        best_now = product.best_price
+        verified_drop = bool(
+            math_eval.get("is_missing_zero")                                        # ~10x: firma clásica de error
+            or (baseline_price and baseline_price > 0 and best_now <= baseline_price * 0.5)  # nuestro historial
+            or (mkt_ref and not market_inflation and mkt_ref.market_discount_pct >= 50.0)  # otras tiendas
+            or product.source == "knasta"                                           # vs precio habitual de Knasta
+        )
 
         # Determinación de severidad
         severity_val = math_eval.get("severity")
@@ -341,7 +357,7 @@ class GlitchHuntingPipeline:
         # el canal guarda las ofertas para siempre y solo debe contener datos reales.
         is_simulated = product.id.startswith("test-") or getattr(product, "is_mock", False)
         try:
-            if not is_simulated:
+            if not is_simulated and verified_drop:
                 self.db.publish_feed_offer(
                     kind="glitch",
                     product_id=product.id,
@@ -350,6 +366,8 @@ class GlitchHuntingPipeline:
                     discount_pct=discount_pct,
                     payload=alert.model_dump(mode="json"),
                 )
+            elif not is_simulated:
+                self._publish_unverified_as_deal(product, discount_pct, savings_clp)
         except Exception as e:
             logger.warning(f"No se pudo publicar el glitch en el canal: {e}")
 
@@ -363,7 +381,7 @@ class GlitchHuntingPipeline:
             or getattr(product, "is_mock", False)
         )
 
-        if send_notifications and not is_test_product and not market_inflation:
+        if send_notifications and not is_test_product and not market_inflation and verified_drop:
             # Despacho por Telegram
             try:
                 dispatch_ok = self.telegram_dispatcher.send_alert(alert)
@@ -523,6 +541,31 @@ class GlitchHuntingPipeline:
             self._scan_lock.release()
 
     run_scan_cycle = run_scan
+
+    def _publish_unverified_as_deal(self, product: ProductItem, discount_pct: float, savings_clp: float) -> None:
+        """Publica como 'Oferta' un descuento ≥65% sin evidencia independiente (si pasa el filtro de calidad)."""
+        row = {
+            "product_id": product.id,
+            "store_id": product.store_id,
+            "title": product.title,
+            "category": classify_category(product.title),
+            "url": str(product.url),
+            "image_url": product.image_url,
+            "current_price": product.current_price,
+            "card_price": product.card_price,
+            "normal_price": product.normal_price,
+            "discount_pct": round(discount_pct, 1),
+            "savings_clp": round(savings_clp, 0),
+        }
+        if self._is_publishable_deal(row, product.best_price):
+            self.db.publish_feed_offer(
+                kind="deal",
+                product_id=product.id,
+                store_id=product.store_id,
+                best_price=product.best_price,
+                discount_pct=discount_pct,
+                payload=row,
+            )
 
     def _is_publishable_deal(self, row: Dict[str, Any], best_price: float) -> bool:
         """
