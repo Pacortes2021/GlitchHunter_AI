@@ -3,6 +3,7 @@ Cliente HTTP Stealth con evasión de bloqueos Cloudflare / Akamai / DataDome
 utilizando curl_cffi para suplantación de huella TLS (JA3/JA4) y HTTP/2 de Chrome.
 """
 import logging
+import threading
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger("GlitchHunter.StealthClient")
@@ -45,21 +46,34 @@ class StealthHTTPClient:
         self.impersonate = impersonate
         self.timeout = timeout
         self.use_curl_cffi = _CURL_CFFI_AVAILABLE
-        self._session = None
+        # Una sesión por hilo: las sesiones de curl_cffi/requests no son seguras entre hilos,
+        # y el escaneo directo consulta varias tiendas en paralelo.
+        self._local = threading.local()
         self._init_session()
+
+    @property
+    def _session(self):
+        if not hasattr(self._local, "session"):
+            self._init_session()
+        return self._local.session
+
+    @_session.setter
+    def _session(self, session):
+        self._local.session = session   # reemplaza la sesión del hilo actual
 
     def _init_session(self):
         if self.use_curl_cffi and curl_requests is not None:
-            self._session = curl_requests.Session(impersonate=self.impersonate)
-            self._session.headers.update(DEFAULT_CHROME_HEADERS)
+            session = curl_requests.Session(impersonate=self.impersonate)
+            session.headers.update(DEFAULT_CHROME_HEADERS)
             logger.debug("StealthHTTPClient inicializado con curl_cffi (impersonate=%s)", self.impersonate)
         elif std_requests is not None:
-            self._session = std_requests.Session()
-            self._session.headers.update(DEFAULT_CHROME_HEADERS)
+            session = std_requests.Session()
+            session.headers.update(DEFAULT_CHROME_HEADERS)
             logger.warning("curl_cffi no disponible; usando requests estándar con cabeceras Chrome emuladas.")
         else:
-            self._session = None
+            session = None
             logger.error("Ni curl_cffi ni requests estándar se encuentran disponibles.")
+        self._local.session = session
 
     def get(self, url: str, headers: Optional[Dict[str, str]] = None, timeout: Optional[int] = None, **kwargs) -> Any:
         merged_headers = dict(DEFAULT_CHROME_HEADERS)

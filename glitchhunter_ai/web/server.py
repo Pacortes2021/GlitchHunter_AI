@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import random
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ from glitchhunter_ai.config import (
     CORS_ORIGINS,
     DIRECT_SCAN_CATEGORIES,
     DIRECT_SCAN_ENABLED,
+    DIRECT_RETRY_SECONDS,
     DIRECT_SCAN_INTERVAL_SECONDS,
     EVENT_DIRECT_SCAN_INTERVAL_SECONDS,
     EVENT_MODE,
@@ -191,6 +193,17 @@ def current_direct_interval() -> int:
     return DIRECT_SCAN_INTERVAL_SECONDS
 
 
+def next_direct_delay(interval: float, elapsed: float, skipped: bool) -> float:
+    """
+    Espera hasta el próximo escaneo directo. El intervalo se cuenta de inicio a inicio (un escaneo
+    de 50 s con intervalo de 60 s espera 10 s, no 60), y si se omitió por un escaneo completo en
+    curso se reintenta pronto en vez de perder un intervalo entero.
+    """
+    if skipped:
+        return float(DIRECT_RETRY_SECONDS)
+    return max(5.0, float(interval) - elapsed)
+
+
 async def direct_scanner_loop():
     """
     Escaneo directo frecuente de Falabella y Ripley (modo híbrido): watchlist y categorías
@@ -201,6 +214,7 @@ async def direct_scanner_loop():
         f"categorías: {', '.join(DIRECT_SCAN_CATEGORIES) or 'solo watchlist'})."
     )
     last_event = None
+    delay = float(current_direct_interval())
     while True:
         try:
             event = active_event(EVENT_WINDOW_LIST, EVENT_MODE)
@@ -210,15 +224,20 @@ async def direct_scanner_loop():
                 elif last_event:
                     logger.info(f"🎯 Modo evento terminado: escaneo directo vuelve a cada {DIRECT_SCAN_INTERVAL_SECONDS}s.")
                 last_event = event
-            await asyncio.sleep(current_direct_interval())
+            await asyncio.sleep(delay)
+            started = time.monotonic()
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None, lambda: pipeline.run_direct_scan(categories=DIRECT_SCAN_CATEGORIES)
+            )
+            delay = next_direct_delay(
+                current_direct_interval(), time.monotonic() - started, pipeline.last_direct_scan_skipped
             )
         except asyncio.CancelledError:
             break
         except Exception as exc:
             logger.error(f"❌ Error en escaneo directo: {exc}")
+            delay = float(current_direct_interval())
 
 
 @asynccontextmanager

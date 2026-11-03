@@ -81,6 +81,10 @@ DIRECT_SCAN_INTERVAL_SECONDS = int(os.getenv("DIRECT_SCAN_INTERVAL_SECONDS", "18
 DIRECT_SCAN_CATEGORIES = [c.strip() for c in os.getenv("DIRECT_SCAN_CATEGORIES", "").split(",") if c.strip()]
 # PC Factory: páginas de 48 productos de su catálogo completo leídas por ciclo (~35 KB c/u, ~63 páginas en total)
 DIRECT_PCFACTORY_PAGES_PER_CYCLE = int(os.getenv("DIRECT_PCFACTORY_PAGES_PER_CYCLE", "10"))
+# Tiendas consultadas a la vez en el escaneo directo (cada una es un sitio distinto)
+DIRECT_FETCH_WORKERS = int(os.getenv("DIRECT_FETCH_WORKERS", "8"))
+# Si el escaneo directo se omitió por un escaneo completo en curso, se reintenta a los N segundos
+DIRECT_RETRY_SECONDS = int(os.getenv("DIRECT_RETRY_SECONDS", "15"))
 
 # Modo evento: en CyberDay, Cyber Monday, Black Friday y Navidad ocurre la mayoría de los errores
 # de precio, y duran de minutos a 2 horas. Durante esas fechas el escaneo directo es más frecuente.
