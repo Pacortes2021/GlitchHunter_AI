@@ -28,7 +28,7 @@ from glitchhunter_ai.scrapers.stealth_client import default_stealth_client
 
 logger = logging.getLogger("glitchhunter.scrapers.direct_reader")
 
-DIRECT_STORES = ("falabella", "ripley", "sodimac", "pcfactory")
+DIRECT_STORES = ("falabella", "ripley", "paris", "sodimac", "pcfactory")
 
 # PC Factory expone una API JSON pública (la que usa su propio sitio): búsqueda, catálogo completo
 # paginado (search=*) y detalle por id. El catálogo (~3.000 productos, 48 por página) se recorre
@@ -41,10 +41,11 @@ PCFACTORY_PAGE_SIZE = 48
 _NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.DOTALL)
 _BOT_CHALLENGE_MARKERS = ("captcha", "perimeterx", "px-captcha", "are you a robot", "access denied")
 
-STORE_NAMES = {"falabella": "Falabella", "ripley": "Ripley", "sodimac": "Sodimac", "pcfactory": "PC Factory"}
+STORE_NAMES = {"falabella": "Falabella", "ripley": "Ripley", "paris": "Paris", "sodimac": "Sodimac", "pcfactory": "PC Factory"}
 STORE_BASE = {
     "falabella": "https://www.falabella.com",
     "ripley": "https://simple.ripley.cl",
+    "paris": "https://www.paris.cl",
     "sodimac": "https://www.sodimac.cl",
     "pcfactory": "https://www.pcfactory.cl",
 }
@@ -65,6 +66,14 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
         "linea_blanca": "/sodimac-cl/search?Ntt=refrigerador",
         "lavadoras": "/sodimac-cl/search?Ntt=lavadora",
         "herramientas": "/sodimac-cl/search?Ntt=taladro",
+    },
+    # Paris: Next.js App Router; cada página trae ~30 productos (ignora ?page=). Línea blanca vía búsqueda.
+    "paris": {
+        "smartphones": "/tecnologia/celulares/",
+        "notebooks": "/tecnologia/computadores/notebooks/",
+        "televisores": "/electro/television/",
+        "consolas": "/tecnologia/consolas-videojuegos/",
+        "linea_blanca": "/search?q=refrigerador",
     },
     "ripley": {
         "smartphones": "/tecno/celulares",
@@ -191,6 +200,87 @@ def parse_falabella_listing(html: str, category_hint: str = "tecnologia") -> Lis
             timestamp=now, source="direct",
         ))
     return items
+
+
+_NEXT_F_RE = re.compile(r'self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)')
+
+
+def _paris_products(html: str) -> List[Dict[str, Any]]:
+    """
+    Productos del flujo RSC de Next.js App Router de Paris (self.__next_f): objetos con formato
+    commercetools ('masterVariant.prices' con regular / offer / paymentMethod).
+    """
+    chunks = _NEXT_F_RE.findall(html or "")
+    if not chunks:
+        raise BlockedError("página sin self.__next_f")
+    flight = "".join(json.loads('"' + c + '"') for c in chunks)
+    decoder = json.JSONDecoder()
+    found: Dict[str, Dict[str, Any]] = {}
+    for m in re.finditer(r'"masterVariant"', flight):
+        j = m.start()
+        for _ in range(400):   # retroceder hasta el inicio del objeto producto
+            j = flight.rfind("{", 0, j)
+            if j < 0:
+                break
+            try:
+                obj, _ = decoder.raw_decode(flight, j)
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and "masterVariant" in obj:
+                key = str(obj.get("key") or obj.get("id") or "")
+                if key:
+                    found.setdefault(key, obj)
+                break
+    return list(found.values())
+
+
+def _cent_amount(price: Any) -> float:
+    value = (price or {}).get("value") or {}
+    amount = value.get("centAmount")
+    digits = int(value.get("fractionDigits") or 0)
+    return float(amount) / (10 ** digits) if amount else 0.0
+
+
+def parse_paris_listing(html: str, category_hint: str = "tecnologia") -> List[ProductItem]:
+    """Productos de Paris: precio normal (regular), oferta (offer) y tarjeta Cencosud (paymentMethod)."""
+    items: List[ProductItem] = []
+    now = datetime.now(timezone.utc)
+    for raw in _paris_products(html):
+        if raw.get("publish") is False:
+            continue
+        title = " ".join(str(raw.get("name") or "").split())   # Paris usa espacios duros (\xa0)
+        slug = str(raw.get("slug") or "").strip()
+        mv = raw.get("masterVariant") or {}
+        prices = mv.get("prices") or {}
+        normal = _cent_amount(prices.get("regular"))
+        offer = _cent_amount(prices.get("offer"))
+        card = _cent_amount(prices.get("paymentMethod")) or None
+        current = offer or normal
+        if not title or not slug or current <= 0:
+            continue
+        url = f"{STORE_BASE['paris']}/{slug}.html"
+        pid = canonical_product_id("paris", url)
+        if not pid:
+            continue
+        if card is not None and card >= current:
+            card = None
+        images = mv.get("images") or []
+        image = images[0].get("url") if images and isinstance(images[0], dict) else None
+        items.append(ProductItem(
+            id=pid, store_id="paris", store_name=STORE_NAMES["paris"], title=title,
+            category=_infer_category(title, category_hint), current_price=current, normal_price=normal or current,
+            card_price=card, url=url, image_url=image, in_stock=True, timestamp=now, source="direct",
+        ))
+    return items
+
+
+def parse_paris_product(html: str, url: str) -> Optional[ProductItem]:
+    """Página de producto de Paris: el producto de la URL entre los objetos del flujo RSC."""
+    target = canonical_product_id("paris", url)
+    for item in parse_paris_listing(html):
+        if item.id == target:
+            return item
+    return None
 
 
 def parse_sodimac_listing(html: str, category_hint: str = "tecnologia") -> List[ProductItem]:
@@ -320,8 +410,18 @@ def parse_ripley_product(html: str, url: str) -> Optional[ProductItem]:
     )
 
 
-LISTING_PARSERS = {"falabella": parse_falabella_listing, "ripley": parse_ripley_listing, "sodimac": parse_sodimac_listing}
-PRODUCT_PARSERS = {"falabella": parse_falabella_product, "ripley": parse_ripley_product, "sodimac": parse_sodimac_product}
+LISTING_PARSERS = {
+    "falabella": parse_falabella_listing,
+    "ripley": parse_ripley_listing,
+    "paris": parse_paris_listing,
+    "sodimac": parse_sodimac_listing,
+}
+PRODUCT_PARSERS = {
+    "falabella": parse_falabella_product,
+    "ripley": parse_ripley_product,
+    "paris": parse_paris_product,
+    "sodimac": parse_sodimac_product,
+}
 
 
 class DirectStoreReader:
@@ -408,7 +508,8 @@ class DirectStoreReader:
         if status != 200:
             return None
         html = resp.text or ""
-        if "__NEXT_DATA__" not in html:
+        data_marker = "self.__next_f" if store_id == "paris" else "__NEXT_DATA__"
+        if data_marker not in html:
             lower = html[:20000].lower()
             reason = "verificación anti-bot" if any(m in lower for m in _BOT_CHALLENGE_MARKERS) else "página sin datos"
             self.backoff.record_block(store_id, reason)
@@ -439,6 +540,8 @@ class DirectStoreReader:
             url = f"{STORE_BASE['falabella']}/falabella-cl/search?Ntt={q}"
         elif store_id == "ripley":
             url = f"{STORE_BASE['ripley']}/search/{q}"
+        elif store_id == "paris":
+            url = f"{STORE_BASE['paris']}/search?q={q}"
         elif store_id == "sodimac":
             url = f"{STORE_BASE['sodimac']}/sodimac-cl/search?Ntt={q}"
         elif store_id == "pcfactory":

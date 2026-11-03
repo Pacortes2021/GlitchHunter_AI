@@ -9,6 +9,7 @@ Cubre:
 5. Escaneo directo prioritario (watchlist).
 """
 
+import re
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -89,7 +90,7 @@ def test_canonical_ids_match_aggregator_urls():
     assert canonical_product_id(
         "ripley", "https://simple.ripley.cl/notebook-asus-vivobook-go-15-mpm10003382085"
     ) == "ripley-mpm10003382085"
-    assert canonical_product_id("paris", "https://www.paris.cl/x-123.html") is None
+    assert canonical_product_id("lider", "https://www.lider.cl/x-123") is None
     assert canonical_product_id("falabella", None) is None
 
 
@@ -219,7 +220,7 @@ def test_confirmation_skips_out_of_stock_and_non_aggregator_items(tmp_path):
     reader.fetch_product.reset_mock()
     pipeline.process_product(_aggregator_glitch(id="falabella-999", source="direct"), send_notifications=False)
     pipeline.process_product(
-        _aggregator_glitch(id="paris-1", store_id="paris", store_name="Paris", url="https://www.paris.cl/producto-1.html"),
+        _aggregator_glitch(id="lider-1", store_id="lider", store_name="Líder", url="https://www.lider.cl/ip/producto-1"),
         send_notifications=False,
     )
     reader.fetch_product.assert_not_called()
@@ -238,7 +239,7 @@ def test_run_direct_scan_searches_watchlist_in_all_direct_stores(tmp_path):
     alerts = pipeline.run_direct_scan(keywords=["galaxy s25"], send_notifications=False)
     assert len(alerts) == 1
     searched = sorted(c.args[0] for c in reader.search.call_args_list)
-    assert searched == ["falabella", "pcfactory", "ripley", "sodimac"]
+    assert searched == ["falabella", "paris", "pcfactory", "ripley", "sodimac"]
 
     # Sin watchlist ni categorías no consulta nada
     reader.search.reset_mock()
@@ -310,7 +311,7 @@ def test_direct_scan_includes_sodimac(tmp_path):
     reader.fetch_category.return_value = []
     pipeline = _pipeline(tmp_path, reader)
     pipeline.run_direct_scan(keywords=["refrigerador"], send_notifications=False)
-    assert sorted(c.args[0] for c in reader.search.call_args_list) == ["falabella", "pcfactory", "ripley", "sodimac"]
+    assert sorted(c.args[0] for c in reader.search.call_args_list) == ["falabella", "paris", "pcfactory", "ripley", "sodimac"]
 
 
 # =====================================================================
@@ -367,3 +368,39 @@ def test_pcfactory_fetch_product_and_backoff():
     client.get.return_value = MagicMock(status_code=429)
     assert reader.search("pcfactory", "rtx") == []
     assert reader.backoff.is_paused("pcfactory")
+
+
+# =====================================================================
+# 8. Paris (Next.js App Router: flujo RSC self.__next_f)
+# =====================================================================
+def test_parse_paris_listing_commercetools_prices():
+    from glitchhunter_ai.scrapers.direct_reader import _paris_products, parse_paris_listing
+
+    items = parse_paris_listing(_fixture("paris_listing.html"), "notebooks")
+    assert len(items) == 3
+    raw = _paris_products(_fixture("paris_listing.html"))
+    for item, src in zip(items, raw):
+        prices = src["masterVariant"]["prices"]
+        assert item.id == f"paris-{src['key'].lower()}"
+        assert item.url == f"https://www.paris.cl/{src['slug']}.html"
+        assert item.normal_price == prices["regular"]["value"]["centAmount"]
+        assert item.current_price == (prices.get("offer") or prices["regular"])["value"]["centAmount"]
+        if "paymentMethod" in prices:
+            assert item.card_price == prices["paymentMethod"]["value"]["centAmount"]
+        assert item.store_id == "paris" and item.source == "direct"
+
+
+def test_paris_canonical_id_matches_aggregator_urls():
+    url = "https://www.paris.cl/notebook-asus-tuf-gaming-a15-amd-ryzen-7-8gb-ram-512gb-ssd-rtx-3050-156-MKDFYM0YKP.html"
+    assert canonical_product_id("paris", url) == "paris-mkdfym0ykp"
+    # Formato antiguo (numérico) que aún entregan algunos agregadores
+    assert canonical_product_id("paris", "https://www.paris.cl/poleron-paneles-252780.html") == "paris-252780"
+
+
+def test_paris_page_without_rsc_data_triggers_pause():
+    backoff = StoreBackoff(clock=_FakeClock())
+    client = MagicMock()
+    client.get.return_value = _resp(200, "<html><body>Mantenimiento</body></html>")
+    reader = DirectStoreReader(client=client, backoff=backoff)
+    assert reader.fetch_category("paris", "notebooks") == []
+    assert backoff.is_paused("paris")
