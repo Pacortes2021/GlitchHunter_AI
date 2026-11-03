@@ -72,7 +72,7 @@
             <div class="menu-sep" role="separator"></div>
             <button type="button" role="menuitem" class="menu-item menu-item-danger" id="btn-inject-glitch">
               <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/></svg>
-              <span><strong>Publicar oferta de prueba</strong><small>Publica una oferta FALSA en el canal real</small></span>
+              <span><strong>Simular oferta de prueba</strong><small>Tarjeta falsa marcada PRUEBA, solo en esta pantalla</small></span>
             </button>
           </div>
         </div>
@@ -194,7 +194,7 @@
         <p class="muted">Agrega productos que te interesan. Cuando el radar encuentre una oferta que calce, la verás marcada con <span class="tag tag-watch">⭐ Tu watchlist</span>.</p>
         <form id="watchlist-form" class="wl-form" autocomplete="off">
           <label for="watchlist-input" class="sr-only">Palabra clave</label>
-          <input id="watchlist-input" type="text" maxlength="60" placeholder="Ej: rtx 4070, macbook air" required />
+          <input id="watchlist-input" type="text" minlength="2" maxlength="60" placeholder="Ej: rtx 4070, macbook air" required />
           <button class="btn btn-primary" type="submit">Agregar</button>
         </form>
         <ul id="watchlist-list" class="wl-list" aria-live="polite"></ul>

@@ -309,6 +309,8 @@ button { cursor: pointer; }
 .tag-watch { background: var(--warn-soft); color: var(--warn-ink); }
 .tag-verified { background: var(--info-soft); color: var(--info-ink); }
 .tag-zero { background: var(--warn-soft); color: var(--warn-ink); }
+.tag-test { background: var(--text); color: var(--bg); letter-spacing: .04em; }
+.post.is-test { border: 2px dashed var(--border-strong); border-left-width: 4px; opacity: .92; }
 
 .price-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
 .discount {

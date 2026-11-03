@@ -86,6 +86,7 @@
   // ---------------------------------------------------------------------------
   const state = {
     posts: new Map(),     // feed_id -> { post, el, derived }
+    byProduct: new Map(), // product.id -> feed_id de su publicación más reciente
     lastFeedId: 0,
     loaded: false,
     filters: loadFilters(),
@@ -256,6 +257,9 @@
 
   async function authenticatedFetch(url, options = {}) {
     const opts = { ...options, headers: { ...(options.headers || {}) } };
+    const method = String(opts.method || 'GET').toUpperCase();
+    // Anti-CSRF: header propio en toda escritura (fuerza preflight CORS para otros orígenes)
+    if (method !== 'GET' && method !== 'HEAD') opts.headers['X-GlitchHunter-Client'] = 'web';
     const key = getStoredApiKey();
     if (key) opts.headers['X-API-Key'] = key;
     let res = await fetch(url, opts);
@@ -309,7 +313,8 @@
   function createPostElement(post, d) {
     const product = post.product || {};
     const verdict = post.verdict || {};
-    const dealId = String(post.alert_id || product.id || post.feed_id);
+    // El id de voto es siempre alert_id tal como lo entrega el servidor (nunca se construye aquí)
+    const dealId = post.alert_id !== undefined && post.alert_id !== null && post.alert_id !== '' ? String(post.alert_id) : '';
     const store = STORES[d.storeId];
     const storeColor = store ? store.color : DEFAULT_STORE_COLOR; // solo colores propios, nunca del servidor
 
@@ -328,6 +333,7 @@
       : '<span class="tag tag-deal">🏷️ Oferta</span>');
     if (verdict.is_missing_zero) tags.push('<span class="tag tag-zero" title="El precio parece tener un cero de menos">Falta un cero</span>');
     if (d.hasCardPrice) tags.push('<span class="tag tag-card">💳 Precio tarjeta</span>');
+    if (post.__isTest) tags.unshift('<span class="tag tag-test" title="Simulación: no se guarda y desaparece al recargar">🧪 PRUEBA</span>');
     if (post.is_watchlist_match) tags.push('<span class="tag tag-watch">⭐ Tu watchlist</span>');
     if (post.verification_level === 'COMPRABLE') tags.push('<span class="tag tag-verified" title="Confirmado con stock y enlace de compra directa">✓ Comprable</span>');
     else if (post.verification_level === 'VERIFICADO') tags.push('<span class="tag tag-verified" title="Confirmado en la tienda con stock y precio">✓ Verificado</span>');
@@ -346,7 +352,7 @@
       ? `<div class="price-note">Con tarjeta de la tienda · sin tarjeta ${formatCLP(d.current)}</div>`
       : '';
 
-    const voted = state.votes[dealId];
+    const voted = dealId ? state.votes[dealId] : undefined;
     const up = toNum(post.upvotes);
     const down = toNum(post.downvotes);
 
@@ -392,11 +398,11 @@
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/><path d="M2 3h3l2.6 12.2a1 1 0 0 0 1 .8h9.7a1 1 0 0 0 1-.8L21 7H6"/></svg>
           Al carro
         </a>` : ''}
-        <div class="votes" role="group" aria-label="¿Es una oferta real?">
+        ${dealId && !post.__isTest ? `<div class="votes" role="group" aria-label="¿Es una oferta real?">
           <span class="votes-label">¿Es real?</span>
           <button type="button" class="vote-btn up${voted === 'up' ? ' voted' : ''}" data-vote="up" data-deal-id="${escapeHtml(dealId)}" aria-label="Sí, es una oferta real" ${voted ? 'disabled' : ''}>👍 <span class="vote-count">${up}</span></button>
           <button type="button" class="vote-btn down${voted === 'down' ? ' voted' : ''}" data-vote="down" data-deal-id="${escapeHtml(dealId)}" aria-label="No, es un falso positivo" ${voted ? 'disabled' : ''}>👎 <span class="vote-count">${down}</span></button>
-        </div>
+        </div>` : ''}
       </div>`;
 
     // Imagen con fallback sin handlers inline
@@ -578,21 +584,39 @@
   // ---------------------------------------------------------------------------
   // Canal: carga inicial + agregar arriba solo lo nuevo
   // ---------------------------------------------------------------------------
-  /** Registra publicaciones nuevas (ignora repetidas) y devuelve las agregadas, de la más antigua a la más nueva. */
+  /**
+   * Registra publicaciones nuevas (ignora repetidas). Si un producto se republica (bajó de precio:
+   * nuevo feed_id, mismo product.id) se conserva solo la publicación más reciente.
+   * Devuelve { added, replaced }: agregadas (de la más antigua a la más nueva) y entradas reemplazadas
+   * (ya quitadas del estado; su nodo se quita del DOM al insertar).
+   */
   function registerPosts(posts) {
     const added = [];
+    const replaced = [];
     [...posts]
       .filter(p => p && p.product && Number.isFinite(Number(p.feed_id)))
       .sort((a, b) => a.feed_id - b.feed_id)
       .forEach(post => {
         if (state.posts.has(post.feed_id) || post.feed_id <= state.lastFeedId) return;
+        const pid = post.product.id !== undefined && post.product.id !== null ? String(post.product.id) : '';
+        if (pid && state.byProduct.has(pid)) {
+          const oldId = state.byProduct.get(pid);
+          const old = state.posts.get(oldId);
+          if (old) {
+            state.posts.delete(oldId);
+            replaced.push(old);
+          }
+        }
         const derived = derive(post);
         const el = createPostElement(post, derived);
-        state.posts.set(post.feed_id, { post, el, derived });
+        const entry = { post, el, derived };
+        state.posts.set(post.feed_id, entry);
+        if (pid) state.byProduct.set(pid, post.feed_id);
         state.lastFeedId = Math.max(state.lastFeedId, post.feed_id);
-        added.push(state.posts.get(post.feed_id));
+        added.push(entry);
       });
-    return added;
+    // Una entrada agregada y reemplazada en el mismo lote no debe dibujarse
+    return { added: added.filter(e => state.posts.get(e.post.feed_id) === e), replaced };
   }
 
   async function loadFeed() {
@@ -600,7 +624,7 @@
       const res = await fetch(`/api/feed?limit=${INITIAL_LIMIT}`);
       if (res.ok) {
         const posts = await res.json();
-        const added = registerPosts(Array.isArray(posts) ? posts : []);
+        const { added } = registerPosts(Array.isArray(posts) ? posts : []);
         const list = $('feed-list');
         // Primera y única vez que se dibuja el historial
         added.reverse().forEach(e => list.appendChild(e.el));
@@ -622,12 +646,15 @@
   }
 
   /** Inserta las tarjetas nuevas arriba sin tocar las existentes y sin mover lo que el usuario está leyendo. */
-  function insertNewPosts(added) {
+  function insertNewPosts(added, replaced = []) {
     const list = $('feed-list');
-    if (!list || !added.length) return;
+    if (!list || (!added.length && !replaced.length)) return;
     const away = isScrolledAway();
     const beforeHeight = document.documentElement.scrollHeight;
     const beforeY = window.scrollY;
+
+    // La versión anterior de un producto republicado se retira (sin duplicados ni conteos inflados)
+    replaced.forEach(e => e.el.remove());
 
     added.forEach(e => {
       e.el.hidden = !matches(e);
@@ -652,6 +679,31 @@
     }
   }
 
+  /**
+   * Tarjeta temporal de simulación: no entra al estado del canal (ni a conteos, filtros o lastFeedId),
+   * no admite votos y desaparece al recargar.
+   */
+  const shownTests = new Set();
+  function showTestCard(alert) {
+    if (!alert || typeof alert !== 'object' || !alert.product) return false;
+    const key = String(alert.alert_id || (alert.product && alert.product.id) || Math.random());
+    if (shownTests.has(key)) return true;
+    shownTests.add(key);
+    const post = { ...alert, feed_id: undefined, feed_kind: 'glitch', __isTest: true };
+    if (!post.created_at) post.created_at = new Date().toISOString();
+    const derived = derive(post);
+    const el = createPostElement(post, derived);
+    el.classList.add('is-test');
+    el.removeAttribute('data-feed-id');
+    const list = $('feed-list');
+    if (!list) return false;
+    list.prepend(el);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    sound.ding();
+    showToast(`${derived.storeName}: -${derived.discount}% (no se guarda)`, '🧪 Oferta de prueba');
+    return true;
+  }
+
   function updateNewPill() {
     const pill = $('new-posts-pill');
     if (!pill) return;
@@ -674,9 +726,11 @@
       const res = await fetch(`/api/feed?after_id=${encodeURIComponent(state.lastFeedId)}`);
       if (!res.ok) return [];
       const posts = await res.json();
-      added = registerPosts(Array.isArray(posts) ? posts : []);
+      const result = registerPosts(Array.isArray(posts) ? posts : []);
+      added = result.added;
+      if (!added.length && !result.replaced.length) return [];
+      insertNewPosts(added, result.replaced);
       if (!added.length) return [];
-      insertNewPosts(added);
       if (!quiet) notifyNew(added, isTest);
       return added;
     } catch {
@@ -779,9 +833,29 @@
     } catch { /* offline */ }
   }
 
+  /** Traduce un 422 del servidor (FastAPI/Pydantic) a un mensaje legible. */
+  async function friendlyValidationError(res) {
+    const fallback = 'La palabra debe tener entre 2 y 60 caracteres.';
+    try {
+      const data = await res.json();
+      const detail = data && data.detail;
+      if (typeof detail === 'string' && detail.trim()) return detail.slice(0, 160);
+      if (Array.isArray(detail) && detail.length) {
+        const d = detail[0] || {};
+        if (d.type && /too_short|too_long|string_/.test(String(d.type))) return fallback;
+        if (d.msg) return String(d.msg).slice(0, 160);
+      }
+    } catch { /* cuerpo no JSON */ }
+    return fallback;
+  }
+
   async function addWatchlist(keyword) {
     const kw = keyword.trim().toLowerCase();
     if (!kw) return;
+    if (kw.length < 2 || kw.length > 60) {
+      showToast('La palabra debe tener entre 2 y 60 caracteres.', 'Watchlist');
+      return;
+    }
     if (state.watchlist.includes(kw)) { showToast(`"${kw}" ya está en tu watchlist.`, 'Watchlist'); return; }
     try {
       const res = await authenticatedFetch('/api/watchlist', {
@@ -794,6 +868,8 @@
         state.watchlist = Array.isArray(data.keywords) ? data.keywords.map(String) : state.watchlist;
         renderWatchlist();
         showToast(`Te avisaremos de ofertas de "${kw}".`, '⭐ Agregado a la watchlist');
+      } else if (res.status === 422) {
+        showToast(await friendlyValidationError(res), 'Palabra no válida');
       } else if (res.status === 401) {
         showToast('Se necesita la clave de API para cambiar la watchlist.', 'No autorizado');
       } else {
@@ -806,7 +882,7 @@
 
   async function removeWatchlist(keyword) {
     try {
-      const res = await authenticatedFetch(`/api/watchlist/${encodeURIComponent(keyword)}`, { method: 'DELETE' });
+      const res = await authenticatedFetch(`/api/watchlist?keyword=${encodeURIComponent(keyword)}`, { method: 'DELETE' });
       if (res.ok) {
         const data = await res.json();
         state.watchlist = Array.isArray(data.keywords) ? data.keywords.map(String) : state.watchlist.filter(k => k !== keyword);
@@ -855,8 +931,8 @@
       if (status) {
         const rows = [
           ['Radar', status.status === 'online' ? 'En línea' : escapeHtml(status.status)],
-          ['Escaneo automático', status.auto_scan_enabled ? `Sí, cada ${escapeHtml(status.scan_interval_minutes)} min` : 'Pausado'],
-          ['Tiendas vigiladas', escapeHtml(status.stores_monitored)],
+          ['Escaneo automático', status.auto_scan_enabled ? `Sí, cada ${escapeHtml(status.scan_interval_minutes)} min (${escapeHtml(status.scan_interval_seconds)} s)` : 'Pausado'],
+          ['Fuentes vigiladas', `${escapeHtml(status.stores_monitored)} (tiendas + SoloTodo)`],
           ['Conexión en vivo', state.wsConnected ? 'Conectada' : 'Reconectando'],
           ['Votos de la comunidad', feedback ? `👍 ${toNum(feedback.total_upvotes)} · 👎 ${toNum(feedback.total_downvotes)}` : '–']
         ];
@@ -1118,14 +1194,17 @@
     $('btn-inject-glitch').addEventListener('click', async () => {
       closeMenu();
       const ok = window.confirm(
-        '⚠️ Esto publica una oferta FALSA en el canal real.\n\n' +
-        'Quedará guardada en el historial y la verán todas las personas que miran esta página. ' +
-        'Úsalo solo para probar que las alertas funcionan.\n\n¿Publicar la oferta de prueba?'
+        '🧪 Simular una oferta de PRUEBA\n\n' +
+        'Se mostrará una tarjeta falsa marcada "PRUEBA" solo en esta pantalla, para comprobar avisos y sonido. ' +
+        'No se guarda en el canal y desaparece al recargar.\n\n¿Continuar?'
       );
       if (!ok) return;
       try {
         const res = await authenticatedFetch('/api/test-glitch', { method: 'POST' });
-        if (res.ok) await fetchNewPosts({ isTest: true });
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          if (!showTestCard(data)) showToast('Simulación enviada.', '🧪 Prueba');
+        }
         else if (res.status === 403) showToast('Las ofertas de prueba están deshabilitadas en este servidor.', 'No permitido');
         else if (res.status === 401) showToast('Se necesita la clave de API.', 'No autorizado');
         else showToast('No se pudo publicar la oferta de prueba.', 'Error');
@@ -1161,7 +1240,7 @@
       const buttons = bar ? bar.querySelectorAll('.vote-btn') : [btn];
       buttons.forEach(b => { b.disabled = true; });
       try {
-        const res = await fetch(`/api/deals/${encodeURIComponent(dealId)}/feedback`, {
+        const res = await authenticatedFetch(`/api/deals/${encodeURIComponent(dealId)}/feedback`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ vote })
