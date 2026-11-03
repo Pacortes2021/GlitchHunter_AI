@@ -28,7 +28,7 @@ from glitchhunter_ai.scrapers.stealth_client import default_stealth_client
 
 logger = logging.getLogger("glitchhunter.scrapers.direct_reader")
 
-DIRECT_STORES = ("falabella", "ripley", "paris", "abc", "jumbo", "sodimac", "pcfactory")
+DIRECT_STORES = ("falabella", "ripley", "paris", "abc", "jumbo", "hp", "winpy", "sodimac", "pcfactory")
 
 # PC Factory expone una API JSON pública (la que usa su propio sitio): búsqueda, catálogo completo
 # paginado (search=*) y detalle por id. El catálogo (~3.000 productos, 48 por página) se recorre
@@ -43,7 +43,7 @@ _BOT_CHALLENGE_MARKERS = ("captcha", "perimeterx", "px-captcha", "are you a robo
 
 STORE_NAMES = {
     "falabella": "Falabella", "ripley": "Ripley", "paris": "Paris", "abc": "ABC",
-    "jumbo": "Jumbo", "sodimac": "Sodimac", "pcfactory": "PC Factory",
+    "jumbo": "Jumbo", "hp": "HP", "winpy": "Winpy", "sodimac": "Sodimac", "pcfactory": "PC Factory",
 }
 STORE_BASE = {
     "falabella": "https://www.falabella.com",
@@ -51,6 +51,8 @@ STORE_BASE = {
     "paris": "https://www.paris.cl",
     "abc": "https://www.abc.cl",
     "jumbo": "https://www.jumbo.cl",
+    "hp": "https://www.hp.com",
+    "winpy": "https://www.winpy.cl",
     "sodimac": "https://www.sodimac.cl",
     "pcfactory": "https://www.pcfactory.cl",
 }
@@ -93,6 +95,15 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
     "jumbo": {
         "linea_blanca": "/hogar-electro-y-libreria/electro-y-tecnologia/electrodomesticos",
         "notebooks": "/hogar-electro-y-libreria/electro-y-tecnologia/tecnologia",
+    },
+    # HP Store (Magento): hasta 36 notebooks por página (el catálogo tiene ~55)
+    "hp": {
+        "notebooks": "/cl-es/shop/notebooks.html?product_list_limit=36",
+    },
+    # Winpy: HTML propio, ~40 productos por página
+    "winpy": {
+        "notebooks": "/portatiles/notebooks/",
+        "smartphones": "/portatiles/celulares/",
     },
     "ripley": {
         "smartphones": "/tecno/celulares",
@@ -357,6 +368,137 @@ def parse_jumbo_product(html: str, url: str) -> Optional[ProductItem]:
     return None
 
 
+def _hp_prices(node: Any) -> tuple:
+    """(actual, normal) de HP: precio final y, si hay rebaja, el precio anterior (oldPrice) de Magento."""
+    def amount(selector: str) -> float:
+        el = node.select_one(selector)
+        try:
+            return float(el["data-price-amount"]) if el else 0.0
+        except (TypeError, ValueError, KeyError):
+            return 0.0
+
+    current = amount("[data-price-type=finalPrice][data-price-amount]")
+    old = amount("[data-price-type=oldPrice][data-price-amount]")
+    return current, max(old, current)
+
+
+def parse_hp_listing(html: str, category_hint: str = "tecnologia") -> List[ProductItem]:
+    """Productos de la HP Store Chile (Magento): li.product-item con a.product-item-link y precios data-price-amount."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    tiles = soup.select("li.product-item")
+    if not tiles and "data-price-amount" not in (html or ""):
+        raise BlockedError("página sin productos")
+    items: List[ProductItem] = []
+    seen: set = set()
+    now = datetime.now(timezone.utc)
+    for tile in tiles:
+        link = tile.select_one("a.product-item-link[href]")
+        if link is None:
+            continue
+        url = link["href"].split("#")[0]
+        pid = canonical_product_id("hp", url)
+        title = " ".join(link.get_text(" ").split())
+        current, normal = _hp_prices(tile)
+        if not pid or pid in seen or not title or current <= 0:
+            continue
+        seen.add(pid)
+        img = tile.select_one("img[src^='http']")
+        items.append(ProductItem(
+            id=pid, store_id="hp", store_name=STORE_NAMES["hp"], title=title,
+            category=_infer_category(title, category_hint), current_price=current, normal_price=normal,
+            card_price=None, url=url, image_url=img["src"] if img else None,
+            in_stock="agotado" not in tile.get_text(" ").lower(), timestamp=now, source="direct",
+        ))
+    return items
+
+
+def parse_hp_product(html: str, url: str) -> Optional[ProductItem]:
+    """Ficha de HP: nombre en el h1 y precios en el bloque .product-info-main."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    pid = canonical_product_id("hp", url)
+    main = soup.select_one(".product-info-main") or soup
+    h1 = soup.select_one("h1")
+    title = " ".join(h1.get_text(" ").split()) if h1 else ""
+    current, normal = _hp_prices(main)
+    if not pid or not title or current <= 0:
+        return None
+    stock = main.select_one(".stock")
+    in_stock = not (stock and "agotado" in stock.get_text(" ").lower())
+    return ProductItem(
+        id=pid, store_id="hp", store_name=STORE_NAMES["hp"], title=title,
+        category=_infer_category(title, "tecnologia"), current_price=current, normal_price=normal,
+        card_price=None, url=url, in_stock=in_stock, timestamp=datetime.now(timezone.utc), source="direct",
+    )
+
+
+def _clp(text: str) -> float:
+    digits = re.sub(r"[^\d]", "", text or "")
+    return float(digits) if digits else 0.0
+
+
+def parse_winpy_listing(html: str, category_hint: str = "tecnologia") -> List[ProductItem]:
+    """
+    Productos de Winpy: <article> con p.model (nombre y enlace /venta/…/) y p.valor (precio).
+    El listado muestra el precio por transferencia (el más bajo); la ficha agrega un "antes" más alto.
+    Para que listado y ficha coincidan (la confirmación los compara), el precio de referencia es el
+    mismo precio mostrado y las bajas reales se detectan contra el historial propio.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    tiles = [a for a in soup.select("article") if a.select_one("p.valor")]
+    if not tiles and 'class="valor"' not in (html or ""):
+        raise BlockedError("página sin productos")
+    items: List[ProductItem] = []
+    seen: set = set()
+    now = datetime.now(timezone.utc)
+    for tile in tiles:
+        link = tile.select_one("p.model a[href]")
+        if link is None:
+            continue
+        url = urllib.parse.urljoin(STORE_BASE["winpy"], link["href"].split("?")[0])
+        pid = canonical_product_id("winpy", url)
+        title = " ".join((link.get("title") or link.get_text(" ")).split())
+        current = _clp(tile.select_one("p.valor").get_text())
+        if not pid or pid in seen or not title or current <= 0:
+            continue
+        seen.add(pid)
+        img = tile.select_one("img[src]")
+        image = urllib.parse.urljoin(STORE_BASE["winpy"], img["src"]) if img else None
+        items.append(ProductItem(
+            id=pid, store_id="winpy", store_name=STORE_NAMES["winpy"], title=title,
+            category=_infer_category(title, category_hint), current_price=current, normal_price=current,
+            card_price=None, url=url, image_url=image,
+            in_stock="agotado" not in tile.get_text(" ").lower(), timestamp=now, source="direct",
+        ))
+    return items
+
+
+def parse_winpy_product(html: str, url: str) -> Optional[ProductItem]:
+    """Ficha de Winpy: h1, precio por transferencia en .price-oferta h2 y disponibilidad en #stock-product."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    pid = canonical_product_id("winpy", url)
+    h1 = soup.select_one("h1")
+    price = soup.select_one(".price-oferta h2")
+    title = " ".join(h1.get_text(" ").split()) if h1 else ""
+    current = _clp(price.get_text()) if price else 0.0
+    if not pid or not title or current <= 0:
+        return None
+    stock = soup.select_one("#stock-product")
+    in_stock = not (stock and "agotado" in stock.get_text(" ").lower())
+    return ProductItem(
+        id=pid, store_id="winpy", store_name=STORE_NAMES["winpy"], title=title,
+        category=_infer_category(title, "tecnologia"), current_price=current, normal_price=current,
+        card_price=None, url=url, in_stock=in_stock, timestamp=datetime.now(timezone.utc), source="direct",
+    )
+
+
 def _abc_price(node: Any, selector: str) -> float:
     span = node.select_one(f"{selector} .price-value[data-value]")
     try:
@@ -588,6 +730,8 @@ LISTING_PARSERS = {
     "paris": parse_paris_listing,
     "abc": parse_abc_listing,
     "jumbo": parse_jumbo_listing,
+    "hp": parse_hp_listing,
+    "winpy": parse_winpy_listing,
     "sodimac": parse_sodimac_listing,
 }
 PRODUCT_PARSERS = {
@@ -596,6 +740,8 @@ PRODUCT_PARSERS = {
     "paris": parse_paris_product,
     "abc": parse_abc_product,
     "jumbo": parse_jumbo_product,
+    "hp": parse_hp_product,
+    "winpy": parse_winpy_product,
     "sodimac": parse_sodimac_product,
 }
 
@@ -684,7 +830,10 @@ class DirectStoreReader:
         if status != 200:
             return None
         html = resp.text or ""
-        data_marker = {"paris": "self.__next_f", "jumbo": "self.__next_f", "abc": "data-pid"}.get(store_id, "__NEXT_DATA__")
+        data_marker = {
+            "paris": "self.__next_f", "jumbo": "self.__next_f", "abc": "data-pid",
+            "hp": "data-price-amount", "winpy": "/venta/",
+        }.get(store_id, "__NEXT_DATA__")
         if data_marker not in html:
             lower = html[:20000].lower()
             reason = "verificación anti-bot" if any(m in lower for m in _BOT_CHALLENGE_MARKERS) else "página sin datos"
@@ -724,6 +873,8 @@ class DirectStoreReader:
             url = f"{STORE_BASE['sodimac']}/sodimac-cl/search?Ntt={q}"
         elif store_id == "jumbo":
             return []   # la búsqueda de Jumbo responde 404 a peticiones directas
+        elif store_id in ("hp", "winpy"):
+            return []   # catálogos chicos: basta con las categorías
         elif store_id == "pcfactory":
             return self._pcfactory_items(
                 self._pcfactory_query({"page": 0, "size": PCFACTORY_PAGE_SIZE, "search": keyword.strip()})

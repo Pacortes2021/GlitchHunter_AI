@@ -29,6 +29,8 @@ def test_odd_price_endings():
     # En marketplaces los vendedores fijan precios arbitrarios: no es señal
     assert not is_odd_price(104982, "mercadolibre")
     assert is_odd_price(104982, "falabella")
+    # Tiendas que calculan sus precios en vez de fijarlos
+    assert not is_odd_price(367840, "winpy") and not is_odd_price(825220, "hp")
 
 
 def test_event_windows_and_mode():
