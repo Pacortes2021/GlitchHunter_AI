@@ -115,7 +115,7 @@ class FalabellaScraper:
             except Exception as exc:
                 logger.debug(f"Error consultando LiveRetailFeed para Falabella: {exc}")
 
-            live_items = self.fetch_live_catalog("celulares")
+            live_items = self.fetch_live_catalog("smartphones")
             if live_items:
                 logger.info("Éxito en vivo: Se obtuvieron %d productos reales de Falabella Chile", len(live_items))
                 return live_items
@@ -130,61 +130,26 @@ class FalabellaScraper:
 
     def fetch_live_catalog(self, category_key: str = "tecnologia") -> List[ProductItem]:
         """
-        Realiza consulta HTTP con headers chilenos y parsea los productos de Falabella.com.
-        Aprovecha la data estructurada Next.js (__NEXT_DATA__) incrustada en las páginas.
+        Lectura directa de una categoría de Falabella.com (datos Next.js en __NEXT_DATA__),
+        usando el cliente stealth y el freno automático ante bloqueos del lector directo.
         """
-        target_url = self.CATEGORY_URLS.get(category_key, self.CATEGORY_URLS["tecnologia"])
-        html_content = ""
+        from glitchhunter_ai.scrapers.direct_reader import default_direct_reader
 
-        # Intento con httpx si está instalado
-        if HAS_HTTPX:
-            try:
-                with httpx.Client(headers=self.DEFAULT_HEADERS, timeout=self.timeout, follow_redirects=True) as client:
-                    resp = client.get(target_url)
-                    if resp.status_code == 200:
-                        html_content = resp.text
-                    else:
-                        logger.warning("Falabella respondió con código de estado HTTP %d", resp.status_code)
-            except Exception as exc:
-                logger.warning("Excepción durante petición httpx a Falabella: %s", exc)
-
-        # Fallback de conexión con urllib si httpx falló o no está instalado
-        if not html_content:
-            try:
-                req = urllib.request.Request(target_url, headers=self.DEFAULT_HEADERS)
-                with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                    if response.status == 200:
-                        raw = response.read()
-                        html_content = raw.decode("utf-8", errors="ignore")
-            except Exception as exc:
-                logger.warning("Excepción durante petición urllib a Falabella: %s", exc)
-
-        if not html_content:
-            return []
-
-        return self.parse_falabella_html(html_content, category_hint=category_key)
+        key = category_key if category_key in self.CATEGORY_URLS else "tecnologia"
+        return default_direct_reader.fetch_category("falabella", key)
 
     def parse_falabella_html(self, html: str, category_hint: str = "tecnologia") -> List[ProductItem]:
         """
         Extrae productos a partir del bloque JSON __NEXT_DATA__ en el HTML de Falabella.
+        Usa el mismo parser e ID canónico que la lectura directa.
         """
-        items: List[ProductItem] = []
-        match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
-        if not match:
-            logger.debug("No se encontró bloque __NEXT_DATA__ en la respuesta HTML de Falabella.")
-            return items
+        from glitchhunter_ai.scrapers.direct_reader import BlockedError, parse_falabella_listing
 
         try:
-            data = json.loads(match.group(1))
-            results = data.get("props", {}).get("pageProps", {}).get("results", [])
-            for item in results:
-                parsed = self._parse_single_product(item, category_hint=category_hint)
-                if parsed:
-                    items.append(parsed)
-        except Exception as exc:
-            logger.error("Error decodificando o parseando JSON de Falabella: %s", exc)
-
-        return items
+            return parse_falabella_listing(html, category_hint)
+        except (BlockedError, ValueError) as exc:
+            logger.debug("No se pudo parsear el HTML de Falabella: %s", exc)
+            return []
 
     def _parse_single_product(self, raw_item: Dict[str, Any], category_hint: str = "tecnologia") -> Optional[ProductItem]:
         """

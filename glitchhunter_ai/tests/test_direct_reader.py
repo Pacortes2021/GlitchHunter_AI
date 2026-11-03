@@ -1,0 +1,257 @@
+"""
+Tests del Modo Híbrido: lectura directa de Falabella y Ripley.
+Los fixtures en tests/fixtures/ son extractos reales (recortados) del __NEXT_DATA__ de cada tienda.
+Cubre:
+1. Parseo de listados y páginas de producto de Falabella y Ripley.
+2. IDs canónicos: el mismo producto tiene el mismo ID vía agregador y vía lectura directa.
+3. Freno automático ante bloqueos (403/429, verificación anti-bot, página sin datos).
+4. Confirmación en tiempo real de candidatos del agregador en el pipeline.
+5. Escaneo directo prioritario (watchlist).
+"""
+
+from pathlib import Path
+from unittest.mock import MagicMock
+
+from glitchhunter_ai.core.database import PriceDatabase
+from glitchhunter_ai.core.models import ProductItem
+from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
+from glitchhunter_ai.scrapers.direct_reader import (
+    DirectStoreReader,
+    StoreBackoff,
+    parse_falabella_listing,
+    parse_falabella_product,
+    parse_ripley_listing,
+    parse_ripley_product,
+)
+from glitchhunter_ai.scrapers.product_ids import canonical_product_id
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _fixture(name: str) -> str:
+    return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+# =====================================================================
+# 1. Parseo de páginas reales
+# =====================================================================
+def test_parse_falabella_listing_real_structure():
+    items = parse_falabella_listing(_fixture("falabella_listing.html"), "smartphones")
+    assert len(items) == 3
+    s25 = items[0]
+    assert s25.id == "falabella-prod129939632"
+    assert s25.current_price == 999990      # internetPrice
+    assert s25.normal_price == 1469990      # normalPrice
+    assert s25.card_price == 949990         # cmrPrice
+    assert s25.source == "direct"
+    # eventPrice también cuenta como precio de oferta
+    assert items[2].current_price == 589990
+
+
+def test_parse_falabella_product_page():
+    url = "https://www.falabella.com/falabella-cl/product/17558931/Celular-Samsung-Galaxy-S25-FE-256GB/17558931"
+    item = parse_falabella_product(_fixture("falabella_product.html"), url)
+    assert item.id == "falabella-17558931"
+    assert (item.current_price, item.normal_price, item.card_price) == (499990, 799990, 479990)
+    assert item.in_stock is True
+
+
+def test_parse_ripley_listing_real_structure():
+    items = parse_ripley_listing(_fixture("ripley_listing.html"), "notebooks")
+    assert [i.id for i in items] == ["ripley-mpm10003498644", "ripley-2000406555881", "ripley-2000412095517"]
+    acer = items[1]
+    assert (acer.current_price, acer.normal_price, acer.card_price) == (549990, 729990, None)
+    assert acer.url.startswith("https://simple.ripley.cl/notebook-acer-aspire-lite")
+    assert acer.url.endswith("2000406555881p")
+    # Precio Ripley (tarjeta) menor al de oferta
+    assert items[0].card_price == 399990
+
+
+def test_parse_ripley_product_page():
+    url = "https://simple.ripley.cl/notebook-acer-aspire-lite-laptop-al15-41p-r0zy-2-amd-ryzen-7-8-gb-ram-512-gb-ssd-156-fhd-2000406555881p"
+    item = parse_ripley_product(_fixture("ripley_product.html"), url)
+    assert item.id == "ripley-2000406555881"
+    assert (item.current_price, item.normal_price, item.card_price) == (549990, 729990, None)
+    assert item.in_stock is True
+
+
+# =====================================================================
+# 2. IDs canónicos compartidos entre agregador y tienda
+# =====================================================================
+def test_canonical_ids_match_aggregator_urls():
+    # URLs con el formato que entrega SoloTodo para las mismas tiendas
+    assert canonical_product_id(
+        "falabella", "https://www.falabella.com/falabella-cl/product/17558931/Celular-Samsung/17558931"
+    ) == "falabella-17558931"
+    assert canonical_product_id(
+        "ripley", "https://simple.ripley.cl/impresora-laser-brother-hl1202-2000366254404p"
+    ) == "ripley-2000366254404"
+    assert canonical_product_id(
+        "ripley", "https://simple.ripley.cl/notebook-asus-vivobook-go-15-mpm10003382085"
+    ) == "ripley-mpm10003382085"
+    assert canonical_product_id("paris", "https://www.paris.cl/x-123.html") is None
+    assert canonical_product_id("falabella", None) is None
+
+
+# =====================================================================
+# 3. Freno automático ante bloqueos
+# =====================================================================
+class _FakeClock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def _resp(status=200, text=""):
+    r = MagicMock()
+    r.status_code = status
+    r.text = text
+    return r
+
+
+def test_backoff_pauses_store_after_block_and_resumes():
+    clock = _FakeClock()
+    backoff = StoreBackoff(base_seconds=600, max_seconds=7200, clock=clock)
+    client = MagicMock()
+    reader = DirectStoreReader(client=client, backoff=backoff)
+
+    client.get.return_value = _resp(429)
+    assert reader.search("falabella", "rtx 4070") == []
+    assert backoff.is_paused("falabella")
+    # Otras tiendas no se ven afectadas
+    assert not backoff.is_paused("ripley")
+
+    # Mientras está en pausa no se vuelve a consultar la tienda
+    client.get.reset_mock()
+    assert reader.search("falabella", "rtx 4070") == []
+    client.get.assert_not_called()
+
+    # Pasada la pausa, una respuesta válida la reactiva y reinicia la espera
+    clock.t += 601
+    client.get.return_value = _resp(200, _fixture("falabella_listing.html"))
+    assert len(reader.search("falabella", "galaxy")) == 3
+    assert not backoff.is_paused("falabella")
+
+
+def test_backoff_is_exponential_and_capped():
+    clock = _FakeClock()
+    backoff = StoreBackoff(base_seconds=600, max_seconds=2000, clock=clock)
+    assert backoff.record_block("ripley", "x") == 600
+    assert backoff.record_block("ripley", "x") == 1200
+    assert backoff.record_block("ripley", "x") == 2000
+
+
+def test_bot_challenge_page_triggers_pause():
+    backoff = StoreBackoff(clock=_FakeClock())
+    client = MagicMock()
+    client.get.return_value = _resp(200, "<html><body>Please verify you are human - px-captcha</body></html>")
+    reader = DirectStoreReader(client=client, backoff=backoff)
+    assert reader.fetch_product("ripley", "https://simple.ripley.cl/x-2000406555881p") is None
+    assert backoff.is_paused("ripley")
+
+
+# =====================================================================
+# 4. Confirmación en tiempo real en el pipeline
+# =====================================================================
+def _aggregator_glitch(**overrides):
+    data = dict(
+        id="falabella-17558931",
+        store_id="falabella",
+        store_name="Falabella Chile",
+        title="Celular Samsung Galaxy S25 FE 256GB",
+        category="smartphones",
+        current_price=49990.0,
+        normal_price=799990.0,
+        url="https://www.falabella.com/falabella-cl/product/17558931/Celular/17558931",
+        in_stock=True,
+        source="solotodo",
+    )
+    data.update(overrides)
+    return ProductItem(**data)
+
+
+def _pipeline(tmp_path, reader):
+    db = PriceDatabase(db_path=tmp_path / "direct.db")
+    db.init_db()
+    return GlitchHuntingPipeline(db=db, direct_reader=reader, confirm_with_store=True)
+
+
+def test_confirmation_discards_glitch_already_corrected_in_store(tmp_path):
+    reader = MagicMock()
+    # La tienda ya muestra el precio real: el agregador tenía un dato antiguo
+    reader.fetch_product.return_value = _aggregator_glitch(current_price=499990.0, card_price=479990.0, source="direct")
+    pipeline = _pipeline(tmp_path, reader)
+
+    assert pipeline.process_product(_aggregator_glitch(), send_notifications=False) is None
+    reader.fetch_product.assert_called_once()
+
+
+def test_confirmation_keeps_glitch_with_live_store_prices(tmp_path):
+    reader = MagicMock()
+    reader.fetch_product.return_value = _aggregator_glitch(current_price=59990.0, source="direct")
+    pipeline = _pipeline(tmp_path, reader)
+
+    alert = pipeline.process_product(_aggregator_glitch(), send_notifications=False)
+    assert alert is not None
+    assert alert.product.current_price == 59990.0
+    assert alert.product.source == "direct"
+
+
+def test_confirmation_falls_back_to_aggregator_when_store_unavailable(tmp_path):
+    reader = MagicMock()
+    reader.fetch_product.return_value = None  # tienda en pausa o sin respuesta
+    pipeline = _pipeline(tmp_path, reader)
+
+    alert = pipeline.process_product(_aggregator_glitch(), send_notifications=False)
+    assert alert is not None
+    assert alert.product.current_price == 49990.0
+
+
+def test_confirmation_skips_out_of_stock_and_non_aggregator_items(tmp_path):
+    reader = MagicMock()
+    reader.fetch_product.return_value = _aggregator_glitch(in_stock=False, source="direct")
+    pipeline = _pipeline(tmp_path, reader)
+    assert pipeline.process_product(_aggregator_glitch(), send_notifications=False) is None
+
+    # Un producto leído directamente (o de otra tienda) no se vuelve a confirmar
+    reader.fetch_product.reset_mock()
+    pipeline.process_product(_aggregator_glitch(id="falabella-999", source="direct"), send_notifications=False)
+    pipeline.process_product(
+        _aggregator_glitch(id="pcfactory-1", store_id="pcfactory", store_name="PC Factory", url="https://www.pcfactory.cl/producto/1"),
+        send_notifications=False,
+    )
+    reader.fetch_product.assert_not_called()
+
+
+# =====================================================================
+# 5. Escaneo directo prioritario
+# =====================================================================
+def test_run_direct_scan_searches_watchlist_in_both_stores(tmp_path):
+    reader = MagicMock()
+    glitch = _aggregator_glitch(source="direct")
+    reader.search.side_effect = lambda store, kw: [glitch] if store == "falabella" else []
+    reader.fetch_category.return_value = []
+    pipeline = _pipeline(tmp_path, reader)
+
+    alerts = pipeline.run_direct_scan(keywords=["galaxy s25"], send_notifications=False)
+    assert len(alerts) == 1
+    searched = sorted(c.args[0] for c in reader.search.call_args_list)
+    assert searched == ["falabella", "ripley"]
+
+    # Sin watchlist ni categorías no consulta nada
+    reader.search.reset_mock()
+    assert pipeline.run_direct_scan(keywords=[], categories=[], send_notifications=False) == []
+    reader.search.assert_not_called()
+
+
+def test_run_direct_scan_skips_while_full_scan_running(tmp_path):
+    reader = MagicMock()
+    pipeline = _pipeline(tmp_path, reader)
+    pipeline._scan_lock.acquire()
+    try:
+        assert pipeline.run_direct_scan(keywords=["x"], send_notifications=False) == []
+        reader.search.assert_not_called()
+    finally:
+        pipeline._scan_lock.release()

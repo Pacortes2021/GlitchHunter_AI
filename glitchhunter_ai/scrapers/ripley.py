@@ -92,13 +92,15 @@ class RipleyScraper:
         """
         if use_live:
             logger.info("Intentando extracción en vivo desde %s...", self.base_url)
-            live_items = self._fetch_live(search_terms=search_terms)
+            # Agregador primero (cobertura amplia); lectura directa de la tienda como respaldo
+            live_items: List[ProductItem] = []
+            try:
+                from glitchhunter_ai.scrapers.live_feed import LiveRetailFeed
+                live_items = LiveRetailFeed().fetch_live_products_for_store("ripley")
+            except Exception as exc:
+                logger.debug(f"Error consultando LiveRetailFeed para Ripley: {exc}")
             if not live_items:
-                try:
-                    from glitchhunter_ai.scrapers.live_feed import LiveRetailFeed
-                    live_items = LiveRetailFeed().fetch_live_products_for_store("ripley")
-                except Exception as exc:
-                    logger.debug(f"Error consultando LiveRetailFeed para Ripley: {exc}")
+                live_items = self._fetch_live(search_terms=search_terms)
 
             if live_items:
                 logger.info("Extracción en vivo exitosa: %d productos reales obtenidos de Ripley.", len(live_items))
@@ -114,53 +116,18 @@ class RipleyScraper:
 
     def _fetch_live(self, search_terms: Optional[List[str]] = None) -> List[ProductItem]:
         """
-        Consulta endpoints HTTP de Ripley Chile estructurados.
-        Maneja excepciones de conexión, códigos de estado 403/429 y parseo de JSON.
+        Lectura directa de Ripley (datos Next.js en __NEXT_DATA__) con freno automático ante bloqueos.
+        Con términos de búsqueda consulta el buscador; sin ellos, la categoría de notebooks.
+        La antigua API /api/v2/search ya no existe (responde 404).
         """
-        if not requests or not self.session:
-            logger.warning("Librería 'requests' no disponible para consultas en vivo.")
-            return []
+        from glitchhunter_ai.scrapers.direct_reader import default_direct_reader
 
-        terms = search_terms or ["notebook gamer", "ipad air", "nintendo switch", "cafetera", "lavadora"]
-        collected_items: List[ProductItem] = []
-
-        for term in terms:
-            try:
-                # Ripley expone endpoints de búsqueda por API v2 o catalog
-                params = {
-                    "term": term,
-                    "page": "1",
-                    "format": "json",
-                }
-                search_url = f"{self.base_url}/api/v2/search"
-                response = self.session.get(search_url, params=params, timeout=self.timeout)
-
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        products_data = data.get("products") or data.get("data", {}).get("products", [])
-                        for raw in products_data:
-                            item = self._parse_ripley_product(raw)
-                            if item:
-                                collected_items.append(item)
-                    except ValueError as json_err:
-                        logger.debug("Error decodificando JSON para término '%s': %s", term, json_err)
-                elif response.status_code in (403, 429):
-                    logger.warning(
-                        "Respuesta HTTP %d al consultar término '%s' (protección anti-bot de Ripley activa).",
-                        response.status_code,
-                        term,
-                    )
-                    # Si detectamos 403/429, evitamos seguir insistiendo para no ser baneados
-                    break
-                else:
-                    logger.debug("HTTP %d recibido desde Ripley para término '%s'.", response.status_code, term)
-
-            except Exception as exc:
-                logger.warning("Error de conexión consultando Ripley para término '%s': %s", term, exc)
-                break
-
-        return collected_items
+        if search_terms:
+            items: List[ProductItem] = []
+            for term in search_terms:
+                items.extend(default_direct_reader.search("ripley", term))
+            return items
+        return default_direct_reader.fetch_category("ripley", "notebooks")
 
     def _parse_ripley_product(self, raw: Dict[str, Any]) -> Optional[ProductItem]:
         """

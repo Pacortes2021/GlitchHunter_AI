@@ -23,6 +23,7 @@ import urllib.parse
 import requests
 
 from glitchhunter_ai.core.models import ProductItem
+from glitchhunter_ai.scrapers.product_ids import canonical_product_id
 from glitchhunter_ai.scrapers.stealth_client import default_stealth_client
 
 logger = logging.getLogger("glitchhunter.scrapers.live_feed")
@@ -249,7 +250,8 @@ class LiveRetailFeed:
                     pics = e.get("picture_urls") or []
                     img_url = pics[0] if pics else None
 
-                    prod_id = f"{store_id}-{e.get('id')}"
+                    # ID derivado de la URL de la tienda para coincidir con la lectura directa
+                    prod_id = canonical_product_id(store_id, ext_url) or f"{store_id}-{e.get('id')}"
                     cat = infer_category(title)
 
                     products.append(
@@ -265,6 +267,7 @@ class LiveRetailFeed:
                             image_url=img_url,
                             in_stock=True,
                             timestamp=datetime.now(timezone.utc),
+                            source="solotodo",
                         )
                     )
         except Exception as exc:
@@ -300,7 +303,7 @@ class LiveRetailFeed:
                                 if not title:
                                     continue
 
-                                prod_id = f"{store_id}-k{k_item.get('product_id')}"
+                                prod_id = canonical_product_id(store_id, ext_url) or f"{store_id}-k{k_item.get('product_id')}"
                                 img_url = k_item.get("images")
                                 cat = infer_category(title)
 
@@ -317,6 +320,7 @@ class LiveRetailFeed:
                                         image_url=img_url,
                                         in_stock=True,
                                         timestamp=datetime.now(timezone.utc),
+                                        source="knasta",
                                     )
                                 )
                     except Exception as exc:
@@ -380,7 +384,7 @@ class LiveRetailFeed:
                     cfg = STORE_MAPPING.get(target_store, {})
                     products.append(
                         ProductItem(
-                            id=f"{target_store}-k{k_item.get('product_id')}",
+                            id=canonical_product_id(target_store, ext_url) or f"{target_store}-k{k_item.get('product_id')}",
                             store_id=target_store,
                             store_name=cfg.get("name", target_store.capitalize()),
                             title=title,
@@ -391,6 +395,7 @@ class LiveRetailFeed:
                             image_url=k_item.get("images"),
                             in_stock=True,
                             timestamp=datetime.now(timezone.utc),
+                            source="knasta",
                         )
                     )
         except Exception as exc:

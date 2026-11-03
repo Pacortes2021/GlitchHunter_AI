@@ -51,6 +51,7 @@ class ProductItem(BaseModel):
     image_url: Optional[str] = Field(default=None, description="URL de la imagen principal del producto")
     in_stock: bool = Field(default=True, description="Indica si el producto tiene stock disponible")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Fecha y hora de captura")
+    source: Optional[str] = Field(default=None, description="Origen del dato: 'direct' (tienda), 'solotodo' o 'knasta' (agregador)")
 
     @property
     def best_price(self) -> float:
