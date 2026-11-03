@@ -67,6 +67,22 @@ def test_catalog_rotator_round_robin_and_strategy_alternation():
 # =====================================================================
 # 2. Pruebas de LiveRetailFeed con Ordenamiento y Búsqueda Proactiva
 # =====================================================================
+def _knasta_html(products):
+    """Página https://knasta.cl/results con la estructura real de su __NEXT_DATA__."""
+    import json as _json
+    data = {"props": {"pageProps": {"initialData": {"count": len(products), "products": products}}}}
+    return f'<html><script id="__NEXT_DATA__" type="application/json">{_json.dumps(data)}</script></html>'
+
+
+def _mock_session(knasta_products=None):
+    mock_session = MagicMock()
+    mock_resp = MagicMock(status_code=200)
+    mock_resp.json.return_value = {"results": []}
+    mock_resp.text = _knasta_html(knasta_products or [])
+    mock_session.get.return_value = mock_resp
+    return mock_session
+
+
 def test_live_feed_sort_strategy_urls():
     """Verifica que LiveRetailFeed configure correctamente los parámetros de ordenamiento."""
     mock_session = MagicMock()
@@ -88,39 +104,33 @@ def test_live_feed_sort_strategy_urls():
     assert "ordering=-id" in solotodo_call
     assert "categories=2" in solotodo_call
 
-    # Debe incluir 'order=price_asc' en Knasta
+    # Knasta: página pública /results (robots.txt prohíbe /api), bajadas de hoy de esta tienda
     knasta_call = next(u for u in called_urls if "knasta.cl" in u)
-    assert "order=price_asc" in knasta_call
+    assert "/api/" not in knasta_call
+    assert "knastaday=1" in knasta_call and "partners=falabella" in knasta_call
 
 
 def test_live_feed_search_live_products_parsing():
     """Verifica que search_live_products busque y estructure productos de múltiples tiendas."""
-    mock_session = MagicMock()
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "products": [
-            {
-                "product_id": "111",
-                "retail": "falabella",
-                "title": "Consola PlayStation 5 Slim 1TB",
-                "price_value": "49990",
-                "price_tm": "549990",
-                "url": "https://falabella.com/p/ps5",
-                "images": "https://falabella.com/ps5.jpg",
-            },
-            {
-                "product_id": "222",
-                "retail": "pcfactory",
-                "title": "Control DualSense PS5 Blanco",
-                "price_value": "69990",
-                "price_tm": "79990",
-                "url": "https://pcfactory.cl/p/dualsense",
-                "images": "https://pcfactory.cl/ctrl.jpg",
-            },
-        ]
-    }
-    mock_session.get.return_value = mock_resp
+    mock_session = _mock_session([
+        {
+            "product_id": "111",
+            "retail": "falabella",
+            "title": "Consola PlayStation 5 Slim 1TB",
+            "current_price": 49990,
+            "url": "https://falabella.com/p/ps5",
+            "image": "https://falabella.com/ps5.jpg",
+            "descriptive": {"state": "OPPORTUNITY", "habitual_price": 549990},
+        },
+        {
+            "product_id": "222",
+            "retail": "pcfactory",
+            "title": "Control DualSense PS5 Blanco",
+            "current_price": 69990,
+            "last_variation_price": 79990,
+            "url": "https://pcfactory.cl/p/dualsense",
+        },
+    ])
 
     feed = LiveRetailFeed(timeout=3.0)
     feed.session = mock_session
@@ -129,8 +139,10 @@ def test_live_feed_search_live_products_parsing():
     assert len(results) == 2
     assert results[0].store_id == "falabella"
     assert results[0].current_price == 49990.0
-    assert results[0].normal_price == 549990.0
+    assert results[0].normal_price == 549990.0   # precio habitual de Knasta
     assert results[1].store_id == "pcfactory"
+    assert results[1].normal_price == 79990.0    # sin historial: último precio distinto
+    assert "knasta.cl/results?q=" in mock_session.get.call_args_list[0][0][0]
 
 
 # =====================================================================
@@ -304,26 +316,62 @@ def test_knasta_normal_price_uses_previous_price():
 
     sandwichera = {"price_value": 12990.0, "price_tm": 12990.0, "prev_price": "$ 24.990", "percent": -48}
     assert knasta_normal_price(sandwichera, 12990.0) == 24990.0
+    # Con análisis de historial, manda el precio habitual (moda) aunque el anterior sea mayor
+    con_historial = {"last_variation_price": 1499990, "descriptive": {"habitual_price": 1229990}}
+    assert knasta_normal_price(con_historial, 739990.0) == 1229990.0
     # Si no hay precio anterior, se usa price_tm o, en último caso, el precio actual
     assert knasta_normal_price({"price_tm": 14990.0}, 11990.0) == 14990.0
     assert knasta_normal_price({}, 11990.0) == 11990.0
 
 
-def test_knasta_pages_shared_between_stores():
-    """La API de Knasta no filtra por tienda: las páginas se descargan una vez por ciclo, no una vez por tienda."""
+def test_knasta_pages_are_cached_between_scrapers():
+    """Una misma página de Knasta no se descarga dos veces dentro del TTL (ej: scraper + escaneo de watchlist)."""
     from glitchhunter_ai.scrapers import live_feed
 
     live_feed._knasta_cache.clear()
-    mock_session = MagicMock()
-    mock_resp = MagicMock(status_code=200)
-    mock_resp.json.return_value = {"results": [], "products": []}
-    mock_session.get.return_value = mock_resp
-
+    mock_session = _mock_session([])
     feed = LiveRetailFeed(timeout=3.0)
     feed.session = mock_session
-    for store in ("falabella", "paris", "lider"):
-        feed.fetch_live_products_for_store(store)
+    feed.fetch_live_products_for_store("paris")
+    feed.fetch_live_products_for_store("paris")
 
     knasta_calls = [c for c in mock_session.get.call_args_list if "knasta.cl" in c[0][0]]
-    assert len(knasta_calls) == 3  # páginas 1, 2 y 3, una sola vez
+    assert len(knasta_calls) == live_feed.KNASTA_PAGES_PER_STORE
     live_feed._knasta_cache.clear()
+
+
+def test_knasta_keeps_only_real_deals_by_price_history():
+    """
+    Knasta analiza el historial de cada producto: solo 'OPPORTUNITY' y 'BELOW_HABITUAL' son ofertas reales.
+    El precio de referencia es el habitual (moda del historial), no el precio tachado.
+    """
+    from glitchhunter_ai.scrapers import live_feed
+
+    live_feed._knasta_cache.clear()
+    base = {"retail": "lider", "url": "https://www.lider.cl/ip/{}", "title": "Producto {}", "current_price": 739990}
+    items = []
+    for n, state in enumerate(["OPPORTUNITY", "BELOW_HABITUAL", "HABITUAL", "ABOVE_HABITUAL", None]):
+        it = dict(base, product_id=str(n), url=base["url"].format(n), title=base["title"].format(n))
+        it["descriptive"] = {"state": state, "habitual_price": 1229990} if state else None
+        items.append(it)
+    items.append(dict(items[0], product_id="99", retail="paris", url="https://www.paris.cl/x-99.html"))
+
+    feed = LiveRetailFeed(timeout=3.0)
+    feed.session = _mock_session(items)
+    products = [p for p in feed.fetch_live_products_for_store("lider") if p.source == "knasta"]
+
+    assert sorted(p.title for p in products) == ["Producto 0", "Producto 1"]
+    assert all(p.normal_price == 1229990 and p.store_id == "lider" for p in products)
+    live_feed._knasta_cache.clear()
+
+
+def test_knasta_not_queried_for_ripley():
+    """Knasta no cubre Ripley ('partners=ripley' devuelve todas las tiendas): no se consulta."""
+    from glitchhunter_ai.scrapers import live_feed
+
+    live_feed._knasta_cache.clear()
+    mock_session = _mock_session([])
+    feed = LiveRetailFeed(timeout=3.0)
+    feed.session = mock_session
+    feed.fetch_live_products_for_store("ripley")
+    assert not [c for c in mock_session.get.call_args_list if "knasta.cl" in c[0][0]]

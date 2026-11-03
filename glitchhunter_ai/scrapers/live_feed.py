@@ -14,6 +14,7 @@ Garantiza que el 100% de los links generados sean URLs oficiales y vivas de las 
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -170,14 +171,39 @@ def parse_clp_price(val: Any) -> float:
 
 def knasta_normal_price(k_item: Dict[str, Any], current_price: float) -> float:
     """
-    Precio de referencia de un producto de Knasta. Knasta calcula su % de descuento contra
-    'prev_price' (precio anterior registrado); 'price_tm' suele coincidir con el precio actual,
-    lo que dejaba ofertas reales (ej: -48%) con 0% de descuento en el radar.
+    Precio de referencia de un producto de Knasta.
+    Prioriza 'descriptive.habitual_price': la moda del historial de precios que calcula Knasta,
+    que descarta rebajas sobre precios tachados inflados. Si no existe, usa el último precio
+    distinto registrado ('last_variation_price' / 'prev_price') o 'price_tm'.
     """
-    prev = parse_clp_price(k_item.get("prev_price"))
-    tm = parse_clp_price(k_item.get("price_tm"))
-    normal = max(prev, tm)
-    return normal if normal > 0.0 else current_price
+    habitual = parse_clp_price((k_item.get("descriptive") or {}).get("habitual_price"))
+    if habitual > 0.0:
+        return max(habitual, current_price)
+    prev = max(
+        parse_clp_price(k_item.get("last_variation_price")),
+        parse_clp_price(k_item.get("prev_price")),
+        parse_clp_price(k_item.get("price_tm")),
+    )
+    return prev if prev > 0.0 else current_price
+
+
+# Estados del análisis de historial de Knasta que indican una oferta real
+# (OPPORTUNITY: oportunidad clara; BELOW_HABITUAL: bajo el precio habitual).
+KNASTA_DEAL_STATES = {"OPPORTUNITY", "BELOW_HABITUAL"}
+
+# Knasta no cubre Ripley: su filtro 'partners=ripley' se ignora y devuelve todas las tiendas.
+KNASTA_UNSUPPORTED_STORES = {"ripley"}
+KNASTA_PAGES_PER_STORE = 2
+
+
+def _extract_knasta_products(html: str) -> List[Dict[str, Any]]:
+    """Productos del __NEXT_DATA__ de una página https://knasta.cl/results."""
+    m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html or "", re.DOTALL)
+    if not m:
+        return []
+    data = json.loads(m.group(1))
+    initial = (data.get("props", {}).get("pageProps", {}) or {}).get("initialData") or {}
+    return initial.get("products") or []
 
 
 # Caché breve de páginas de Knasta: la API no filtra por tienda, así que las 4 tiendas
@@ -298,61 +324,30 @@ class LiveRetailFeed:
         except Exception as exc:
             logger.debug(f"Error consultando SoloTodo para {store_id}: {exc}")
 
-        # 2. Extracción desde Knasta Deals (Ofertas destacadas con descuento u orden por precio)
-        try:
-            knasta_name = config.get("knasta_name")
-            if knasta_name:
-                k_order = "price_asc" if sort_strategy == "price_asc" else "discount"
-                for page_num in (1, 2, 3):
-                    try:
-                        k_url = f"https://knasta.cl/api/results?page={page_num}&order={k_order}"
-                        for k_item in self._knasta_page(k_url):
-                            ret = str(k_item.get("retail", "")).lower()
-                            if ret != knasta_name:
-                                continue
-                            ext_url = k_item.get("url")
-                            if not ext_url or ext_url in seen_urls:
-                                continue
-                            seen_urls.add(ext_url)
-
-                            curr_price = parse_clp_price(k_item.get("price_value"))
-                            if curr_price <= 0.0:
-                                continue
-                            norm_price = knasta_normal_price(k_item, curr_price)
-
-                            title = str(k_item.get("title", "")).strip()
-                            if not title:
-                                continue
-
-                            prod_id = canonical_product_id(store_id, ext_url) or f"{store_id}-k{k_item.get('product_id')}"
-                            img_url = k_item.get("images")
-                            cat = infer_category(title)
-
-                            products.append(
-                                ProductItem(
-                                    id=prod_id,
-                                    store_id=store_id,
-                                    store_name=config["name"],
-                                    title=title,
-                                    category=cat,
-                                    current_price=curr_price,
-                                    normal_price=norm_price,
-                                    url=ext_url,
-                                    image_url=img_url,
-                                    in_stock=True,
-                                    timestamp=datetime.now(timezone.utc),
-                                    source="knasta",
-                                )
-                            )
-                    except Exception as exc:
-                        logger.debug(f"Error consultando Knasta página {page_num} para {store_id}: {exc}")
-        except Exception as exc:
-            logger.debug(f"Error consultando Knasta para {store_id}: {exc}")
+        # 2. Knasta: bajadas de precio de HOY (knastaday=1) de esta tienda, desde la página pública
+        # /results (su robots.txt prohíbe /api, que además ignora 'order' y el filtro por tienda).
+        # Solo pasan al pipeline los productos que Knasta marca bajo su precio habitual.
+        knasta_name = config.get("knasta_name")
+        if knasta_name and store_id.lower() not in KNASTA_UNSUPPORTED_STORES:
+            for page_num in range(1, KNASTA_PAGES_PER_STORE + 1):
+                k_url = f"https://knasta.cl/results?knastaday=1&partners={knasta_name}&page={page_num}"
+                try:
+                    for k_item in self._knasta_page(k_url):
+                        if str(k_item.get("retail", "")).lower() != knasta_name:
+                            continue
+                        state = (k_item.get("descriptive") or {}).get("state")
+                        if state not in KNASTA_DEAL_STATES:
+                            continue
+                        item = self._knasta_item_to_product(k_item, store_id, seen_urls)
+                        if item:
+                            products.append(item)
+                except Exception as exc:
+                    logger.debug(f"Error consultando Knasta página {page_num} para {store_id}: {exc}")
 
         return products
 
     def _knasta_page(self, url: str) -> List[Dict[str, Any]]:
-        """Productos de una página de Knasta, con caché compartida de corta duración."""
+        """Productos de una página de Knasta /results, con caché compartida de corta duración."""
         now = time.monotonic()
         with _knasta_cache_lock:
             cached = _knasta_cache.get(url)
@@ -360,11 +355,42 @@ class LiveRetailFeed:
                 return cached[1]
         resp = self.session.get(url, timeout=self.timeout)
         if resp.status_code != 200:
+            logger.warning(f"Knasta respondió HTTP {resp.status_code} para {url}")
             return []
-        products = resp.json().get("products", []) or []
+        products = _extract_knasta_products(resp.text)
         with _knasta_cache_lock:
             _knasta_cache[url] = (now, products)
         return products
+
+    def _knasta_item_to_product(
+        self, k_item: Dict[str, Any], store_id: str, seen_urls: set
+    ) -> Optional[ProductItem]:
+        """Convierte un producto de Knasta a ProductItem usando el precio habitual como referencia."""
+        ext_url = k_item.get("url")
+        title = str(k_item.get("title", "")).strip()
+        if not ext_url or not title or ext_url in seen_urls:
+            return None
+        curr_price = parse_clp_price(k_item.get("current_price") or k_item.get("price_value"))
+        if curr_price <= 0.0:
+            return None
+        seen_urls.add(ext_url)
+        card = parse_clp_price(k_item.get("price_card"))
+        cfg = STORE_MAPPING.get(store_id, {})
+        return ProductItem(
+            id=canonical_product_id(store_id, ext_url) or f"{store_id}-k{k_item.get('product_id')}",
+            store_id=store_id,
+            store_name=cfg.get("name", store_id.capitalize()),
+            title=title,
+            category=infer_category(title),
+            current_price=curr_price,
+            normal_price=knasta_normal_price(k_item, curr_price),
+            card_price=card if 0.0 < card < curr_price else None,
+            url=ext_url,
+            image_url=k_item.get("image") or k_item.get("thumbnail_image") or k_item.get("images"),
+            in_stock=True,
+            timestamp=datetime.now(timezone.utc),
+            source="knasta",
+        )
 
     def search_live_products(
         self,
@@ -386,55 +412,16 @@ class LiveRetailFeed:
         seen_urls: set = set()
         encoded_q = urllib.parse.quote(clean_q)
 
-        # 1. Consulta proactiva en Knasta (agrupador multi-retailer con orden por precio)
+        # 1. Búsqueda en Knasta vía la página pública /results?q= (su robots.txt prohíbe /api)
         try:
-            k_order = "price_asc" if order == "price_asc" else "discount"
-            k_url = f"https://knasta.cl/api/results?q={encoded_q}&order={k_order}"
-            resp = self.session.get(k_url, timeout=self.timeout)
-            if resp.status_code == 200:
-                raw_products = resp.json().get("products", [])
-                for k_item in raw_products:
-                    retail_raw = str(k_item.get("retail", "")).lower().strip()
-                    target_store = KNASTA_TO_STORE_ID.get(retail_raw)
-                    if not target_store:
-                        continue
-                    if store_ids and target_store not in store_ids:
-                        continue
-
-                    ext_url = k_item.get("url")
-                    if not ext_url or ext_url in seen_urls:
-                        continue
-                    seen_urls.add(ext_url)
-
-                    curr_price = parse_clp_price(k_item.get("price_value"))
-                    if curr_price <= 0.0:
-                        continue
-                    norm_price = knasta_normal_price(k_item, curr_price)
-
-                    title = str(k_item.get("title", "")).strip()
-                    if not title:
-                        continue
-
-                    cfg = STORE_MAPPING.get(target_store, {})
-                    products.append(
-                        ProductItem(
-                            id=canonical_product_id(target_store, ext_url) or f"{target_store}-k{k_item.get('product_id')}",
-                            store_id=target_store,
-                            store_name=cfg.get("name", target_store.capitalize()),
-                            title=title,
-                            category=infer_category(title),
-                            current_price=curr_price,
-                            normal_price=norm_price,
-                            url=ext_url,
-                            image_url=k_item.get("images"),
-                            in_stock=True,
-                            timestamp=datetime.now(timezone.utc),
-                            source="knasta",
-                        )
-                    )
+            for k_item in self._knasta_page(f"https://knasta.cl/results?q={encoded_q}"):
+                target_store = KNASTA_TO_STORE_ID.get(str(k_item.get("retail", "")).lower().strip())
+                if not target_store or (store_ids and target_store not in store_ids):
+                    continue
+                item = self._knasta_item_to_product(k_item, target_store, seen_urls)
+                if item:
+                    products.append(item)
         except Exception as exc:
             logger.debug("Error en búsqueda proactiva Knasta para '%s': %s", clean_q, exc)
 
         return products[:limit]
-
-        return products
