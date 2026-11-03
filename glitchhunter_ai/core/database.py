@@ -64,6 +64,13 @@ except ImportError:
 logger = logging.getLogger("glitchhunter.database")
 
 
+def _enum_value(value: Any) -> str:
+    """Texto plano de un Enum ('CRITICO' en vez de 'GlitchSeverity.CRITICO')."""
+    if value is None:
+        return ""
+    return str(getattr(value, "value", value))
+
+
 class PriceDatabase:
     """
     Gestor de base de datos SQLite persistente para catálogo, historial de precios
@@ -312,6 +319,11 @@ class PriceDatabase:
                 );
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_product ON offer_feed(product_id);")
+            # Migración: URL normalizada para deduplicar el mismo producto con IDs distintos
+            cursor.execute("PRAGMA table_info(offer_feed);")
+            if "url_key" not in {r[1] for r in cursor.fetchall()}:
+                cursor.execute("ALTER TABLE offer_feed ADD COLUMN url_key TEXT;")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_url ON offer_feed(url_key);")
 
             # 7. Tabla de Feedback del Usuario (👍 Buena Oferta / 👎 Falso Positivo)
             cursor.execute("""
@@ -364,6 +376,7 @@ class PriceDatabase:
         try:
             self.cleanup_duplicate_glitches()
             self.cleanup_duplicate_price_history()
+            self.remove_legacy_unstable_products()
         except Exception:
             pass
 
@@ -542,7 +555,7 @@ class PriceDatabase:
         if isinstance(alert, dict):
             alert_id = str(alert.get("id") or alert.get("alert_id") or f"ALT-{uuid.uuid4().hex[:8].upper()}")
             product_id = str(alert.get("product_id") or (alert.get("product", {}).get("id") if isinstance(alert.get("product"), dict) else ""))
-            severity = str(alert.get("severity") or "MODERADO")
+            severity = _enum_value(alert.get("severity")) or "MODERADO"
             confidence_score = float(alert.get("confidence_score", 0.0))
             discount_pct = float(alert.get("discount_pct", alert.get("discount_percentage", 0.0)))
             savings_clp = float(alert.get("savings_clp", alert.get("absolute_savings_clp", 0.0)))
@@ -574,7 +587,7 @@ class PriceDatabase:
                 savings_clp = float(v.absolute_savings_clp)
                 reason = str(v.reason)
             else:
-                severity = str(getattr(alert, "severity", "MODERADO"))
+                severity = _enum_value(getattr(alert, "severity", None)) or "MODERADO"
                 confidence_score = float(getattr(alert, "confidence_score", 0.0))
                 discount_pct = float(getattr(alert, "discount_pct", 0.0))
                 savings_clp = float(getattr(alert, "savings_clp", 0.0))
@@ -656,7 +669,7 @@ class PriceDatabase:
         else:
             v_data = vars(verdict)
 
-        severity = str(v_data.get("severity") or "MODERADO")
+        severity = _enum_value(v_data.get("severity")) or "MODERADO"
         discount_pct = float(v_data.get("discount_percentage", 0.0))
         savings_clp = float(v_data.get("absolute_savings_clp", 0.0))
         confidence_score = float(v_data.get("confidence_score", 90.0))
@@ -948,6 +961,26 @@ class PriceDatabase:
                 logger.info(f"🧹 Limpieza de alertas duplicadas: se removieron {deleted_count} registros redundantes.")
             return deleted_count
 
+    def remove_legacy_unstable_products(self) -> int:
+        """
+        Borra productos con IDs de formatos antiguos ya reemplazados por IDs canónicos:
+        - 'pcfactory_N': ahora 'pcfactory-N'; además traían un precio normal inflado ('referencia').
+        - 'MLC-HTML-…': IDs de Mercado Libre basados en hash() de Python (cambiaban en cada reinicio).
+        Sin esto, esas filas se seguirían publicando como ofertas hasta expirar.
+        """
+        patterns = ("pcfactory\\_%", "MLC-HTML-%")
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            removed = 0
+            for pattern in patterns:
+                cursor.execute("DELETE FROM price_history WHERE product_id LIKE ? ESCAPE '\\';", (pattern,))
+                cursor.execute("DELETE FROM products WHERE id LIKE ? ESCAPE '\\';", (pattern,))
+                removed += cursor.rowcount
+            if removed:
+                conn.commit()
+                logger.info(f"🧹 {removed} producto(s) con IDs de formato antiguo eliminados.")
+            return removed
+
     def cleanup_duplicate_price_history(self) -> int:
         """
         Elimina únicamente registros con timestamp y precio exactamente duplicados
@@ -1158,21 +1191,28 @@ class PriceDatabase:
         más barato que en su última publicación. Retorna el id de la publicación, o None si ya
         estaba publicada a este precio (o a uno menor) y no corresponde repetirla.
         """
+        # El mismo producto puede llegar con IDs distintos según la fuente o el formato de una
+        # versión anterior: se identifica también por su URL sin parámetros.
+        raw_url = payload.get("url") or (payload.get("product") or {}).get("url") or ""
+        url_key = str(raw_url).split("?")[0].split("#")[0].rstrip("/").lower() or None
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT MIN(best_price) AS min_price FROM offer_feed WHERE product_id = ?;",
-                (product_id,),
+                "SELECT MIN(best_price) AS min_price FROM offer_feed WHERE product_id = ? OR (url_key IS NOT NULL AND url_key = ?);",
+                (product_id, url_key),
             )
             row = cursor.fetchone()
-            if row and row["min_price"] is not None and best_price >= float(row["min_price"]) - 0.5:
-                return None
+            if row and row["min_price"] is not None:
+                last_min = float(row["min_price"])
+                # Solo es una oferta nueva si baja al menos 2% y $1.000 respecto a su mejor publicación
+                if best_price > last_min * 0.98 or last_min - best_price < 1000:
+                    return None
             received_at = datetime.now(timezone.utc).isoformat()
             cursor.execute("""
-                INSERT INTO offer_feed (kind, product_id, store_id, best_price, discount_pct, received_at, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?);
+                INSERT INTO offer_feed (kind, product_id, store_id, best_price, discount_pct, received_at, payload, url_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             """, (kind, product_id, store_id, float(best_price), float(discount_pct), received_at,
-                  json.dumps(payload, ensure_ascii=False, default=str)))
+                  json.dumps(payload, ensure_ascii=False, default=str), url_key))
             conn.commit()
             return int(cursor.lastrowid)
 
@@ -1194,12 +1234,41 @@ class PriceDatabase:
                 posts.append(post)
             return posts
 
+    def get_feedback_counts(self, deal_ids: List[str]) -> Dict[str, Dict[str, int]]:
+        """Votos 👍/👎 por id de oferta (alert_id o product_id)."""
+        ids = [d for d in dict.fromkeys(deal_ids) if d]
+        if not ids:
+            return {}
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            marks = ",".join("?" for _ in ids)
+            cursor.execute(f"""
+                SELECT deal_id,
+                       SUM(CASE WHEN vote = 'up' THEN 1 ELSE 0 END) AS ups,
+                       SUM(CASE WHEN vote = 'down' THEN 1 ELSE 0 END) AS downs
+                FROM deal_feedback WHERE deal_id IN ({marks}) GROUP BY deal_id;
+            """, ids)
+            return {r["deal_id"]: {"up": r["ups"] or 0, "down": r["downs"] or 0} for r in cursor.fetchall()}
+
+    def offer_exists(self, deal_id: str) -> bool:
+        """True si el id corresponde a una alerta, un producto del catálogo o una publicación del canal."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 1 FROM tracked_deals WHERE alert_id = ? OR product_id = ?
+                UNION SELECT 1 FROM products WHERE id = ?
+                UNION SELECT 1 FROM offer_feed WHERE product_id = ?
+                LIMIT 1;
+            """, (deal_id, deal_id, deal_id, deal_id))
+            return cursor.fetchone() is not None
+
     def get_commercial_deals(
         self,
         min_discount: float = 40.0,
         max_discount: float = 65.0,
         limit: int = 100,
         store_id: Optional[str] = None,
+        max_age_hours: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
         Retorna ofertas comerciales moderadas (ej: 40% a 64% de descuento)
@@ -1230,6 +1299,11 @@ class PriceDatabase:
                   AND (((p.normal_price - (CASE WHEN p.card_price > 0 AND p.card_price < p.current_price THEN p.card_price ELSE p.current_price END)) / p.normal_price) * 100) < ?
             """
             params: list[Any] = [float(min_discount), float(max_discount)]
+            if max_age_hours is not None:
+                # Un producto que no aparece en los escaneos recientes puede ya no estar en oferta
+                cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).strftime("%Y-%m-%d %H:%M:%S")
+                query += " AND p.last_updated >= ?"
+                params.append(cutoff)
             if store_id and store_id != "all":
                 query += " AND LOWER(p.store_id) = ?"
                 params.append(store_id.lower())

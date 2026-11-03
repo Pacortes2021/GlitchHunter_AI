@@ -19,12 +19,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Security, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Security, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from glitchhunter_ai.config import (
     ALLOW_TEST_GLITCH,
@@ -164,7 +164,7 @@ async def background_scanner_loop():
                 )
             else:
                 logger.info(
-                    f"⏱️ [Revisor Continuo {now_str}] Catálogo verificado en las 6 tiendas: 0 ofertas nuevas. "
+                    f"⏱️ [Revisor Continuo {now_str}] Catálogo verificado en las 7 fuentes: 0 ofertas nuevas. "
                     f"Radar activo con {total_g} glitches (≥65%) y {total_d} ofertas comerciales (40%-64%)."
                 )
         except asyncio.CancelledError:
@@ -209,7 +209,8 @@ async def lifespan(app: FastAPI):
     stats = db.get_stats()
     initial_scan = None
     # Publicar en el canal las ofertas del catálogo actual que aún no se habían publicado
-    pipeline.publish_new_deals()
+    if USE_LIVE_SCRAPING:
+        pipeline.publish_new_deals()
     if stats.get("total_products", 0) == 0:
         logger.info("📡 Inicializando radar: ejecutando primer escaneo LIVE de catálogo retail chileno...")
         initial_scan = MAIN_EVENT_LOOP.run_in_executor(None, pipeline.run_scan, USE_LIVE_SCRAPING)
@@ -250,7 +251,30 @@ async def lifespan(app: FastAPI):
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
+def _is_allowed_origin(origin: Optional[str], host: Optional[str], scheme: str = "http") -> bool:
+    """
+    Sin cabecera Origin (curl, CLI, tests) se permite. Con Origin, solo el propio dashboard
+    (mismo host) o los orígenes configurados en CORS_ORIGINS. Un POST sin cuerpo desde otra
+    página es una "simple request" que el navegador envía sin preflight: sin este control,
+    cualquier sitio que visite el usuario podría lanzar escaneos o votar.
+    """
+    if not origin:
+        return True
+    allowed = set(parsed_origins)
+    if host:
+        allowed.update({f"{scheme}://{host}", f"http://{host}", f"https://{host}"})
+    return origin.rstrip("/") in allowed
+
+
+def verify_same_origin(request: Request) -> bool:
+    """Rechaza peticiones que cambian datos si vienen de otro sitio web."""
+    if not _is_allowed_origin(request.headers.get("origin"), request.headers.get("host"), request.url.scheme):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Origen no permitido.")
+    return True
+
+
 def verify_admin_key(
+    request: Request,
     api_key: Optional[str] = Security(api_key_header),
     authorization: Optional[str] = Header(None),
 ) -> bool:
@@ -260,6 +284,7 @@ def verify_admin_key(
     exige coincidencia con 'X-API-Key' o 'Authorization: Bearer <key>'.
     En modo desarrollo local (API_AUTH_KEY vacía), permite acceso transparente.
     """
+    verify_same_origin(request)
     if not API_AUTH_KEY:
         return True
 
@@ -317,6 +342,9 @@ async def websocket_glitches_endpoint(websocket: WebSocket):
     Canal WebSocket bidireccional en tiempo real.
     Emite instantáneamente cada nuevo glitch detectado por el pipeline.
     """
+    if not _is_allowed_origin(websocket.headers.get("origin"), websocket.headers.get("host")):
+        await websocket.close(code=1008)
+        return
     await manager.connect(websocket)
     try:
         # Enviar estado de bienvenida al conectar
@@ -490,11 +518,14 @@ async def get_deals(
     Retorna ofertas comerciales moderadas (ej: 40% a 64% de descuento).
     Alimenta la segunda columna de ofertas del radar web.
     """
+    if min_discount > max_discount:
+        raise HTTPException(status_code=422, detail="min_discount no puede ser mayor que max_discount.")
     raw_deals = db.get_commercial_deals(
         min_discount=min_discount,
         max_discount=max_discount,
         limit=limit,
         store_id=store_id,
+        max_age_hours=24,
     )
     return [format_commercial_deal_record(d) for d in raw_deals]
 
@@ -505,6 +536,8 @@ def format_feed_post(post: Dict[str, Any]) -> Dict[str, Any]:
     if post["kind"] == "deal":
         payload["timestamp"] = post["received_at"]
         card = format_commercial_deal_record(payload)
+        # El voto se registra por producto: así el modificador de confianza por categoría aprende
+        card["alert_id"] = post["product_id"]
     else:
         card = payload
     card["feed_id"] = post["id"]
@@ -516,14 +549,20 @@ def format_feed_post(post: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/api/feed")
 async def get_feed(
-    after_id: int = Query(0, ge=0, description="Solo publicaciones con id mayor a este (para traer únicamente lo nuevo)"),
+    after_id: int = Query(0, ge=0, le=2**62, description="Solo publicaciones con id mayor a este (para traer únicamente lo nuevo)"),
     limit: int = Query(300, ge=1, le=1000, description="Cantidad máxima de publicaciones"),
 ):
     """
     Canal de ofertas: cada oferta se publica una sola vez, con su precio y hora de recepción.
     Ordenado de la más reciente a la más antigua.
     """
-    return [format_feed_post(p) for p in db.get_feed(after_id=after_id, limit=limit)]
+    cards = [format_feed_post(p) for p in db.get_feed(after_id=after_id, limit=limit)]
+    votes = db.get_feedback_counts([c.get("alert_id") for c in cards])
+    for c in cards:
+        v = votes.get(c.get("alert_id"), {})
+        c["upvotes"] = v.get("up", 0)
+        c["downvotes"] = v.get("down", 0)
+    return cards
 
 
 @app.post("/api/scan", dependencies=[Depends(verify_admin_key)])
@@ -666,15 +705,17 @@ async def get_store_health():
 
 class DealFeedbackRequest(BaseModel):
     vote: str = Field(..., description="Voto: 'up' (oferta real) o 'down' (falso positivo)")
-    reason: Optional[str] = Field(None, description="Motivo opcional del voto")
+    reason: Optional[str] = Field(None, max_length=500, description="Motivo opcional del voto")
 
 
-@app.post("/api/deals/{deal_id}/feedback")
+@app.post("/api/deals/{deal_id}/feedback", dependencies=[Depends(verify_same_origin)])
 async def submit_deal_feedback(deal_id: str, payload: DealFeedbackRequest):
     """
     Registra el voto de la comunidad sobre un glitch u oferta comercial.
     No requiere clave administrativa (permite recopilar feedback libre de los usuarios).
     """
+    if not db.offer_exists(deal_id):
+        raise HTTPException(status_code=404, detail="Oferta no encontrada.")
     try:
         res = db.record_deal_feedback(
             deal_id=deal_id,
@@ -710,6 +751,14 @@ async def get_feedback_statistics():
 class WatchlistRequest(BaseModel):
     keyword: str
 
+    @field_validator("keyword")
+    @classmethod
+    def _valid_keyword(cls, v: str) -> str:
+        v = " ".join(str(v).split())
+        if not 2 <= len(v) <= 60:
+            raise ValueError("La palabra clave debe tener entre 2 y 60 caracteres.")
+        return v
+
 
 @app.get("/api/watchlist")
 async def get_watchlist():
@@ -727,7 +776,17 @@ async def add_watchlist(payload: WatchlistRequest):
     }
 
 
-@app.delete("/api/watchlist/{keyword}", dependencies=[Depends(verify_admin_key)])
+@app.delete("/api/watchlist", dependencies=[Depends(verify_admin_key)])
+async def delete_watchlist_by_query(keyword: str = Query(..., min_length=1, max_length=200)):
+    """Elimina una palabra clave (por query param: admite '/' y otros caracteres especiales)."""
+    removed = db.remove_watchlist_keyword(keyword)
+    return {
+        "success": removed,
+        "keywords": db.get_watchlist_keywords(),
+    }
+
+
+@app.delete("/api/watchlist/{keyword:path}", dependencies=[Depends(verify_admin_key)])
 async def delete_watchlist(keyword: str):
     """Elimina una palabra clave de la watchlist."""
     removed = db.remove_watchlist_keyword(keyword)

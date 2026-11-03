@@ -17,12 +17,16 @@ from typing import Optional
 _FALABELLA_RE = re.compile(r"/product/([A-Za-z0-9]+)(?:/|$)")
 # Ripley: /{slug}-{partNumber}p  o  /{slug}-mpm{n} (marketplace)
 _RIPLEY_RE = re.compile(r"-(\d{8,16})p$|-(mp[a-z]?\d{6,})$", re.IGNORECASE)
+# PC Factory: /producto/{id}-{slug}
+_PCFACTORY_RE = re.compile(r"/producto/(\d+)")
+# Mercado Libre: MLC123456789 o MLC-123456789 (en la ruta o en parámetros como wid=)
+_MERCADOLIBRE_RE = re.compile(r"MLC-?(\d{6,})", re.IGNORECASE)
 
 
 def canonical_product_id(store_id: str, url: Optional[str]) -> Optional[str]:
     """
     Retorna '{store_id}-{id_tienda}' si la URL permite identificar el producto, o None.
-    Solo cubre las tiendas con lectura directa (Falabella y Ripley).
+    Cubre Falabella, Ripley, PC Factory y Mercado Libre.
     """
     if not url:
         return None
@@ -38,6 +42,15 @@ def canonical_product_id(store_id: str, url: Optional[str]) -> Optional[str]:
         if m:
             return f"ripley-{(m.group(1) or m.group(2)).lower()}"
         return None
+
+    if store == "pcfactory":
+        m = _PCFACTORY_RE.search(path)
+        return f"pcfactory-{m.group(1)}" if m else None
+
+    if store == "mercadolibre":
+        # Los enlaces de publicidad (click1.mercadolibre.cl) llevan el ID real codificado en la query
+        m = _MERCADOLIBRE_RE.search(urllib.parse.unquote(str(url)))
+        return f"mercadolibre-mlc{m.group(1)}" if m else None
 
     return None
 

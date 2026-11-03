@@ -7,6 +7,7 @@ y el filtro semántico NLP estricto para erradicar el 'Carcasa Trap'.
 """
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -20,6 +21,7 @@ from glitchhunter_ai.ai_detector.inflation_verifier import InflationVerifier
 from glitchhunter_ai.ai_detector.math_detector import MathAnomalyDetector
 from glitchhunter_ai.ai_detector.semantic_filter import SemanticGlitchFilter
 from glitchhunter_ai.core.cart_sniper import generate_direct_add_to_cart_url
+from glitchhunter_ai.core.categories import ACCESSORY_CATEGORY, OTHER_CATEGORY, classify_category
 from glitchhunter_ai.core.database import PriceDatabase
 from glitchhunter_ai.core.market_reference import default_market_reference
 from glitchhunter_ai.core.models import (
@@ -36,6 +38,13 @@ from glitchhunter_ai.scrapers import get_all_scrapers
 from glitchhunter_ai.scrapers.direct_reader import DIRECT_STORES, default_direct_reader
 
 logger = logging.getLogger("GlitchHunter.Pipeline")
+
+# Productos que no son nuevos: su "precio normal" suele ser el de uno nuevo y el descuento es engañoso
+REFURBISHED_RE = re.compile(
+    r"\b(?:reacondicionad[oa]s?|refurbished|renovad[oa]|usad[oa]|seminuev[oa]|open\s?box|"
+    r"segunda\s+selecci[oó]n|exhibici[oó]n|outlet)\b",
+    re.IGNORECASE,
+)
 console = Console()
 
 
@@ -327,16 +336,20 @@ class GlitchHuntingPipeline:
         except Exception as e:
             logger.warning(f"No se pudo registrar alerta en BD: {e}")
 
-        # Publicación en el canal de ofertas (una sola vez por producto y precio)
+        # Publicación en el canal de ofertas (una sola vez por producto y precio).
+        # Las simulaciones (test-*, "Simular Glitch", demo de watchlist) nunca se publican:
+        # el canal guarda las ofertas para siempre y solo debe contener datos reales.
+        is_simulated = product.id.startswith("test-") or getattr(product, "is_mock", False)
         try:
-            self.db.publish_feed_offer(
-                kind="glitch",
-                product_id=product.id,
-                store_id=product.store_id,
-                best_price=product.best_price,
-                discount_pct=discount_pct,
-                payload=alert.model_dump(mode="json"),
-            )
+            if not is_simulated:
+                self.db.publish_feed_offer(
+                    kind="glitch",
+                    product_id=product.id,
+                    store_id=product.store_id,
+                    best_price=product.best_price,
+                    discount_pct=discount_pct,
+                    payload=alert.model_dump(mode="json"),
+                )
         except Exception as e:
             logger.warning(f"No se pudo publicar el glitch en el canal: {e}")
 
@@ -489,7 +502,7 @@ class GlitchHuntingPipeline:
             # 2. Escaneo Prioritario de la Watchlist del Usuario
             if scan_watchlist:
                 try:
-                    wl_alerts = self.run_watchlist_scan(
+                    wl_alerts = self._run_watchlist_scan_unlocked(
                         use_live=use_live,
                         send_notifications=send_notifications,
                     )
@@ -502,7 +515,8 @@ class GlitchHuntingPipeline:
                 f"✅ Ciclo concluido: {total_scanned} productos analizados, "
                 f"{len(all_detected_glitches)} glitches confirmados."
             )
-            self.publish_new_deals()
+            if use_live:
+                self.publish_new_deals()
             return all_detected_glitches
         finally:
             self.is_scanning = False
@@ -510,17 +524,56 @@ class GlitchHuntingPipeline:
 
     run_scan_cycle = run_scan
 
+    def _is_publishable_deal(self, row: Dict[str, Any], best_price: float) -> bool:
+        """
+        Filtro de calidad de las ofertas comerciales antes de publicarlas en el canal:
+        - solo simulaciones no, ni productos reacondicionados/usados/open box (su "precio normal" es el de uno nuevo);
+        - categoría del radar (no ropa, muebles, etc.) y no accesorios;
+        - ahorro mínimo en pesos (un -50% sobre $2.000 no es una oferta relevante).
+        """
+        from glitchhunter_ai.config import DEAL_INCLUDE_NON_TECH, DEAL_MIN_SAVINGS_CLP
+
+        product_id = str(row.get("product_id") or "")
+        title = str(row.get("title") or "")
+        if product_id.startswith("test-") or "[TEST-" in title:
+            return False
+        if REFURBISHED_RE.search(title):
+            return False
+        category = classify_category(title)
+        if category == ACCESSORY_CATEGORY:
+            return False
+        if category == OTHER_CATEGORY and not DEAL_INCLUDE_NON_TECH:
+            return False
+        semantic = self.semantic_filter.classify(title=title, category=row.get("category"))
+        if semantic.is_accessory and not semantic.is_main_device:
+            return False
+        normal = float(row.get("normal_price") or 0.0)
+        return normal - best_price >= DEAL_MIN_SAVINGS_CLP
+
     def publish_new_deals(self, min_discount: float = 40.0, max_discount: float = 65.0) -> int:
         """
         Publica en el canal las ofertas comerciales (40%-64%) que aún no se habían publicado,
         o que ahora están más baratas que en su última publicación. Las ya publicadas no se repiten.
+        Solo pasan las que superan el filtro de calidad (ver _is_publishable_deal).
         """
+        from glitchhunter_ai.config import DEAL_MAX_AGE_HOURS
+
         published = 0
         try:
-            for row in self.db.get_commercial_deals(min_discount=min_discount, max_discount=max_discount, limit=1000):
+            rows = self.db.get_commercial_deals(
+                min_discount=min_discount,
+                max_discount=max_discount,
+                limit=1000,
+                max_age_hours=DEAL_MAX_AGE_HOURS,
+            )
+            for row in rows:
                 current = float(row.get("current_price") or 0.0)
                 card = row.get("card_price")
                 best = float(card) if card and 0 < float(card) < current else current
+                if not self._is_publishable_deal(row, best):
+                    continue
+                # Categoría consistente para los filtros de la página (los scrapers usan rótulos distintos)
+                row = dict(row, category=classify_category(str(row.get("title") or "")))
                 post_id = self.db.publish_feed_offer(
                     kind="deal",
                     product_id=row["product_id"],
@@ -594,6 +647,25 @@ class GlitchHuntingPipeline:
             self._scan_lock.release()
 
     def run_watchlist_scan(
+        self,
+        use_live: bool = False,
+        send_notifications: Optional[bool] = None,
+    ) -> List[GlitchAlert]:
+        """
+        Escaneo de la watchlist bajo demanda (API / CLI). Toma el mismo cerrojo que run_scan:
+        si hay un escaneo en curso se omite, en vez de correr dos escaneos en paralelo.
+        """
+        if not self._scan_lock.acquire(blocking=False):
+            logger.warning("⚠️ Escaneo de watchlist omitido: ya hay un escaneo en curso.")
+            return []
+        self.is_scanning = True
+        try:
+            return self._run_watchlist_scan_unlocked(use_live=use_live, send_notifications=send_notifications)
+        finally:
+            self.is_scanning = False
+            self._scan_lock.release()
+
+    def _run_watchlist_scan_unlocked(
         self,
         use_live: bool = False,
         send_notifications: Optional[bool] = None,

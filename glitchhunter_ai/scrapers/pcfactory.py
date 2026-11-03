@@ -195,8 +195,10 @@ class PCFactoryScraper:
                 norm_price = float(precio_info.get("normal") or 0.0)
                 efec_price = float(precio_info.get("efectivo") or 0.0)
 
-                # Resolver precio normal de referencia
-                normal_p = ref_price if ref_price > 0.0 else (norm_price if norm_price > 0.0 else efec_price)
+                # Precio normal = precio con tarjeta de crédito ('normal'). El de 'referencia' es un precio
+                # de lista que PC Factory infla: un SSD con referencia $399.990 se vende a $278.390 en
+                # todas partes, lo que generaba falsos descuentos de 30-50%.
+                normal_p = norm_price if norm_price > 0.0 else (ref_price if ref_price > 0.0 else efec_price)
                 # Resolver precio de venta actual (crédito)
                 current_p = norm_price if norm_price > 0.0 else (efec_price if efec_price > 0.0 else normal_p)
                 # Resolver precio preferencial (efectivo / transferencia como card_price)
@@ -219,7 +221,7 @@ class PCFactoryScraper:
 
                 items.append(
                     ProductItem(
-                        id=f"pcfactory_{pid}",
+                        id=f"pcfactory-{pid}",
                         store_id=self.store_id,
                         store_name=self.store_name,
                         title=nombre,
