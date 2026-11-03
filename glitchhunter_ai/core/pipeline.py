@@ -449,7 +449,7 @@ class GlitchHuntingPipeline:
                         if "sort_strategy" in sig.parameters:
                             kwargs["sort_strategy"] = rotation_batch.strategy.value
                         if "active_category_ids" in sig.parameters:
-                            cat_ids = [c.solotodo_category_id for c in rotation_batch.categories if c.solotodo_category_id]
+                            cat_ids = [cid for c in rotation_batch.categories for cid in c.solotodo_category_ids]
                             kwargs["active_category_ids"] = cat_ids
 
                     products = scraper.fetch_catalog(**kwargs)

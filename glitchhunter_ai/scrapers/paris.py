@@ -62,7 +62,12 @@ class ParisScraper:
             "Cache-Control": "no-cache",
         })
 
-    def fetch_catalog(self, use_live: bool = False) -> List[ProductItem]:
+    def fetch_catalog(
+        self,
+        use_live: bool = False,
+        active_category_ids: Optional[List[int]] = None,
+        sort_strategy: Optional[str] = None,
+    ) -> List[ProductItem]:
         """
         Obtiene la lista de productos del catálogo de Paris.cl.
 
@@ -76,13 +81,18 @@ class ParisScraper:
         """
         if use_live:
             logger.info("Iniciando extracción en vivo desde Paris.cl...")
-            live_items = self._fetch_live_catalog()
+            # Agregador primero, filtrado por las categorías del ciclo de rotación;
+            # la lectura propia de la tienda queda como respaldo.
+            live_items: List[ProductItem] = []
+            try:
+                from glitchhunter_ai.scrapers.live_feed import LiveRetailFeed
+                live_items = LiveRetailFeed().fetch_live_products_for_store(
+                    "paris", category_ids=active_category_ids, sort_strategy=sort_strategy
+                )
+            except Exception as exc:
+                logger.debug(f"Error consultando LiveRetailFeed para Paris: {exc}")
             if not live_items:
-                try:
-                    from glitchhunter_ai.scrapers.live_feed import LiveRetailFeed
-                    live_items = LiveRetailFeed().fetch_live_products_for_store("paris")
-                except Exception as exc:
-                    logger.debug(f"Error consultando LiveRetailFeed para Paris: {exc}")
+                live_items = self._fetch_live_catalog()
 
             if live_items:
                 logger.info("Extracción en vivo exitosa: %d productos reales obtenidos de Paris.cl", len(live_items))

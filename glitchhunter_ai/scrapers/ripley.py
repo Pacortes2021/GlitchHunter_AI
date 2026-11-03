@@ -80,6 +80,8 @@ class RipleyScraper:
         self,
         use_live: bool = False,
         search_terms: Optional[List[str]] = None,
+        active_category_ids: Optional[List[int]] = None,
+        sort_strategy: Optional[str] = None,
     ) -> List[ProductItem]:
         """
         Obtiene el catálogo de productos de Ripley Chile.
@@ -96,7 +98,9 @@ class RipleyScraper:
             live_items: List[ProductItem] = []
             try:
                 from glitchhunter_ai.scrapers.live_feed import LiveRetailFeed
-                live_items = LiveRetailFeed().fetch_live_products_for_store("ripley")
+                live_items = LiveRetailFeed().fetch_live_products_for_store(
+                    "ripley", category_ids=active_category_ids, sort_strategy=sort_strategy
+                )
             except Exception as exc:
                 logger.debug(f"Error consultando LiveRetailFeed para Ripley: {exc}")
             if not live_items:

@@ -92,7 +92,12 @@ class FalabellaScraper:
         """
         self.timeout = timeout
 
-    def fetch_catalog(self, use_live: bool = False) -> List[ProductItem]:
+    def fetch_catalog(
+        self,
+        use_live: bool = False,
+        active_category_ids: Optional[List[int]] = None,
+        sort_strategy: Optional[str] = None,
+    ) -> List[ProductItem]:
         """
         Obtiene el catálogo de productos de Falabella Chile.
 
@@ -108,7 +113,9 @@ class FalabellaScraper:
             logger.info("Modo LIVE activado. Consultando catálogo real en vivo de Falabella Chile...")
             try:
                 from glitchhunter_ai.scrapers.live_feed import LiveRetailFeed
-                live_items = LiveRetailFeed().fetch_live_products_for_store("falabella")
+                live_items = LiveRetailFeed().fetch_live_products_for_store(
+                    "falabella", category_ids=active_category_ids, sort_strategy=sort_strategy
+                )
                 if live_items:
                     logger.info("Éxito en vivo: Se obtuvieron %d productos reales de Falabella Chile", len(live_items))
                     return live_items

@@ -82,9 +82,10 @@ def test_live_feed_sort_strategy_urls():
     feed.fetch_live_products_for_store("falabella", limit=20, sort_strategy="price_asc", category_id=2)
     called_urls = [call[0][0] for call in mock_session.get.call_args_list]
 
-    # Debe incluir 'ordering=offer_price_usd' y 'categories=2' en SoloTodo
+    # SoloTodo /entities/ ignora 'offer_price_usd' y '-discount_percentage': se usa '-id' (efectivo)
+    # junto al filtro por categoría, que es lo que realmente acota el catálogo
     solotodo_call = next(u for u in called_urls if "solotodo.com" in u)
-    assert "ordering=offer_price_usd" in solotodo_call
+    assert "ordering=-id" in solotodo_call
     assert "categories=2" in solotodo_call
 
     # Debe incluir 'order=price_asc' en Knasta
@@ -221,3 +222,108 @@ def test_web_endpoints_watchlist_scan_and_catalog_rotation():
                 res_scan_wl = client.post("/api/scan?watchlist_only=true")
                 assert res_scan_wl.status_code == 200
                 assert res_scan_wl.json()["status"] == "success"
+
+
+
+# =====================================================================
+# Cobertura por categoría en todas las tiendas
+# =====================================================================
+def test_rotator_solotodo_category_ids_match_category_meaning():
+    """IDs verificados contra https://publicapi.solotodo.com/categories/ (sin duplicados entre categorías)."""
+    from glitchhunter_ai.core.catalog_rotator import DEFAULT_CATEGORIES
+
+    ids = {c.key: c.solotodo_category_ids for c in DEFAULT_CATEGORIES}
+    assert ids["smartwatch"] == [48]              # Wearables (30 era "Tarjetas de memoria")
+    assert ids["linea_blanca"] == [15, 19, 17]    # Refrigeradores, Lavadoras, Hornos (37 era "All-in-One")
+    assert ids["gaming"] == [40, 41, 54]          # Mouse, Teclados, Sillas Gamer (33 repetía Consolas)
+    assert ids["componentes"] == [2, 3]           # Tarjetas de video + Procesadores
+    flat = [i for v in ids.values() for i in v]
+    assert len(flat) == len(set(flat)), "Una categoría de SoloTodo no debe repetirse en dos categorías del radar"
+
+
+def test_live_feed_sends_all_cycle_categories_to_solotodo():
+    mock_session = MagicMock()
+    mock_resp = MagicMock(status_code=200)
+    mock_resp.json.return_value = {"results": [], "products": []}
+    mock_session.get.return_value = mock_resp
+
+    feed = LiveRetailFeed(timeout=3.0)
+    feed.session = mock_session
+    feed.fetch_live_products_for_store("paris", category_ids=[15, 19, 17])
+
+    solotodo_call = next(c[0][0] for c in mock_session.get.call_args_list if "solotodo.com" in c[0][0])
+    assert "stores=11" in solotodo_call
+    for cid in (15, 19, 17):
+        assert f"categories={cid}" in solotodo_call
+
+
+def test_store_scrapers_receive_rotation_categories():
+    """
+    Antes solo el scraper de SoloTodo recibía las categorías del ciclo: Falabella, Ripley, Paris,
+    Líder y PC Factory pedían siempre el mismo listado (las entidades más antiguas, ej: cartuchos de tinta).
+    """
+    from glitchhunter_ai.core.database import PriceDatabase
+    from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
+    from glitchhunter_ai.core.catalog_rotator import CatalogRotator
+
+    import tempfile, os
+    db = PriceDatabase(db_path=os.path.join(tempfile.mkdtemp(), "rot.db"))
+    db.init_db()
+    pipeline = GlitchHuntingPipeline(db=db)
+    pipeline.catalog_rotator = CatalogRotator(batch_size=1)  # primer ciclo: smartphones (SoloTodo 6)
+
+    from glitchhunter_ai.scrapers.falabella import FalabellaScraper
+    from glitchhunter_ai.scrapers.ripley import RipleyScraper
+    from glitchhunter_ai.scrapers.paris import ParisScraper
+    from glitchhunter_ai.scrapers.lider import LiderScraper
+    from glitchhunter_ai.scrapers.pcfactory import PCFactoryScraper
+
+    # Sin red: el agregador y la lectura propia de cada tienda (respaldo) devuelven vacío
+    with patch.object(LiveRetailFeed, "fetch_live_products_for_store", return_value=[]) as feed_call, \
+            patch.object(FalabellaScraper, "fetch_live_catalog", return_value=[]), \
+            patch.object(RipleyScraper, "_fetch_live", return_value=[]), \
+            patch.object(ParisScraper, "_fetch_live_catalog", return_value=[]), \
+            patch.object(LiderScraper, "fetch_live_catalog", return_value=[]), \
+            patch.object(PCFactoryScraper, "fetch_live_catalog", return_value=[]):
+        pipeline.run_scan(
+            use_live=True,
+            store_ids=["falabella", "ripley", "paris", "lider", "pcfactory"],
+            send_notifications=False,
+            scan_watchlist=False,
+        )
+
+    stores_with_categories = {
+        c.args[0] for c in feed_call.call_args_list if c.kwargs.get("category_ids") == [6]
+    }
+    assert stores_with_categories == {"falabella", "ripley", "paris", "lider", "pcfactory"}
+
+
+def test_knasta_normal_price_uses_previous_price():
+    """Knasta calcula su descuento contra 'prev_price'; 'price_tm' suele ser igual al precio actual."""
+    from glitchhunter_ai.scrapers.live_feed import knasta_normal_price
+
+    sandwichera = {"price_value": 12990.0, "price_tm": 12990.0, "prev_price": "$ 24.990", "percent": -48}
+    assert knasta_normal_price(sandwichera, 12990.0) == 24990.0
+    # Si no hay precio anterior, se usa price_tm o, en último caso, el precio actual
+    assert knasta_normal_price({"price_tm": 14990.0}, 11990.0) == 14990.0
+    assert knasta_normal_price({}, 11990.0) == 11990.0
+
+
+def test_knasta_pages_shared_between_stores():
+    """La API de Knasta no filtra por tienda: las páginas se descargan una vez por ciclo, no una vez por tienda."""
+    from glitchhunter_ai.scrapers import live_feed
+
+    live_feed._knasta_cache.clear()
+    mock_session = MagicMock()
+    mock_resp = MagicMock(status_code=200)
+    mock_resp.json.return_value = {"results": [], "products": []}
+    mock_session.get.return_value = mock_resp
+
+    feed = LiveRetailFeed(timeout=3.0)
+    feed.session = mock_session
+    for store in ("falabella", "paris", "lider"):
+        feed.fetch_live_products_for_store(store)
+
+    knasta_calls = [c for c in mock_session.get.call_args_list if "knasta.cl" in c[0][0]]
+    assert len(knasta_calls) == 3  # páginas 1, 2 y 3, una sola vez
+    live_feed._knasta_cache.clear()
