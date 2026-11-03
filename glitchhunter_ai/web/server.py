@@ -55,6 +55,7 @@ from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
 from glitchhunter_ai.core.store_health import global_store_health
 from glitchhunter_ai.notifications.telegram_bot import TelegramAlertDispatcher
 from glitchhunter_ai.notifications.telegram_feedback import TelegramFeedbackPoller
+from glitchhunter_ai.scrapers.direct_reader import DIRECT_STORES
 
 logger = logging.getLogger("GlitchHunter.Server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -180,7 +181,7 @@ async def direct_scanner_loop():
     prioritarias leídas en tiempo real desde la tienda, entre los ciclos del escaneo completo.
     """
     logger.info(
-        f"⚡ Escaneo directo Falabella/Ripley activo (cada {DIRECT_SCAN_INTERVAL_SECONDS}s, "
+        f"⚡ Escaneo directo {', '.join(s.title() for s in DIRECT_STORES)} activo (cada {DIRECT_SCAN_INTERVAL_SECONDS}s, "
         f"categorías: {', '.join(DIRECT_SCAN_CATEGORIES) or 'solo watchlist'})."
     )
     while True:

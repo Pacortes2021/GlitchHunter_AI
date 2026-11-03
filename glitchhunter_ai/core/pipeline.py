@@ -680,8 +680,8 @@ class GlitchHuntingPipeline:
                             detected.append(alert)
 
             logger.info(
-                "⚡ [Escaneo Directo] %d producto(s) revisados en tiempo real en Falabella/Ripley, %d alerta(s) nueva(s).",
-                len(seen), len(detected),
+                "⚡ [Escaneo Directo] %d producto(s) revisados en tiempo real en %s, %d alerta(s) nueva(s).",
+                len(seen), ", ".join(s.title() for s in DIRECT_STORES), len(detected),
             )
             self.publish_new_deals()
             return detected
