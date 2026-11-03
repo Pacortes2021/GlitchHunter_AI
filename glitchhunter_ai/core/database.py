@@ -64,6 +64,13 @@ except ImportError:
 logger = logging.getLogger("glitchhunter.database")
 
 
+def _enum_value(value: Any) -> str:
+    """Texto plano de un Enum ('CRITICO' en vez de 'GlitchSeverity.CRITICO')."""
+    if value is None:
+        return ""
+    return str(getattr(value, "value", value))
+
+
 class PriceDatabase:
     """
     Gestor de base de datos SQLite persistente para catálogo, historial de precios
@@ -542,7 +549,7 @@ class PriceDatabase:
         if isinstance(alert, dict):
             alert_id = str(alert.get("id") or alert.get("alert_id") or f"ALT-{uuid.uuid4().hex[:8].upper()}")
             product_id = str(alert.get("product_id") or (alert.get("product", {}).get("id") if isinstance(alert.get("product"), dict) else ""))
-            severity = str(alert.get("severity") or "MODERADO")
+            severity = _enum_value(alert.get("severity")) or "MODERADO"
             confidence_score = float(alert.get("confidence_score", 0.0))
             discount_pct = float(alert.get("discount_pct", alert.get("discount_percentage", 0.0)))
             savings_clp = float(alert.get("savings_clp", alert.get("absolute_savings_clp", 0.0)))
@@ -574,7 +581,7 @@ class PriceDatabase:
                 savings_clp = float(v.absolute_savings_clp)
                 reason = str(v.reason)
             else:
-                severity = str(getattr(alert, "severity", "MODERADO"))
+                severity = _enum_value(getattr(alert, "severity", None)) or "MODERADO"
                 confidence_score = float(getattr(alert, "confidence_score", 0.0))
                 discount_pct = float(getattr(alert, "discount_pct", 0.0))
                 savings_clp = float(getattr(alert, "savings_clp", 0.0))
@@ -656,7 +663,7 @@ class PriceDatabase:
         else:
             v_data = vars(verdict)
 
-        severity = str(v_data.get("severity") or "MODERADO")
+        severity = _enum_value(v_data.get("severity")) or "MODERADO"
         discount_pct = float(v_data.get("discount_percentage", 0.0))
         savings_clp = float(v_data.get("absolute_savings_clp", 0.0))
         confidence_score = float(v_data.get("confidence_score", 90.0))
@@ -1165,8 +1172,11 @@ class PriceDatabase:
                 (product_id,),
             )
             row = cursor.fetchone()
-            if row and row["min_price"] is not None and best_price >= float(row["min_price"]) - 0.5:
-                return None
+            if row and row["min_price"] is not None:
+                last_min = float(row["min_price"])
+                # Solo es una oferta nueva si baja al menos 2% y $1.000 respecto a su mejor publicación
+                if best_price > last_min * 0.98 or last_min - best_price < 1000:
+                    return None
             received_at = datetime.now(timezone.utc).isoformat()
             cursor.execute("""
                 INSERT INTO offer_feed (kind, product_id, store_id, best_price, discount_pct, received_at, payload)
@@ -1194,12 +1204,41 @@ class PriceDatabase:
                 posts.append(post)
             return posts
 
+    def get_feedback_counts(self, deal_ids: List[str]) -> Dict[str, Dict[str, int]]:
+        """Votos 👍/👎 por id de oferta (alert_id o product_id)."""
+        ids = [d for d in dict.fromkeys(deal_ids) if d]
+        if not ids:
+            return {}
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            marks = ",".join("?" for _ in ids)
+            cursor.execute(f"""
+                SELECT deal_id,
+                       SUM(CASE WHEN vote = 'up' THEN 1 ELSE 0 END) AS ups,
+                       SUM(CASE WHEN vote = 'down' THEN 1 ELSE 0 END) AS downs
+                FROM deal_feedback WHERE deal_id IN ({marks}) GROUP BY deal_id;
+            """, ids)
+            return {r["deal_id"]: {"up": r["ups"] or 0, "down": r["downs"] or 0} for r in cursor.fetchall()}
+
+    def offer_exists(self, deal_id: str) -> bool:
+        """True si el id corresponde a una alerta, un producto del catálogo o una publicación del canal."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 1 FROM tracked_deals WHERE alert_id = ? OR product_id = ?
+                UNION SELECT 1 FROM products WHERE id = ?
+                UNION SELECT 1 FROM offer_feed WHERE product_id = ?
+                LIMIT 1;
+            """, (deal_id, deal_id, deal_id, deal_id))
+            return cursor.fetchone() is not None
+
     def get_commercial_deals(
         self,
         min_discount: float = 40.0,
         max_discount: float = 65.0,
         limit: int = 100,
         store_id: Optional[str] = None,
+        max_age_hours: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
         Retorna ofertas comerciales moderadas (ej: 40% a 64% de descuento)
@@ -1230,6 +1269,11 @@ class PriceDatabase:
                   AND (((p.normal_price - (CASE WHEN p.card_price > 0 AND p.card_price < p.current_price THEN p.card_price ELSE p.current_price END)) / p.normal_price) * 100) < ?
             """
             params: list[Any] = [float(min_discount), float(max_discount)]
+            if max_age_hours is not None:
+                # Un producto que no aparece en los escaneos recientes puede ya no estar en oferta
+                cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).strftime("%Y-%m-%d %H:%M:%S")
+                query += " AND p.last_updated >= ?"
+                params.append(cutoff)
             if store_id and store_id != "all":
                 query += " AND LOWER(p.store_id) = ?"
                 params.append(store_id.lower())

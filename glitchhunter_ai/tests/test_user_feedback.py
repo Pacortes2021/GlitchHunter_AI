@@ -145,21 +145,34 @@ def test_web_feedback_endpoints():
     from glitchhunter_ai.web.server import app, db as server_db
 
     client = TestClient(app)
+    server_db.upsert_product(ProductItem(
+        id="feedback-deal-999", store_id="paris", store_name="Paris.cl", title="Smart TV LG 55",
+        category="televisores", current_price=299990.0, normal_price=599990.0,
+        url="https://www.paris.cl/feedback-deal-999.html", in_stock=True,
+    ))
 
     # 1. Enviar voto positivo
-    resp = client.post("/api/deals/TEST-DEAL-999/feedback", json={"vote": "up", "reason": "Excelente precio"})
+    resp = client.post("/api/deals/feedback-deal-999/feedback", json={"vote": "up", "reason": "Excelente precio"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "success"
-    assert data["deal_id"] == "TEST-DEAL-999"
+    assert data["deal_id"] == "feedback-deal-999"
     assert data["vote"] == "up"
     assert data["upvotes"] >= 1
 
     # 2. Enviar voto inválido
-    resp_bad = client.post("/api/deals/TEST-DEAL-999/feedback", json={"vote": "invalido"})
+    resp_bad = client.post("/api/deals/feedback-deal-999/feedback", json={"vote": "invalido"})
     assert resp_bad.status_code == 400
 
-    # 3. Consultar estadísticas de feedback
+    # 3. Oferta inexistente o motivo demasiado largo
+    assert client.post("/api/deals/no-existe/feedback", json={"vote": "up"}).status_code == 404
+    assert client.post("/api/deals/feedback-deal-999/feedback", json={"vote": "up", "reason": "x" * 501}).status_code == 422
+
+    # 4. Voto desde otro sitio web (CSRF): rechazado
+    foreign = client.post("/api/deals/feedback-deal-999/feedback", json={"vote": "down"}, headers={"Origin": "http://evil.example"})
+    assert foreign.status_code == 403
+
+    # 5. Consultar estadísticas de feedback
     resp_stats = client.get("/api/feedback/stats")
     assert resp_stats.status_code == 200
     stats = resp_stats.json()

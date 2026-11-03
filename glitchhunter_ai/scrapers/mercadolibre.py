@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import hashlib
 import re
 import sys
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,7 @@ except ImportError:
     REQUESTS_AVAILABLE = False
 
 from glitchhunter_ai.core.models import ProductItem
+from glitchhunter_ai.scrapers.product_ids import canonical_product_id
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +214,8 @@ class MercadoLibreScraper:
 
                 items.append(
                     ProductItem(
-                        id=f"MLC-HTML-{idx+1}-{abs(hash(url)) % 1000000}",
+                        id=canonical_product_id("mercadolibre", url)
+                        or f"mercadolibre-{hashlib.sha1(url.split('?')[0].encode()).hexdigest()[:12]}",
                         store_id=self.store_id,
                         store_name=self.store_name,
                         title=title,

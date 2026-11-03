@@ -25,6 +25,7 @@ import urllib.parse
 
 import requests
 
+from glitchhunter_ai.core.categories import classify_category
 from glitchhunter_ai.core.models import ProductItem
 from glitchhunter_ai.scrapers.product_ids import canonical_product_id
 from glitchhunter_ai.scrapers.stealth_client import default_stealth_client
@@ -214,23 +215,13 @@ _knasta_cache_lock = threading.Lock()
 
 
 def infer_category(title: str) -> str:
-    """Infiere la categoría tecnológica en base al título."""
-    t = title.lower()
-    if any(w in t for w in ("funda", "carcasa", "case", "lámina", "vidrio templado", "cable", "adaptador", "correa")):
-        return "accesorios"
-    if any(w in t for w in ("macbook", "notebook", "laptop", "thinkpad", "zenbook", "ideapad")):
-        return "notebooks"
-    if any(w in t for w in ("iphone", "samsung galaxy", "celular", "smartphone", "xiaomi", "motorola", "redmi")):
-        return "smartphones"
-    if any(w in t for w in ("playstation", "ps5", "ps4", "xbox", "nintendo switch", "consola")):
-        return "consolas"
-    if any(w in t for w in ("smart tv", "televisor", "oled", "qled", "uhd 4k", "roku")):
-        return "televisores"
-    if any(w in t for w in ("audífonos", "auriculares", "airpods", "parlante", "soundbar", "barra de sonido")):
-        return "audio"
-    if any(w in t for w in ("tarjeta de video", "geforce", "rtx", "ryzen", "procesador", "placa madre", "ssd", "ram")):
-        return "componentes"
-    return "tecnologia"
+    """Infiere la categoría por palabras completas del título (ver core/categories.py)."""
+    return classify_category(title)
+
+
+def clean_title(title: Any) -> str:
+    """Normaliza títulos de agregadores (Líder llega con comillas dobladas: '11"" 128GB')."""
+    return re.sub(r'"{2,}', '"', str(title or "")).strip()
 
 
 class LiveRetailFeed:
@@ -294,7 +285,7 @@ class LiveRetailFeed:
                     if norm_price <= 0.0:
                         norm_price = curr_price
 
-                    title = str(e.get("name", "")).strip()
+                    title = clean_title(e.get("name"))
                     if not title:
                         continue
 
@@ -367,7 +358,7 @@ class LiveRetailFeed:
     ) -> Optional[ProductItem]:
         """Convierte un producto de Knasta a ProductItem usando el precio habitual como referencia."""
         ext_url = k_item.get("url")
-        title = str(k_item.get("title", "")).strip()
+        title = clean_title(k_item.get("title"))
         if not ext_url or not title or ext_url in seen_urls:
             return None
         curr_price = parse_clp_price(k_item.get("current_price") or k_item.get("price_value"))
