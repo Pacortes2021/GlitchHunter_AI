@@ -611,3 +611,53 @@ def test_watchlist_api_endpoints():
         assert del_nonexistent.status_code == 200
         assert del_nonexistent.json()["success"] is False
 
+
+
+def test_solotodo_discount_strategy_uses_valid_ordering_and_recovers_from_400():
+    """
+    La API /products/browse/ de SoloTodo rechaza '-discount_percentage' con HTTP 400.
+    La estrategia 'discount_desc' debe usar un orden válido, y un 400 por orden inválido
+    debe reintentarse con el orden por defecto en vez de devolver 0 productos.
+    """
+    from unittest.mock import MagicMock
+    from glitchhunter_ai.scrapers.solotodo import DEFAULT_ORDERING
+
+    def _resp(status, results=None):
+        r = MagicMock()
+        r.status_code = status
+        r.json.return_value = {"results": results or []}
+        return r
+
+    entry = {"product_entries": [{
+        "product": {"id": 1, "name": "Samsung Galaxy S25 Ultra 256GB", "slug": "s25-ultra"},
+        # Precio en USD primero (tienda de otro país) y luego en CLP: solo debe usarse el CLP
+        "metadata": {"prices_per_currency": [
+            {"currency": 4, "currency_id": 4, "offer_price": "849.99", "normal_price": "849.99"},
+            {"currency": 1, "currency_id": 1, "offer_price": "999990", "normal_price": "1469990"},
+        ]},
+    }]}
+
+    scraper = SoloTodoScraper()
+    scraper.client = MagicMock()
+    scraper.client.get.return_value = _resp(200, [entry])
+    items = scraper.fetch_catalog(use_live=True, active_category_ids=[6], sort_strategy="discount_desc")
+    url = scraper.client.get.call_args[0][0]
+    assert "-discount_percentage" not in url
+    assert "ordering=leads" in url
+    assert len(items) == 1
+    assert (items[0].current_price, items[0].normal_price) == (999990.0, 1469990.0)
+
+    # Producto sin precio en pesos chilenos (solo vendido en otros países): se omite
+    foreign = {"product_entries": [{
+        "product": {"id": 2, "name": "LG OLED55B5PSA", "slug": "lg"},
+        "metadata": {"prices_per_currency": [{"currency_id": 4, "offer_price": "849.99", "normal_price": "849.99"}]},
+    }]}
+    scraper.client.get.return_value = _resp(200, [foreign])
+    assert scraper._fetch_category_batch(11, 5, DEFAULT_ORDERING) == []
+
+    # Si la API rechaza un orden, se reintenta con el orden por defecto
+    scraper.client.get.reset_mock()
+    scraper.client.get.side_effect = [_resp(400), _resp(200, [entry])]
+    items = scraper._fetch_category_batch(6, 5, "orden-invalido")
+    assert len(items) == 1
+    assert f"ordering={DEFAULT_ORDERING}" in scraper.client.get.call_args_list[1][0][0]
