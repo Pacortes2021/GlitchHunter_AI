@@ -21,6 +21,7 @@
     mercadolibre: { name: 'Mercado Libre', color: '#ca8a04' },
     pcfactory: { name: 'PC Factory', color: '#dc2626' },
     sodimac: { name: 'Sodimac', color: '#f97316' },
+    abc: { name: 'ABC', color: '#e11d48' },
     solotodo: { name: 'SoloTodo', color: '#0d9488' }
   };
   const DEFAULT_STORE_COLOR = '#64748b';

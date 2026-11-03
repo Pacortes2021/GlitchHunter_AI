@@ -239,7 +239,7 @@ def test_run_direct_scan_searches_watchlist_in_all_direct_stores(tmp_path):
     alerts = pipeline.run_direct_scan(keywords=["galaxy s25"], send_notifications=False)
     assert len(alerts) == 1
     searched = sorted(c.args[0] for c in reader.search.call_args_list)
-    assert searched == ["falabella", "paris", "pcfactory", "ripley", "sodimac"]
+    assert searched == ["abc", "falabella", "paris", "pcfactory", "ripley", "sodimac"]
 
     # Sin watchlist ni categorías no consulta nada
     reader.search.reset_mock()
@@ -311,7 +311,7 @@ def test_direct_scan_includes_sodimac(tmp_path):
     reader.fetch_category.return_value = []
     pipeline = _pipeline(tmp_path, reader)
     pipeline.run_direct_scan(keywords=["refrigerador"], send_notifications=False)
-    assert sorted(c.args[0] for c in reader.search.call_args_list) == ["falabella", "paris", "pcfactory", "ripley", "sodimac"]
+    assert sorted(c.args[0] for c in reader.search.call_args_list) == ["abc", "falabella", "paris", "pcfactory", "ripley", "sodimac"]
 
 
 # =====================================================================
@@ -404,3 +404,33 @@ def test_paris_page_without_rsc_data_triggers_pause():
     reader = DirectStoreReader(client=client, backoff=backoff)
     assert reader.fetch_category("paris", "notebooks") == []
     assert backoff.is_paused("paris")
+
+
+# =====================================================================
+# 9. ABC (Salesforce Commerce Cloud)
+# =====================================================================
+def test_parse_abc_listing_three_prices():
+    from glitchhunter_ai.scrapers.direct_reader import parse_abc_listing
+
+    items = parse_abc_listing(_fixture("abc_listing.html"), "televisores")
+    assert len(items) >= 2
+    tv = next(i for i in items if i.id == "abc-29592535")
+    assert tv.title == "Smart TV 43 LG Full HD WebOS 43LB6500PSB"
+    assert tv.url == "https://www.abc.cl/smart-tv-43-lg-full-hd-webos-43lb6500psb/29592535.html"
+    # El "normal" de ABC ($399.990) está inflado: la referencia es el precio internet
+    assert (tv.current_price, tv.normal_price, tv.card_price) == (189990, 189990, 169990)
+    assert tv.store_id == "abc" and tv.source == "direct" and tv.in_stock
+
+
+def test_parse_abc_product_page():
+    from glitchhunter_ai.scrapers.direct_reader import parse_abc_product
+
+    url = "https://www.abc.cl/smart-tv-43-lg-full-hd-webos-43lb6500psb/29592535.html"
+    item = parse_abc_product(_fixture("abc_product.html"), url)
+    assert item is not None and item.id == "abc-29592535"
+    assert item.title.startswith("Smart TV 43")
+    assert (item.current_price, item.card_price) == (189990, 169990)
+
+
+def test_abc_canonical_id():
+    assert canonical_product_id("abc", "https://www.abc.cl/smart-tv-43-lg/29592535.html") == "abc-29592535"

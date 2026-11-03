@@ -15,6 +15,8 @@ from typing import Optional
 
 # Falabella: /falabella-cl/product/{id}/{slug}/{sku}  (id numérico o 'prod123...')
 _FALABELLA_RE = re.compile(r"/product/([A-Za-z0-9]+)(?:/|$)")
+# ABC (ex La Polar, Salesforce Commerce Cloud): /{slug}/{pid}.html
+_ABC_RE = re.compile(r"/(\d{6,})\.html$")
 # Paris: /{slug}-{CLAVE}.html (clave commercetools, ej: MKDFYM0YKP; en URLs antiguas, numérica)
 _PARIS_RE = re.compile(r"-([A-Za-z0-9]+)\.html$")
 # Ripley: /{slug}-{partNumber}p  o  /{slug}-mpm{n} (marketplace)
@@ -30,12 +32,16 @@ _MERCADOLIBRE_RE = re.compile(r"MLC-?(\d{6,})", re.IGNORECASE)
 def canonical_product_id(store_id: str, url: Optional[str]) -> Optional[str]:
     """
     Retorna '{store_id}-{id_tienda}' si la URL permite identificar el producto, o None.
-    Cubre Falabella, Ripley, Paris, Sodimac, PC Factory y Mercado Libre.
+    Cubre Falabella, Ripley, Paris, ABC, Sodimac, PC Factory y Mercado Libre.
     """
     if not url:
         return None
     store = (store_id or "").lower()
     path = urllib.parse.urlparse(str(url)).path.rstrip("/")
+
+    if store == "abc":
+        m = _ABC_RE.search(path)
+        return f"abc-{m.group(1)}" if m else None
 
     if store == "paris":
         m = _PARIS_RE.search(path)
