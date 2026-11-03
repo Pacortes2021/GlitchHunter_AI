@@ -28,7 +28,7 @@ from glitchhunter_ai.scrapers.stealth_client import default_stealth_client
 
 logger = logging.getLogger("glitchhunter.scrapers.direct_reader")
 
-DIRECT_STORES = ("falabella", "ripley", "paris", "sodimac", "pcfactory")
+DIRECT_STORES = ("falabella", "ripley", "paris", "abc", "sodimac", "pcfactory")
 
 # PC Factory expone una API JSON pública (la que usa su propio sitio): búsqueda, catálogo completo
 # paginado (search=*) y detalle por id. El catálogo (~3.000 productos, 48 por página) se recorre
@@ -41,11 +41,15 @@ PCFACTORY_PAGE_SIZE = 48
 _NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.DOTALL)
 _BOT_CHALLENGE_MARKERS = ("captcha", "perimeterx", "px-captcha", "are you a robot", "access denied")
 
-STORE_NAMES = {"falabella": "Falabella", "ripley": "Ripley", "paris": "Paris", "sodimac": "Sodimac", "pcfactory": "PC Factory"}
+STORE_NAMES = {
+    "falabella": "Falabella", "ripley": "Ripley", "paris": "Paris", "abc": "ABC",
+    "sodimac": "Sodimac", "pcfactory": "PC Factory",
+}
 STORE_BASE = {
     "falabella": "https://www.falabella.com",
     "ripley": "https://simple.ripley.cl",
     "paris": "https://www.paris.cl",
+    "abc": "https://www.abc.cl",
     "sodimac": "https://www.sodimac.cl",
     "pcfactory": "https://www.pcfactory.cl",
 }
@@ -74,6 +78,14 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
         "televisores": "/electro/television/",
         "consolas": "/tecnologia/consolas-videojuegos/",
         "linea_blanca": "/search?q=refrigerador",
+    },
+    # ABC (Salesforce Commerce Cloud): ?sz=48 trae 48 productos por página; notebooks vía búsqueda
+    # (la búsqueda "consola" devuelve sofás "consola", así que no se incluye)
+    "abc": {
+        "televisores": "/tecnologia/televisores/?sz=48",
+        "smartphones": "/tecnologia/celulares/?sz=48",
+        "linea_blanca": "/linea-blanca/refrigeradores/?sz=48",
+        "notebooks": "/on/demandware.store/Sites-Abc-Site/es_CL/Search-Show?q=notebook&sz=48",
     },
     "ripley": {
         "smartphones": "/tecno/celulares",
@@ -283,6 +295,104 @@ def parse_paris_product(html: str, url: str) -> Optional[ProductItem]:
     return None
 
 
+def _abc_price(node: Any, selector: str) -> float:
+    span = node.select_one(f"{selector} .price-value[data-value]")
+    try:
+        return float(span["data-value"]) if span else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _abc_prices(node: Any) -> tuple:
+    """(tarjeta, actual, referencia) de ABC: la referencia es el precio internet (el "normal" está inflado)."""
+    card = _abc_price(node, ".js-tlp-price")
+    internet = _abc_price(node, ".js-internet-price")
+    listed_normal = _abc_price(node, ".js-normal-price")
+    current = internet or card or listed_normal
+    if not card or card >= current:
+        card = None
+    return card, current, current
+
+
+def parse_abc_listing(html: str, category_hint: str = "tecnologia") -> List[ProductItem]:
+    """
+    Productos de ABC (ex La Polar; Salesforce Commerce Cloud). Cada tarjeta
+    div.product-tile__wrapper[data-pid] trae sus precios en spans .price-value[data-value]:
+    .js-tlp-price (tarjeta ABC/La Polar), .js-internet-price (internet) y .js-normal-price ("normal").
+
+    El "normal" de ABC está inflado en todo el catálogo (un LED 55" LG: "normal" $1.799.990,
+    se vende a $583.992; los 48 TVs de la categoría aparecían con más de 30% de descuento).
+    Como con PC Factory, la referencia es el precio internet: las bajas reales se detectan contra
+    el historial propio y la referencia de mercado, no contra el precio tachado de la tienda.
+    """
+    from bs4 import BeautifulSoup
+    import html as html_lib
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    tiles = soup.select("div.product-tile__wrapper[data-pid]")
+    if not tiles and "data-pid" not in (html or ""):
+        raise BlockedError("página sin tarjetas de producto")
+
+    items: List[ProductItem] = []
+    seen: set = set()
+    now = datetime.now(timezone.utc)
+    for tile in tiles:
+        link = tile.select_one("a[href$='.html']")
+        href = link.get("href") if link else ""
+        url = href if href.startswith("http") else f"{STORE_BASE['abc']}{href}"
+        pid = canonical_product_id("abc", url)
+        if not pid or pid in seen:
+            continue
+        title = ""
+        for el in tile.select("[data-gtm]"):
+            try:
+                data = json.loads(html_lib.unescape(el.get("data-gtm") or ""))
+            except ValueError:
+                continue
+            name = ((data.get("ecommerce") or {}).get("impressions") or {}).get("name") or (
+                data.get("action") if data.get("event") == "ProductName" else None
+            )
+            if name:
+                title = " ".join(str(name).split())
+                break
+        card, current, normal = _abc_prices(tile)
+        if not title or current <= 0:
+            continue
+        img = tile.select_one("img")
+        image = (img.get("data-src") or img.get("src")) if img else None
+        seen.add(pid)
+        items.append(ProductItem(
+            id=pid, store_id="abc", store_name=STORE_NAMES["abc"], title=title,
+            category=_infer_category(title, category_hint), current_price=current,
+            normal_price=normal, card_price=card, url=url,
+            image_url=image if image and image.startswith("http") else None,
+            in_stock="agotado" not in tile.get_text(" ").lower(), timestamp=now, source="direct",
+        ))
+    return items
+
+
+def parse_abc_product(html: str, url: str) -> Optional[ProductItem]:
+    """Ficha de ABC: div.pdp-wrapper[data-pid] con las mismas clases de precio y el nombre en el h1."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    pid = canonical_product_id("abc", url)
+    wrapper = soup.select_one("div.pdp-wrapper[data-pid]")
+    if not pid or wrapper is None:
+        return None
+    card, current, normal = _abc_prices(wrapper)
+    h1 = soup.select_one("h1")
+    title = " ".join(h1.get_text(" ").split()) if h1 else ""
+    if not title or current <= 0:
+        return None
+    return ProductItem(
+        id=pid, store_id="abc", store_name=STORE_NAMES["abc"], title=title,
+        category=_infer_category(title, "tecnologia"), current_price=current, normal_price=normal,
+        card_price=card, url=url, in_stock="agotado" not in soup.get_text(" ").lower(),
+        timestamp=datetime.now(timezone.utc), source="direct",
+    )
+
+
 def parse_sodimac_listing(html: str, category_hint: str = "tecnologia") -> List[ProductItem]:
     """
     Productos de Sodimac en sus dos formatos:
@@ -414,12 +524,14 @@ LISTING_PARSERS = {
     "falabella": parse_falabella_listing,
     "ripley": parse_ripley_listing,
     "paris": parse_paris_listing,
+    "abc": parse_abc_listing,
     "sodimac": parse_sodimac_listing,
 }
 PRODUCT_PARSERS = {
     "falabella": parse_falabella_product,
     "ripley": parse_ripley_product,
     "paris": parse_paris_product,
+    "abc": parse_abc_product,
     "sodimac": parse_sodimac_product,
 }
 
@@ -508,7 +620,7 @@ class DirectStoreReader:
         if status != 200:
             return None
         html = resp.text or ""
-        data_marker = "self.__next_f" if store_id == "paris" else "__NEXT_DATA__"
+        data_marker = {"paris": "self.__next_f", "abc": "data-pid"}.get(store_id, "__NEXT_DATA__")
         if data_marker not in html:
             lower = html[:20000].lower()
             reason = "verificación anti-bot" if any(m in lower for m in _BOT_CHALLENGE_MARKERS) else "página sin datos"
@@ -542,6 +654,8 @@ class DirectStoreReader:
             url = f"{STORE_BASE['ripley']}/search/{q}"
         elif store_id == "paris":
             url = f"{STORE_BASE['paris']}/search?q={q}"
+        elif store_id == "abc":
+            url = f"{STORE_BASE['abc']}/on/demandware.store/Sites-Abc-Site/es_CL/Search-Show?q={q}&sz=48"
         elif store_id == "sodimac":
             url = f"{STORE_BASE['sodimac']}/sodimac-cl/search?Ntt={q}"
         elif store_id == "pcfactory":
