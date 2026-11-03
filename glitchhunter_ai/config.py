@@ -86,5 +86,6 @@ STORES = [
     {"id": "lider", "name": "Líder", "domain": "lider.cl"},
     {"id": "mercadolibre", "name": "Mercado Libre", "domain": "mercadolibre.cl"},
     {"id": "pcfactory", "name": "PC Factory", "domain": "pcfactory.cl"},
+    {"id": "sodimac", "name": "Sodimac", "domain": "sodimac.cl"},
     {"id": "solotodo", "name": "SoloTodo", "domain": "solotodo.cl"},
 ]

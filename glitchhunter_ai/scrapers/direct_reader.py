@@ -28,13 +28,13 @@ from glitchhunter_ai.scrapers.stealth_client import default_stealth_client
 
 logger = logging.getLogger("glitchhunter.scrapers.direct_reader")
 
-DIRECT_STORES = ("falabella", "ripley")
+DIRECT_STORES = ("falabella", "ripley", "sodimac")
 
 _NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.DOTALL)
 _BOT_CHALLENGE_MARKERS = ("captcha", "perimeterx", "px-captcha", "are you a robot", "access denied")
 
-STORE_NAMES = {"falabella": "Falabella Chile", "ripley": "Ripley Chile"}
-STORE_BASE = {"falabella": "https://www.falabella.com", "ripley": "https://simple.ripley.cl"}
+STORE_NAMES = {"falabella": "Falabella", "ripley": "Ripley", "sodimac": "Sodimac"}
+STORE_BASE = {"falabella": "https://www.falabella.com", "ripley": "https://simple.ripley.cl", "sodimac": "https://www.sodimac.cl"}
 
 # Categorías verificadas para lectura directa (clave -> ruta)
 CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
@@ -44,6 +44,14 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
         "notebooks": "/falabella-cl/category/cat2018/Computacion",
         "consolas": "/falabella-cl/category/cat2012/Consolas-y-Videojuegos",
         "televisores": "/falabella-cl/category/cat2070/Televisores",
+    },
+    # Sodimac: sus rutas de categoría redirigen a la portada; la búsqueda sí funciona (y a veces
+    # redirige a una página /lista/ con el formato de Falabella, que el parser también entiende).
+    "sodimac": {
+        "televisores": "/sodimac-cl/lista/cat7190148/Smart-TV",
+        "linea_blanca": "/sodimac-cl/search?Ntt=refrigerador",
+        "lavadoras": "/sodimac-cl/search?Ntt=lavadora",
+        "herramientas": "/sodimac-cl/search?Ntt=taladro",
     },
     "ripley": {
         "smartphones": "/tecno/celulares",
@@ -172,6 +180,50 @@ def parse_falabella_listing(html: str, category_hint: str = "tecnologia") -> Lis
     return items
 
 
+def parse_sodimac_listing(html: str, category_hint: str = "tecnologia") -> List[ProductItem]:
+    """
+    Productos de Sodimac en sus dos formatos:
+    - páginas /lista/ (catálogo del grupo Falabella): pageProps.results, con URL y precios eventPrice/normalPrice;
+    - búsqueda: pageProps.searchProps.searchData.results, precios INTERNET/NORMAL y sin URL. Su ficha
+      /sodimac-cl/product/{id} redirige a la portada, así que se enlaza como búsqueda por SKU
+      (/sodimac-cl/search?Ntt={sku}), que devuelve exactamente ese producto.
+    """
+    data = _extract_next_data(html)
+    pp = data.get("props", {}).get("pageProps", {}) or {}
+    results = pp.get("results") or ((pp.get("searchProps") or {}).get("searchData") or {}).get("results") or []
+    items: List[ProductItem] = []
+    now = datetime.now(timezone.utc)
+    for raw in results:
+        title = str(raw.get("displayName") or "").strip()
+        pid_raw = str(raw.get("productId") or "").strip()
+        sku = str(raw.get("skuId") or pid_raw)
+        url = raw.get("url") or (f"{STORE_BASE['sodimac']}/sodimac-cl/search?Ntt={urllib.parse.quote(sku)}" if sku else "")
+        pid = canonical_product_id("sodimac", url)
+        current, normal, card = _falabella_prices(raw.get("prices"))
+        if not title or not pid or current <= 0:
+            continue
+        media = raw.get("mediaUrls") or []
+        items.append(ProductItem(
+            id=pid, store_id="sodimac", store_name=STORE_NAMES["sodimac"], title=title,
+            category=_infer_category(title, category_hint), current_price=current, normal_price=normal,
+            card_price=card, url=url, image_url=media[0] if media else None, in_stock=True,
+            timestamp=now, source="direct",
+        ))
+    return items
+
+
+def parse_sodimac_product(html: str, url: str) -> Optional[ProductItem]:
+    """Página de producto /articulo/ de Sodimac (mismo formato productData que Falabella)."""
+    item = parse_falabella_product(html, url)
+    if item is None:
+        return None
+    return item.model_copy(update={
+        "id": canonical_product_id("sodimac", url) or item.id.replace("falabella-", "sodimac-", 1),
+        "store_id": "sodimac",
+        "store_name": STORE_NAMES["sodimac"],
+    })
+
+
 def parse_falabella_product(html: str, url: str) -> Optional[ProductItem]:
     """Producto individual (página de detalle) de Falabella."""
     data = _extract_next_data(html)
@@ -255,8 +307,8 @@ def parse_ripley_product(html: str, url: str) -> Optional[ProductItem]:
     )
 
 
-LISTING_PARSERS = {"falabella": parse_falabella_listing, "ripley": parse_ripley_listing}
-PRODUCT_PARSERS = {"falabella": parse_falabella_product, "ripley": parse_ripley_product}
+LISTING_PARSERS = {"falabella": parse_falabella_listing, "ripley": parse_ripley_listing, "sodimac": parse_sodimac_listing}
+PRODUCT_PARSERS = {"falabella": parse_falabella_product, "ripley": parse_ripley_product, "sodimac": parse_sodimac_product}
 
 
 class DirectStoreReader:
@@ -315,6 +367,8 @@ class DirectStoreReader:
             url = f"{STORE_BASE['falabella']}/falabella-cl/search?Ntt={q}"
         elif store_id == "ripley":
             url = f"{STORE_BASE['ripley']}/search/{q}"
+        elif store_id == "sodimac":
+            url = f"{STORE_BASE['sodimac']}/sodimac-cl/search?Ntt={q}"
         else:
             return []
         return self._listing(store_id, url, "tecnologia")

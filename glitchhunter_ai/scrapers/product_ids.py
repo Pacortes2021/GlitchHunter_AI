@@ -17,6 +17,8 @@ from typing import Optional
 _FALABELLA_RE = re.compile(r"/product/([A-Za-z0-9]+)(?:/|$)")
 # Ripley: /{slug}-{partNumber}p  o  /{slug}-mpm{n} (marketplace)
 _RIPLEY_RE = re.compile(r"-(\d{8,16})p$|-(mp[a-z]?\d{6,})$", re.IGNORECASE)
+# Sodimac: /sodimac-cl/articulo/{id}/… (catálogo del grupo Falabella) o /sodimac-cl/product/{id}/… (búsqueda)
+_SODIMAC_RE = re.compile(r"/sodimac-cl/(?:articulo|product)/([A-Za-z0-9]+)")
 # PC Factory: /producto/{id}-{slug}
 _PCFACTORY_RE = re.compile(r"/producto/(\d+)")
 # Mercado Libre: MLC123456789 o MLC-123456789 (en la ruta o en parámetros como wid=)
@@ -26,7 +28,7 @@ _MERCADOLIBRE_RE = re.compile(r"MLC-?(\d{6,})", re.IGNORECASE)
 def canonical_product_id(store_id: str, url: Optional[str]) -> Optional[str]:
     """
     Retorna '{store_id}-{id_tienda}' si la URL permite identificar el producto, o None.
-    Cubre Falabella, Ripley, PC Factory y Mercado Libre.
+    Cubre Falabella, Ripley, Sodimac, PC Factory y Mercado Libre.
     """
     if not url:
         return None
@@ -41,6 +43,17 @@ def canonical_product_id(store_id: str, url: Optional[str]) -> Optional[str]:
         m = _RIPLEY_RE.search(path)
         if m:
             return f"ripley-{(m.group(1) or m.group(2)).lower()}"
+        return None
+
+    if store == "sodimac":
+        m = _SODIMAC_RE.search(path)
+        if m:
+            return f"sodimac-{m.group(1).lower()}"
+        # Productos de la búsqueda: su ficha /product/{id} redirige a la portada, así que se enlazan
+        # como búsqueda por SKU (?Ntt={sku}), que devuelve exactamente ese producto
+        if path.endswith("/search"):
+            sku = urllib.parse.parse_qs(urllib.parse.urlparse(str(url)).query).get("Ntt", [""])[0].strip()
+            return f"sodimac-{sku.lower()}" if sku else None
         return None
 
     if store == "pcfactory":
