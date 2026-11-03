@@ -28,13 +28,26 @@ from glitchhunter_ai.scrapers.stealth_client import default_stealth_client
 
 logger = logging.getLogger("glitchhunter.scrapers.direct_reader")
 
-DIRECT_STORES = ("falabella", "ripley", "sodimac")
+DIRECT_STORES = ("falabella", "ripley", "sodimac", "pcfactory")
+
+# PC Factory expone una API JSON pública (la que usa su propio sitio): búsqueda, catálogo completo
+# paginado (search=*) y detalle por id. El catálogo (~3.000 productos, 48 por página) se recorre
+# por partes en cada ciclo para no saturar su API: con 10 páginas por ciclo de 3 min, una vuelta
+# completa toma ~20 min.
+PCFACTORY_API = "https://api.pcfactory.cl/pcfactory-services-catalogo/v1/catalogo/productos"
+PCFACTORY_HEADERS = {"Origin": "https://www.pcfactory.cl", "Referer": "https://www.pcfactory.cl/"}
+PCFACTORY_PAGE_SIZE = 48
 
 _NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.DOTALL)
 _BOT_CHALLENGE_MARKERS = ("captcha", "perimeterx", "px-captcha", "are you a robot", "access denied")
 
-STORE_NAMES = {"falabella": "Falabella", "ripley": "Ripley", "sodimac": "Sodimac"}
-STORE_BASE = {"falabella": "https://www.falabella.com", "ripley": "https://simple.ripley.cl", "sodimac": "https://www.sodimac.cl"}
+STORE_NAMES = {"falabella": "Falabella", "ripley": "Ripley", "sodimac": "Sodimac", "pcfactory": "PC Factory"}
+STORE_BASE = {
+    "falabella": "https://www.falabella.com",
+    "ripley": "https://simple.ripley.cl",
+    "sodimac": "https://www.sodimac.cl",
+    "pcfactory": "https://www.pcfactory.cl",
+}
 
 # Categorías verificadas para lectura directa (clave -> ruta)
 CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
@@ -318,6 +331,65 @@ class DirectStoreReader:
         self.client = client or default_stealth_client
         self.backoff = backoff or StoreBackoff()
         self.timeout = timeout
+        self._catalog_cursor: Dict[str, int] = {}
+        self._catalog_pages: Dict[str, int] = {}
+
+    # --- PC Factory (API JSON) -------------------------------------------------
+    def _pcfactory_query(self, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Consulta la API de PC Factory con el mismo freno automático que las páginas HTML."""
+        if self.backoff.is_paused("pcfactory"):
+            return None
+        try:
+            resp = self.client.get(PCFACTORY_API, params=params, headers=PCFACTORY_HEADERS, timeout=self.timeout)
+        except Exception as exc:
+            logger.debug("Error de red en la API de PC Factory: %s", exc)
+            return None
+        status = getattr(resp, "status_code", 0)
+        if status in (403, 429) or status >= 500:
+            self.backoff.record_block("pcfactory", f"HTTP {status}")
+            return None
+        if status != 200:
+            return None
+        try:
+            content = resp.json().get("content") or {}
+        except Exception:
+            self.backoff.record_block("pcfactory", "respuesta no es JSON")
+            return None
+        self.backoff.record_success("pcfactory")
+        return content
+
+    def _pcfactory_items(self, content: Optional[Dict[str, Any]]) -> List[ProductItem]:
+        from glitchhunter_ai.scrapers.pcfactory import PCFactoryScraper
+
+        if not content:
+            return []
+        return PCFactoryScraper().parse_pcfactory_json(content.get("items") or [])
+
+    def fetch_catalog_slice(self, store_id: str, pages: int = 10) -> List[ProductItem]:
+        """
+        Siguiente tramo del catálogo completo de la tienda (rotación por páginas).
+        Hoy solo PC Factory lo permite: su API lista todo el catálogo con search=*.
+        """
+        if store_id != "pcfactory":
+            return []
+        items: List[ProductItem] = []
+        start = self._catalog_cursor.get(store_id, 0)
+        total = self._catalog_pages.get(store_id)
+        page = start
+        for _ in range(max(1, pages)):
+            content = self._pcfactory_query({"page": page, "size": PCFACTORY_PAGE_SIZE, "search": "*"})
+            if content is None:
+                break
+            total = (content.get("pageable") or {}).get("totalPages") or total
+            items.extend(self._pcfactory_items(content))
+            page += 1
+            if total and page >= total:
+                page = 0
+                break
+        if total:
+            self._catalog_pages[store_id] = total
+        self._catalog_cursor[store_id] = page
+        return items
 
     def _get_html(self, store_id: str, url: str) -> Optional[str]:
         """Descarga la página; ante bloqueo activa la pausa de la tienda y retorna None."""
@@ -369,12 +441,23 @@ class DirectStoreReader:
             url = f"{STORE_BASE['ripley']}/search/{q}"
         elif store_id == "sodimac":
             url = f"{STORE_BASE['sodimac']}/sodimac-cl/search?Ntt={q}"
+        elif store_id == "pcfactory":
+            return self._pcfactory_items(
+                self._pcfactory_query({"page": 0, "size": PCFACTORY_PAGE_SIZE, "search": keyword.strip()})
+            )
         else:
             return []
         return self._listing(store_id, url, "tecnologia")
 
     def fetch_product(self, store_id: str, url: str) -> Optional[ProductItem]:
         """Precio en tiempo real de un producto. None si la tienda no responde o está en pausa."""
+        if store_id == "pcfactory":
+            pid = (canonical_product_id("pcfactory", url) or "").split("-", 1)[-1]
+            if not pid.isdigit():
+                return None
+            content = self._pcfactory_query({"page": 0, "size": 5, "search": pid})
+            matches = [i for i in self._pcfactory_items(content) if i.id == f"pcfactory-{pid}"]
+            return matches[0] if matches else None
         if store_id not in PRODUCT_PARSERS:
             return None
         html = self._get_html(store_id, url)

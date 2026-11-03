@@ -181,8 +181,11 @@ class PCFactoryScraper:
                 if not pid:
                     continue
 
+                # Productos outlet (open box / exhibición): su precio no es comparable con uno nuevo
+                if raw.get("outlet"):
+                    continue
                 nombre = raw.get("nombre") or raw.get("descripcionCorta") or "Producto PC Factory"
-                familia = raw.get("familia", {})
+                familia = raw.get("familia") or raw.get("categoria") or {}
                 cat_name = familia.get("nombre") if isinstance(familia, dict) else "hardware"
                 category = f"hardware / {str(cat_name).lower()}"
 
@@ -216,8 +219,13 @@ class PCFactoryScraper:
                         image_url = first_img.get("250") or first_img.get("500") or next(iter(first_img.values()), None)
                     elif isinstance(first_img, str):
                         image_url = first_img
+                thumb = raw.get("thumbnail")
+                if not image_url and isinstance(thumb, str) and thumb:
+                    image_url = thumb if thumb.startswith("http") else f"https://www.pcfactory.cl{thumb}"
 
-                product_url = f"{self.base_url}/producto/{pid}"
+                # La API de búsqueda entrega el slug completo ("57363-motorola-…"), que es la URL pública
+                slug = raw.get("slug")
+                product_url = f"{self.base_url}/producto/{slug or pid}"
 
                 items.append(
                     ProductItem(
@@ -231,8 +239,9 @@ class PCFactoryScraper:
                         card_price=card_p,
                         url=product_url,
                         image_url=image_url,
-                        in_stock=True,
+                        in_stock=str(raw.get("stock", "1")).strip() not in ("0", "", "None"),
                         timestamp=now,
+                        source="direct",
                     )
                 )
             except Exception as e:

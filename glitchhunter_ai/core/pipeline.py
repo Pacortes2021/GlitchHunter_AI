@@ -650,6 +650,8 @@ class GlitchHuntingPipeline:
         y categorías prioritarias, con precios en tiempo real. Comparte el cerrojo con run_scan,
         por lo que se omite si hay un escaneo completo en curso.
         """
+        from glitchhunter_ai.config import DIRECT_PCFACTORY_PAGES_PER_CYCLE
+
         if not self._scan_lock.acquire(blocking=False):
             logger.debug("Escaneo directo omitido: hay un escaneo en curso.")
             return []
@@ -660,8 +662,6 @@ class GlitchHuntingPipeline:
             if keywords is None:
                 keywords = self.db.get_watchlist_keywords()
             categories = categories or []
-            if not keywords and not categories:
-                return []
 
             seen: set = set()
             for store_id in DIRECT_STORES:
@@ -670,6 +670,9 @@ class GlitchHuntingPipeline:
                     batches.append(self.direct_reader.search(store_id, kw))
                 for cat in categories:
                     batches.append(self.direct_reader.fetch_category(store_id, cat))
+                # Tiendas con API de catálogo completo (PC Factory): se recorre por tramos en cada ciclo
+                if hasattr(self.direct_reader, "fetch_catalog_slice"):
+                    batches.append(self.direct_reader.fetch_catalog_slice(store_id, pages=DIRECT_PCFACTORY_PAGES_PER_CYCLE))
                 for products in batches:
                     for prod in products:
                         if prod.id in seen:
