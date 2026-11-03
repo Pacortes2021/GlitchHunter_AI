@@ -22,6 +22,7 @@ from glitchhunter_ai.ai_detector.math_detector import MathAnomalyDetector
 from glitchhunter_ai.ai_detector.semantic_filter import SemanticGlitchFilter
 from glitchhunter_ai.core.cart_sniper import generate_direct_add_to_cart_url
 from glitchhunter_ai.core.categories import ACCESSORY_CATEGORY, OTHER_CATEGORY, classify_category
+from glitchhunter_ai.core.price_signals import BULK_MIN_PRODUCTS, detect_bulk_prices
 from glitchhunter_ai.core.database import PriceDatabase
 from glitchhunter_ai.core.market_reference import default_market_reference
 from glitchhunter_ai.core.models import (
@@ -79,6 +80,8 @@ class GlitchHuntingPipeline:
         from glitchhunter_ai.core.catalog_rotator import default_catalog_rotator
         self.catalog_rotator = default_catalog_rotator
         self._scan_lock = threading.Lock()
+        # Productos con el mismo precio que otros de su tienda en el escaneo en curso (carga masiva)
+        self._bulk_price_counts: Dict[str, int] = {}
         self.is_scanning = False
 
     def process_product(
@@ -225,8 +228,10 @@ class GlitchHuntingPipeline:
         # El precio tachado lo pone la tienda: perfumes y cremas muestran "-70%" todo el año.
         # Sin evidencia, el producto se publica como oferta (sin push), no como error de precio.
         best_now = product.best_price
+        bulk_count = self._bulk_price_counts.get(product.id, 0)
         verified_drop = bool(
             math_eval.get("is_missing_zero")                                        # ~10x: firma clásica de error
+            or bulk_count >= BULK_MIN_PRODUCTS                                      # mismo precio en muchos productos
             or (baseline_price and baseline_price > 0 and best_now <= baseline_price * 0.5)  # nuestro historial
             or (mkt_ref and not market_inflation and mkt_ref.market_discount_pct >= 50.0)  # otras tiendas
             or product.source == "knasta"                                           # vs precio habitual de Knasta
@@ -291,6 +296,7 @@ class GlitchHuntingPipeline:
                 f"{'⚠️ Missing Zero Bug (~10x)' if missing_zero else f'Descuento masivo {discount_pct:.1f}%'} "
                 f"en {product.store_name} | Ahorro: ${savings_clp:,.0f} CLP".replace(",", ".")
                 + (" | ⚠️ Precio normal inflado vs mercado" if market_inflation else "")
+                + (f" | 📦 Mismo precio en {bulk_count} productos (posible error de carga masiva)" if bulk_count else "")
             ),
         )
 
@@ -364,7 +370,7 @@ class GlitchHuntingPipeline:
                     store_id=product.store_id,
                     best_price=product.best_price,
                     discount_pct=discount_pct,
-                    payload=alert.model_dump(mode="json"),
+                    payload={**alert.model_dump(mode="json"), "bulk_price_count": bulk_count or None},
                 )
             elif not is_simulated:
                 self._publish_unverified_as_deal(product, discount_pct, savings_clp)
@@ -450,6 +456,7 @@ class GlitchHuntingPipeline:
             return []
 
         self.is_scanning = True
+        self._bulk_price_counts = {}
         all_detected_glitches: List[GlitchAlert] = []
 
         try:
@@ -498,6 +505,7 @@ class GlitchHuntingPipeline:
 
                     products = scraper.fetch_catalog(**kwargs)
                     total_scanned += len(products)
+                    self._note_bulk_prices(products)
                     for prod in products:
                         alert = self.process_product(prod, send_notifications=send_notifications)
                         if alert:
@@ -542,6 +550,14 @@ class GlitchHuntingPipeline:
             self._scan_lock.release()
 
     run_scan_cycle = run_scan
+
+    def _note_bulk_prices(self, products: List[ProductItem]) -> None:
+        """Registra los productos que comparten precio exacto con otros de su tienda (carga masiva)."""
+        counts = detect_bulk_prices(products)
+        if counts:
+            stores = sorted({p.store_id for p in products if p.id in counts})
+            logger.info(f"📦 [Carga masiva] {len(counts)} producto(s) con precio repetido en {', '.join(stores)}.")
+        self._bulk_price_counts.update(counts)
 
     def refresh_feed_statuses(self) -> int:
         """Marca como expiradas (o reactiva) las publicaciones del canal según el último precio visto."""
@@ -676,6 +692,7 @@ class GlitchHuntingPipeline:
             return []
 
         self.is_scanning = True
+        self._bulk_price_counts = {}
         detected: List[GlitchAlert] = []
         try:
             if keywords is None:
@@ -692,14 +709,18 @@ class GlitchHuntingPipeline:
                 # Tiendas con API de catálogo completo (PC Factory): se recorre por tramos en cada ciclo
                 if hasattr(self.direct_reader, "fetch_catalog_slice"):
                     batches.append(self.direct_reader.fetch_catalog_slice(store_id, pages=DIRECT_PCFACTORY_PAGES_PER_CYCLE))
+                store_products: List[ProductItem] = []
                 for products in batches:
                     for prod in products:
                         if prod.id in seen:
                             continue
                         seen.add(prod.id)
-                        alert = self.process_product(prod, send_notifications=send_notifications)
-                        if alert:
-                            detected.append(alert)
+                        store_products.append(prod)
+                self._note_bulk_prices(store_products)
+                for prod in store_products:
+                    alert = self.process_product(prod, send_notifications=send_notifications)
+                    if alert:
+                        detected.append(alert)
 
             logger.info(
                 "⚡ [Escaneo Directo] %d producto(s) revisados en tiempo real en %s, %d alerta(s) nueva(s).",

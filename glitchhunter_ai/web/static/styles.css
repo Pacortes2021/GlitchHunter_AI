@@ -320,6 +320,7 @@ button { cursor: pointer; }
 .tag-zero { background: var(--warn-soft); color: var(--warn-ink); }
 .tag-risk-high { background: var(--danger-soft); color: var(--danger-ink); }
 .tag-risk-ok { background: var(--accent-soft); color: var(--accent-ink); }
+.tag-bulk { background: var(--danger-soft); color: var(--danger-ink); }
 .tag-odd { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
 .tips { margin: 6px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
 .tag-test { background: var(--text); color: var(--bg); letter-spacing: .04em; }

@@ -60,3 +60,51 @@ def test_feed_posts_include_risk_and_odd_price(tmp_path, monkeypatch):
 
     status = TestClient(server.app).get("/api/status").json()
     assert "event_mode" in status and "direct_scan_interval_seconds" in status
+
+
+# =====================================================================
+# Carga masiva: muchos productos distintos al mismo precio
+# =====================================================================
+def _p(pid, title, price, normal, store="paris"):
+    from glitchhunter_ai.core.models import ProductItem
+    return ProductItem(id=pid, store_id=store, store_name=store, title=title, category="dormitorio",
+                       current_price=price, normal_price=normal, url=f"https://www.{store}.cl/{pid}.html")
+
+
+def test_detect_bulk_prices_cencosud_pattern():
+    from glitchhunter_ai.core.price_signals import detect_bulk_prices
+
+    # Caso real (Cencosud ~2020): camas y sets distintos, todos a $38.990
+    bulk = [_p("a", "Cama Europea King", 38990, 739990), _p("b", "Set Dormitorio 2 plazas", 38990, 549990),
+            _p("c", "Cama Rosen Super King", 38990, 899990), _p("d", "Respaldo + Velador", 38990, 199990)]
+    # Variantes de color del mismo producto (mismo precio normal): no es carga masiva
+    colors = [_p(f"c{i}", f"Galaxy S25 color {i}", 569990 // 2, 1069990, store="ripley") for i in range(5)]
+    # Mismo precio en otra tienda no cuenta para el grupo de Paris
+    other = [_p("x", "Otro", 38990, 500000, store="falabella")]
+    res = detect_bulk_prices(bulk + colors + other)
+    assert res == {"a": 4, "b": 4, "c": 4, "d": 4}
+    # Con solo 3 productos no alcanza
+    assert detect_bulk_prices(bulk[:3]) == {}
+
+
+def test_bulk_price_is_independent_evidence_of_price_error(tmp_path):
+    from unittest.mock import MagicMock
+    from glitchhunter_ai.core.database import PriceDatabase
+    from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
+
+    db = PriceDatabase(db_path=tmp_path / "bulk.db")
+    db.init_db()
+    reader = MagicMock()
+    batch = [_p("paris-a", "Cama Europea King", 38990, 739990), _p("paris-b", "Set Dormitorio 2 plazas", 38990, 549990),
+             _p("paris-c", "Cama Rosen Super King", 38990, 899990), _p("paris-d", "Respaldo Capitone + Velador", 38990, 199990)]
+    reader.search.return_value = []
+    reader.fetch_category.side_effect = lambda store, cat: batch if store == "paris" else []
+    reader.fetch_catalog_slice.return_value = []
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=reader, confirm_with_store=False)
+
+    pipeline.run_direct_scan(keywords=[], categories=["dormitorio"], send_notifications=False)
+    posts = db.get_feed()
+    # Sin historial ni referencia de mercado, el patrón de carga masiva basta para "error de precio"
+    assert sorted(p["kind"] for p in posts) == ["glitch"] * 4
+    assert all(p["payload"]["bulk_price_count"] == 4 for p in posts)
+    assert "carga masiva" in posts[0]["payload"]["verdict"]["reason"]
