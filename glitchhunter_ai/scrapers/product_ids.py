@@ -18,6 +18,8 @@ _FALABELLA_RE = re.compile(r"/product/([A-Za-z0-9]+)(?:/|$)")
 # ABC (ex La Polar, Salesforce Commerce Cloud): /{slug}/{pid}.html
 _ABC_RE = re.compile(r"/(\d{6,})\.html$")
 _JUMBO_RE = re.compile(r"^/([a-z0-9-]+)/p$")
+_HP_RE = re.compile(r"/shop/[a-z0-9-]+-([a-z0-9]{5,10})\.html$")   # el SKU va al final del slug
+_WINPY_RE = re.compile(r"^/venta/([a-z0-9-]+)$")
 # Paris: /{slug}-{CLAVE}.html (clave commercetools, ej: MKDFYM0YKP; en URLs antiguas, numérica)
 _PARIS_RE = re.compile(r"-([A-Za-z0-9]+)\.html$")
 # Ripley: /{slug}-{partNumber}p  o  /{slug}-mpm{n} (marketplace)
@@ -33,7 +35,7 @@ _MERCADOLIBRE_RE = re.compile(r"MLC-?(\d{6,})", re.IGNORECASE)
 def canonical_product_id(store_id: str, url: Optional[str]) -> Optional[str]:
     """
     Retorna '{store_id}-{id_tienda}' si la URL permite identificar el producto, o None.
-    Cubre Falabella, Ripley, Paris, ABC, Jumbo, Sodimac, PC Factory y Mercado Libre.
+    Cubre Falabella, Ripley, Paris, ABC, Jumbo, HP, Winpy, Sodimac, PC Factory y Mercado Libre.
     """
     if not url:
         return None
@@ -43,6 +45,14 @@ def canonical_product_id(store_id: str, url: Optional[str]) -> Optional[str]:
     if store == "abc":
         m = _ABC_RE.search(path)
         return f"abc-{m.group(1)}" if m else None
+
+    if store == "hp":
+        m = _HP_RE.search(path.lower())
+        return f"hp-{m.group(1)}" if m else None
+
+    if store == "winpy":
+        m = _WINPY_RE.search(path.lower())
+        return f"winpy-{m.group(1)}" if m else None
 
     if store == "jumbo":
         m = _JUMBO_RE.search(path.lower())

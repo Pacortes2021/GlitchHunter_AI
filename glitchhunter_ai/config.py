@@ -101,5 +101,7 @@ STORES = [
     {"id": "sodimac", "name": "Sodimac", "domain": "sodimac.cl"},
     {"id": "abc", "name": "ABC", "domain": "abc.cl"},
     {"id": "jumbo", "name": "Jumbo", "domain": "jumbo.cl"},
+    {"id": "hp", "name": "HP", "domain": "hp.com"},
+    {"id": "winpy", "name": "Winpy", "domain": "winpy.cl"},
     {"id": "solotodo", "name": "SoloTodo", "domain": "solotodo.cl"},
 ]

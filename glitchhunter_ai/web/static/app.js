@@ -23,6 +23,8 @@
     sodimac: { name: 'Sodimac', color: '#f97316' },
     abc: { name: 'ABC', color: '#e11d48' },
     jumbo: { name: 'Jumbo', color: '#16a34a' },
+    hp: { name: 'HP', color: '#0096d6' },
+    winpy: { name: 'Winpy', color: '#f59e0b' },
     solotodo: { name: 'SoloTodo', color: '#0d9488' }
   };
   const DEFAULT_STORE_COLOR = '#64748b';

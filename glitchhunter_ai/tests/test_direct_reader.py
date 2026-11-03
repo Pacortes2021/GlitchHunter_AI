@@ -239,7 +239,7 @@ def test_run_direct_scan_searches_watchlist_in_all_direct_stores(tmp_path):
     alerts = pipeline.run_direct_scan(keywords=["galaxy s25"], send_notifications=False)
     assert len(alerts) == 1
     searched = sorted(c.args[0] for c in reader.search.call_args_list)
-    assert searched == ["abc", "falabella", "jumbo", "paris", "pcfactory", "ripley", "sodimac"]
+    assert searched == ["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy"]
 
     # Sin watchlist ni categorías no consulta nada
     reader.search.reset_mock()
@@ -311,7 +311,7 @@ def test_direct_scan_includes_sodimac(tmp_path):
     reader.fetch_category.return_value = []
     pipeline = _pipeline(tmp_path, reader)
     pipeline.run_direct_scan(keywords=["refrigerador"], send_notifications=False)
-    assert sorted(c.args[0] for c in reader.search.call_args_list) == ["abc", "falabella", "jumbo", "paris", "pcfactory", "ripley", "sodimac"]
+    assert sorted(c.args[0] for c in reader.search.call_args_list) == ["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy"]
 
 
 # =====================================================================
@@ -458,3 +458,44 @@ def test_parse_jumbo_product_picks_url_product():
 def test_jumbo_canonical_id():
     assert canonical_product_id("jumbo", "https://www.jumbo.cl/licuadora-3-en-1-n-2086981/p") == "jumbo-licuadora-3-en-1-n-2086981"
     assert canonical_product_id("jumbo", "https://www.jumbo.cl/hogar-electro-y-libreria/electro-y-tecnologia") is None
+
+
+def test_parse_hp_listing_magento_prices():
+    from glitchhunter_ai.scrapers.direct_reader import parse_hp_listing
+
+    items = parse_hp_listing(_fixture("hp_listing.html"), "notebooks")
+    assert [i.id for i in items] == ["hp-d0dd8la", "hp-bm3e7la"]
+    first = items[0]
+    assert (first.current_price, first.normal_price) == (559990, 559990)
+    assert first.url == "https://www.hp.com/cl-es/shop/hp-14-laptop-14-ep1330la-d0dd8la.html"
+    assert first.title.startswith("Notebook HP 14-ep1330la") and first.store_id == "hp" and first.in_stock
+
+
+def test_parse_hp_product_page():
+    from glitchhunter_ai.scrapers.direct_reader import parse_hp_product
+
+    url = "https://www.hp.com/cl-es/shop/hp-laptop-15-fd0252la-b9tw9la.html"
+    item = parse_hp_product(_fixture("hp_product.html"), url)
+    assert item is not None and item.id == "hp-b9tw9la"
+    assert item.current_price == 825220 and item.title.startswith("Notebook HP 15-fd0252la")
+
+
+def test_parse_winpy_listing_and_product():
+    from glitchhunter_ai.scrapers.direct_reader import parse_winpy_listing, parse_winpy_product
+
+    items = {i.id: i for i in parse_winpy_listing(_fixture("winpy_listing.html"), "notebooks")}
+    pid = "winpy-notebook-hp-245-g10-de-14-ryzen-3-7330u-8gb-ddr4-256gb-ssd-win11"
+    assert pid in items and len(items) == 2
+    hp245 = items[pid]
+    assert (hp245.current_price, hp245.normal_price) == (367840, 367840)
+    assert hp245.url == "https://www.winpy.cl/venta/notebook-hp-245-g10-de-14-ryzen-3-7330u-8gb-ddr4-256gb-ssd-win11/"
+    # La ficha entrega el mismo precio (transferencia) que el listado
+    item = parse_winpy_product(_fixture("winpy_product.html"), hp245.url)
+    assert item is not None and item.id == pid and item.current_price == 367840 and item.in_stock
+
+
+def test_hp_and_winpy_canonical_ids():
+    assert canonical_product_id("hp", "https://www.hp.com/cl-es/shop/hp-laptop-15-fd0252la-b9tw9la.html") == "hp-b9tw9la"
+    assert canonical_product_id("hp", "https://www.hp.com/cl-es/shop/notebooks.html") is None
+    assert canonical_product_id("winpy", "https://www.winpy.cl/venta/notebook-x/") == "winpy-notebook-x"
+    assert canonical_product_id("winpy", "https://www.winpy.cl/portatiles/notebooks/") is None

@@ -36,8 +36,10 @@ IRRISORIO_MIN_DISCOUNT = 95.0
 PLAUSIBLE_MIN_DISCOUNT = 60.0
 ODD_PRICE_MIN = 20000.0
 _USUAL_ENDINGS = {0, 90, 50, 95, 99}   # últimas dos cifras de precios fijados a mano
-# En marketplaces cada vendedor fija precios arbitrarios ($104.982): la terminación no indica nada
+# En marketplaces cada vendedor fija precios arbitrarios ($104.982), y algunas tiendas calculan sus
+# precios en vez de fijarlos (Winpy: $367.840; HP: $825.220): ahí la terminación no indica nada
 MARKETPLACE_STORES = {"mercadolibre"}
+COMPUTED_PRICE_STORES = {"winpy", "hp"}
 
 
 def risk_tier(discount_pct: Optional[float]) -> Optional[str]:
@@ -54,7 +56,7 @@ def risk_tier(discount_pct: Optional[float]) -> Optional[str]:
 
 def is_odd_price(price: Optional[float], store_id: Optional[str] = None) -> bool:
     """True si un precio relevante no termina como los precios fijados por el retail (…90, …00)."""
-    if (store_id or "").lower() in MARKETPLACE_STORES:
+    if (store_id or "").lower() in MARKETPLACE_STORES | COMPUTED_PRICE_STORES:
         return False
     if not price or float(price) < ODD_PRICE_MIN:
         return False
