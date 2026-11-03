@@ -29,7 +29,9 @@ def _product(pid, title, price, normal, store="paris", **kw):
 
 
 # --- Bug 1: ofertas 40-64% publicadas sin filtro de calidad ---
-def test_deals_quality_gate_blocks_noise(tmp_path):
+def test_deals_quality_gate_blocks_noise(tmp_path, monkeypatch):
+    from glitchhunter_ai import config
+    monkeypatch.setattr(config, "DEAL_INCLUDE_NON_TECH", False)  # solo categorías del radar
     db = _db(tmp_path)
     pipeline = GlitchHuntingPipeline(db=db)
     noise = [
@@ -167,3 +169,14 @@ def test_legacy_unstable_ids_are_removed(tmp_path):
     with db.get_connection() as conn:
         ids = sorted(r["id"] for r in conn.execute("SELECT id FROM products"))
     assert ids == ["mercadolibre-mlc123456", "pcfactory-56531"]
+
+
+def test_non_tech_deals_included_by_default_but_noise_still_blocked(tmp_path):
+    """Por defecto se publican ofertas reales de cualquier categoría (la página filtra), pero no ruido."""
+    db = _db(tmp_path)
+    pipeline = GlitchHuntingPipeline(db=db)
+    db.upsert_product(_product("p-parka", "Parka con Capucha Hombre", 22990, 44990))
+    db.upsert_product(_product("p-reac", "Notebook HP 15 Reacondicionado", 299990, 699990))
+    db.upsert_product(_product("p-funda", "Funda Silicona iPhone 15 Pro", 9990, 29990))
+    pipeline.publish_new_deals()
+    assert [p["product_id"] for p in db.get_feed()] == ["p-parka"]

@@ -32,7 +32,7 @@ MIN_ABSOLUTE_SAVINGS_CLP = float(os.getenv("MIN_ABSOLUTE_SAVINGS_CLP", "30000.0"
 # Canal de ofertas comerciales (40%-64%): filtro de calidad antes de publicar
 DEAL_MIN_SAVINGS_CLP = float(os.getenv("DEAL_MIN_SAVINGS_CLP", "10000"))     # Ahorro mínimo de una oferta
 DEAL_MAX_AGE_HOURS = float(os.getenv("DEAL_MAX_AGE_HOURS", "12"))            # Solo productos vistos recientemente
-DEAL_INCLUDE_NON_TECH = os.getenv("DEAL_INCLUDE_NON_TECH", "false").lower() in ("true", "1", "yes")  # Ropa, muebles, etc.
+DEAL_INCLUDE_NON_TECH = os.getenv("DEAL_INCLUDE_NON_TECH", "true").lower() in ("true", "1", "yes")  # Ropa, muebles, etc.
 
 # Criterio de "Pérdida de Ceros" (Missing Zero Bug)
 # Ej: Producto de $899.990 publicado a $89.990 (ratio ~10x)
