@@ -82,6 +82,14 @@ DIRECT_SCAN_CATEGORIES = [c.strip() for c in os.getenv("DIRECT_SCAN_CATEGORIES",
 # PC Factory: páginas de 48 productos de su catálogo completo leídas por ciclo (~35 KB c/u, ~63 páginas en total)
 DIRECT_PCFACTORY_PAGES_PER_CYCLE = int(os.getenv("DIRECT_PCFACTORY_PAGES_PER_CYCLE", "10"))
 
+# Modo evento: en CyberDay, Cyber Monday, Black Friday y Navidad ocurre la mayoría de los errores
+# de precio, y duran de minutos a 2 horas. Durante esas fechas el escaneo directo es más frecuente.
+# EVENT_WINDOWS: "Nombre=AAAA-MM-DD:AAAA-MM-DD, …" (hora de Chile, fechas inclusive).
+# EVENT_MODE: auto (según EVENT_WINDOWS) | on (siempre) | off (nunca).
+EVENT_WINDOWS = os.getenv("EVENT_WINDOWS", "")
+EVENT_MODE = os.getenv("EVENT_MODE", "auto")
+EVENT_DIRECT_SCAN_INTERVAL_SECONDS = int(os.getenv("EVENT_DIRECT_SCAN_INTERVAL_SECONDS", "60"))
+
 # Tiendas soportadas en Chile
 STORES = [
     {"id": "falabella", "name": "Falabella", "domain": "falabella.com"},

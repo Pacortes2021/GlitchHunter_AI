@@ -337,6 +337,13 @@
       ? '<span class="tag tag-glitch">⚡ Error de precio</span>'
       : '<span class="tag tag-deal">🏷️ Oferta</span>');
     if (verdict.is_missing_zero) tags.push('<span class="tag tag-zero" title="El precio parece tener un cero de menos">Falta un cero</span>');
+    // Nivel de riesgo según los casos chilenos documentados (ver core/price_signals.py)
+    if (post.risk_tier === 'irrisorio') {
+      tags.push('<span class="tag tag-risk-high" title="Con descuentos de 95% o más, las tiendas casi siempre anulan la compra y los tribunales suelen darles la razón">⚠️ Precio irrisorio · probable anulación</span>');
+    } else if (post.risk_tier === 'plausible') {
+      tags.push('<span class="tag tag-risk-ok" title="En este rango están la mayoría de los errores que se respetaron o compensaron">✅ Error plausible</span>');
+    }
+    if (post.odd_price) tags.push('<span class="tag tag-odd" title="Los precios del retail terminan en …90 o …00; una cifra rara suele venir de un descuento mal calculado">🔢 Cifra inusual</span>');
     if (d.hasCardPrice) tags.push('<span class="tag tag-card">💳 Precio tarjeta</span>');
     if (post.__isTest) tags.unshift('<span class="tag tag-test" title="Simulación: no se guarda y desaparece al recargar">🧪 PRUEBA</span>');
     if (post.is_watchlist_match) tags.push('<span class="tag tag-watch">⭐ Tu watchlist</span>');
@@ -351,6 +358,14 @@
         ? ` · ${Number(mPct) > 0 ? `${Math.round(Number(mPct))}% más barato` : `${Math.abs(Math.round(Number(mPct)))}% más caro`}`
         : '';
       marketHtml = `<div class="market">🌐 Otras tiendas: <strong>${formatCLP(post.market_median_price)}</strong>${stores ? ` (${stores} tiendas)` : ''}${escapeHtml(mPctTxt)}</div>`;
+    }
+
+    // Consejos prácticos (texto fijo, sin datos del servidor)
+    let tipsHtml = '';
+    if (post.risk_tier === 'irrisorio') {
+      tipsHtml = '<p class="tips">Casos así casi siempre se anulan con reembolso. Si compras: 1 sola unidad, guarda captura del precio y del comprobante.</p>';
+    } else if (post.risk_tier === 'plausible') {
+      tipsHtml = '<p class="tips">Si compras, hazlo por 1 unidad y guarda captura del precio y del comprobante. Si la tienda anula sin justificación, puedes reclamar en sernac.cl.</p>';
     }
 
     const priceNote = d.hasCardPrice
@@ -392,6 +407,7 @@
         </div>
         ${priceNote}
         ${marketHtml}
+        ${tipsHtml}
       </div>
       <div class="post-actions">
         <a class="btn btn-primary" href="${safeUrl}" target="_blank" rel="noopener noreferrer">
@@ -1002,6 +1018,16 @@
         const rows = [
           ['Radar', status.status === 'online' ? 'En línea' : escapeHtml(status.status)],
           ['Escaneo automático', status.auto_scan_enabled ? `Sí, cada ${escapeHtml(status.scan_interval_minutes)} min (${escapeHtml(status.scan_interval_seconds)} s)` : 'Pausado'],
+          ['Lectura directa', status.direct_scan_interval_seconds ? `Cada ${escapeHtml(status.direct_scan_interval_seconds)} s` : '–'],
+          ['Modo evento', status.event_mode
+            ? `🎯 Activo: ${escapeHtml(status.event_mode)}`
+            : (() => {
+              const today = new Date().toISOString().slice(0, 10);
+              const next = (Array.isArray(status.event_windows) ? status.event_windows : []).filter(w => String(w.end) >= today);
+              return next.length
+                ? `Próximos: ${next.map(w => `${escapeHtml(w.name)} (${escapeHtml(w.start)})`).join(', ')}`
+                : 'Sin fechas próximas configuradas';
+            })()],
           ['Fuentes vigiladas', `${escapeHtml(status.stores_monitored)} (tiendas + SoloTodo)`],
           ['Conexión en vivo', state.wsConnected ? 'Conectada' : 'Reconectando'],
           ['Votos de la comunidad', feedback ? `👍 ${toNum(feedback.total_upvotes)} · 👎 ${toNum(feedback.total_downvotes)}` : '–']
