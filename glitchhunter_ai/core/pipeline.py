@@ -327,6 +327,19 @@ class GlitchHuntingPipeline:
         except Exception as e:
             logger.warning(f"No se pudo registrar alerta en BD: {e}")
 
+        # Publicación en el canal de ofertas (una sola vez por producto y precio)
+        try:
+            self.db.publish_feed_offer(
+                kind="glitch",
+                product_id=product.id,
+                store_id=product.store_id,
+                best_price=product.best_price,
+                discount_pct=discount_pct,
+                payload=alert.model_dump(mode="json"),
+            )
+        except Exception as e:
+            logger.warning(f"No se pudo publicar el glitch en el canal: {e}")
+
         # Despacho de notificaciones (si send_notifications está habilitado y no es producto de prueba)
         telegram_ok = False
         ntfy_ok = False
@@ -489,12 +502,46 @@ class GlitchHuntingPipeline:
                 f"✅ Ciclo concluido: {total_scanned} productos analizados, "
                 f"{len(all_detected_glitches)} glitches confirmados."
             )
+            self.publish_new_deals()
             return all_detected_glitches
         finally:
             self.is_scanning = False
             self._scan_lock.release()
 
     run_scan_cycle = run_scan
+
+    def publish_new_deals(self, min_discount: float = 40.0, max_discount: float = 65.0) -> int:
+        """
+        Publica en el canal las ofertas comerciales (40%-64%) que aún no se habían publicado,
+        o que ahora están más baratas que en su última publicación. Las ya publicadas no se repiten.
+        """
+        published = 0
+        try:
+            for row in self.db.get_commercial_deals(min_discount=min_discount, max_discount=max_discount, limit=1000):
+                current = float(row.get("current_price") or 0.0)
+                card = row.get("card_price")
+                best = float(card) if card and 0 < float(card) < current else current
+                post_id = self.db.publish_feed_offer(
+                    kind="deal",
+                    product_id=row["product_id"],
+                    store_id=row["store_id"],
+                    best_price=best,
+                    discount_pct=float(row.get("discount_pct") or 0.0),
+                    payload=row,
+                )
+                if post_id:
+                    published += 1
+        except Exception as exc:
+            logger.warning(f"No se pudieron publicar las ofertas en el canal: {exc}")
+
+        if published:
+            logger.info(f"📢 [Canal] {published} oferta(s) nueva(s) publicada(s).")
+            if self.on_glitch_callback:
+                try:
+                    self.on_glitch_callback({"type": "feed_updated", "new_posts": published})
+                except Exception:
+                    pass
+        return published
 
     def run_direct_scan(
         self,
@@ -540,6 +587,7 @@ class GlitchHuntingPipeline:
                 "⚡ [Escaneo Directo] %d producto(s) revisados en tiempo real en Falabella/Ripley, %d alerta(s) nueva(s).",
                 len(seen), len(detected),
             )
+            self.publish_new_deals()
             return detected
         finally:
             self.is_scanning = False

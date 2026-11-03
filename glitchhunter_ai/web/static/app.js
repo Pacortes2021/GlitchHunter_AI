@@ -26,6 +26,7 @@
   const state = {
     glitches: [],       // Columna 1: ≥ 65% o Missing Zero
     commercialDeals: [], // Columna 2: 40% a 64%
+    lastFeedId: 0,       // Última publicación del canal recibida (solo se piden las posteriores)
     filters: {
       store: 'all',
       search: '',
@@ -485,34 +486,92 @@
     window.scrollTo({ top: scrollY, behavior: 'instant' });
   }
 
-  // Ingesta de nuevo glitch vía WebSocket o API
-  function ingestGlitch(glitchAlert, isTest = false) {
-    if (!glitchAlert || !glitchAlert.product) return;
+  // 📢 Canal de ofertas: cada oferta llega una sola vez y queda guardada.
+  // La página nunca vuelve a dibujar lo ya recibido: solo agrega arriba las publicaciones nuevas.
+  function addPostsToState(posts) {
+    const added = [];
+    // Las publicaciones vienen de la más reciente a la más antigua: se insertan en orden cronológico
+    [...posts].reverse().forEach(post => {
+      if (!post || !post.product || post.feed_id <= state.lastFeedId) return;
+      const list = post.feed_kind === 'glitch' ? state.glitches : state.commercialDeals;
+      list.unshift(post);
+      state.lastFeedId = Math.max(state.lastFeedId, post.feed_id);
+      added.push(post);
+    });
+    return added;
+  }
 
-    const prodId = glitchAlert.product.id;
-    const existingIndex = state.glitches.findIndex(
-      g => g.product.id === prodId || g.alert_id === glitchAlert.alert_id
-    );
-
-    if (existingIndex >= 0) {
-      const existing = state.glitches[existingIndex];
-      if (existing.product.current_price === glitchAlert.product.current_price) {
-        return;
-      }
-      state.glitches[existingIndex] = glitchAlert;
-    } else {
-      state.glitches.unshift(glitchAlert);
-      sound.playDing();
-
-      const store = STORES[glitchAlert.product.store_id]?.name || glitchAlert.product.store_name;
-      const discount = glitchAlert.verdict?.discount_percentage || 85;
-      showToast(
-        `${store}: ${glitchAlert.product.title.slice(0, 42)}... (-${discount}% OFF)`,
-        isTest ? '🧪 Glitch de Prueba' : '⚡ Nuevo Glitch Detectado'
-      );
+  function passesColumnFilters(item, isGlitchColumn) {
+    if (filterItems([item]).length === 0) return false;
+    if (!isGlitchColumn && state.filters.col2MinDiscount > 40.0) {
+      return (item.verdict.discount_percentage || 0) >= state.filters.col2MinDiscount;
     }
+    return true;
+  }
 
-    renderBothColumns();
+  function updateColumnBadges() {
+    const col1Badge = document.getElementById('col1-count-badge');
+    const col2Badge = document.getElementById('col2-count-badge');
+    if (col1Badge) col1Badge.textContent = `${state.glitches.filter(g => passesColumnFilters(g, true)).length} disponibles`;
+    if (col2Badge) col2Badge.textContent = `${state.commercialDeals.filter(d => passesColumnFilters(d, false)).length} disponibles`;
+  }
+
+  // Inserta arriba las tarjetas nuevas sin tocar las existentes (sin parpadeos ni repeticiones)
+  function prependNewCards(posts) {
+    if (state.filters.sortBy !== 'recent') {
+      renderBothColumns();
+      return;
+    }
+    const scrollY = window.scrollY;
+    posts.forEach(post => {
+      const isGlitch = post.feed_kind === 'glitch';
+      if (!passesColumnFilters(post, isGlitch)) return;
+      const container = document.getElementById(isGlitch ? 'glitches-col-container' : 'deals-col-container');
+      const empty = document.getElementById(isGlitch ? 'empty-glitches' : 'empty-deals');
+      if (!container) return;
+      if (empty) empty.classList.add('hidden');
+      const card = createCardElement(post, isGlitch);
+      card.classList.add('ring-2', 'ring-emerald-400');
+      setTimeout(() => card.classList.remove('ring-2', 'ring-emerald-400'), 8000);
+      container.prepend(card);
+    });
+    if (window.lucide) window.lucide.createIcons();
+    updateColumnBadges();
+    updateKPIs();
+    window.scrollTo({ top: scrollY, behavior: 'instant' });
+  }
+
+  let fetchingNewPosts = false;
+  async function fetchNewPosts(isTest = false) {
+    if (fetchingNewPosts) return [];
+    fetchingNewPosts = true;
+    try {
+      const res = await fetch(`/api/feed?after_id=${state.lastFeedId}`);
+      if (!res.ok) return [];
+      const posts = await res.json();
+      const added = addPostsToState(Array.isArray(posts) ? posts : []);
+      if (added.length === 0) return [];
+
+      prependNewCards(added);
+
+      const glitches = added.filter(p => p.feed_kind === 'glitch');
+      if (glitches.length > 0) {
+        sound.playDing();
+        const g = glitches[glitches.length - 1];
+        const store = STORES[g.product.store_id]?.name || g.product.store_name;
+        showToast(
+          `${store}: ${g.product.title.slice(0, 42)}... (-${Math.round(g.verdict?.discount_percentage || 0)}% OFF)`,
+          isTest ? '🧪 Glitch de Prueba' : '⚡ Nuevo Glitch Detectado'
+        );
+      } else {
+        showToast(`${added.length} oferta(s) nueva(s) en el canal.`, '📢 Nuevas Ofertas');
+      }
+      return added;
+    } catch {
+      return [];
+    } finally {
+      fetchingNewPosts = false;
+    }
   }
 
   // Conexión WebSocket en tiempo real con reconexión segura
@@ -542,14 +601,10 @@
       activeSocket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (data.type === 'deal_corrected' && data.product_id) {
-            state.glitches = state.glitches.filter(g => g.product.id !== data.product_id);
-            state.commercialDeals = state.commercialDeals.filter(d => (d.product?.id || d.product_id) !== data.product_id);
-            renderBothColumns();
-          } else if (data.alert_id && data.product) {
-            ingestGlitch(data);
-          } else if (data.type === 'new_glitch' && data.payload) {
-            ingestGlitch(data.payload);
+          // El servidor avisa que hay publicaciones nuevas (o un glitch recién detectado):
+          // se piden solo las publicaciones posteriores a la última recibida.
+          if (data.type === 'feed_updated' || (data.alert_id && data.product) || data.type === 'new_glitch') {
+            fetchNewPosts();
           }
         } catch {
           // Ignorar pings o mensajes de control
@@ -675,11 +730,10 @@
           }
           if (res.ok) {
             const data = await res.json();
-            showToast('Escaneo completado exitosamente.', 'Escaneo Listo');
-            if (Array.isArray(data.new_glitches)) {
-              data.new_glitches.forEach(g => ingestGlitch(g));
+            const added = await fetchNewPosts();
+            if (added.length === 0) {
+              showToast('Escaneo completado: sin ofertas nuevas.', 'Escaneo Listo');
             }
-            await loadData();
           } else if (res.status === 401) {
             showToast('Clave de API no autorizada o ausente.', 'No Autorizado');
           }
@@ -702,8 +756,7 @@
         try {
           const res = await authenticatedFetch('/api/test-glitch', { method: 'POST' });
           if (res.ok) {
-            const data = await res.json();
-            ingestGlitch(data, true);
+            await fetchNewPosts(true);
           } else if (res.status === 403) {
             showToast('Inyección de pruebas deshabilitada en este entorno.', 'Prohibido');
           } else if (res.status === 401) {
@@ -839,24 +892,28 @@
     }, { once: true });
   }
 
-  // Carga de datos
-  async function loadData() {
+  // Carga inicial del canal: el historial de publicaciones se dibuja una sola vez
+  async function loadFeed() {
     try {
-      // 1. Cargar Glitches Críticos (Columna 1)
-      const resGlitches = await fetch('/api/glitches');
-      if (resGlitches.ok) {
-        const list = await resGlitches.json();
-        if (Array.isArray(list)) state.glitches = list;
+      const res = await fetch('/api/feed');
+      if (res.ok) {
+        const posts = await res.json();
+        if (Array.isArray(posts)) {
+          state.glitches = posts.filter(p => p.feed_kind === 'glitch');
+          state.commercialDeals = posts.filter(p => p.feed_kind !== 'glitch');
+          state.lastFeedId = posts.reduce((max, p) => Math.max(max, p.feed_id || 0), 0);
+        }
       }
+    } catch {
+      // Servidor local offline
+    }
+    renderBothColumns();
+  }
 
-      // 2. Cargar Ofertas Comerciales (Columna 2)
-      const resDeals = await fetch('/api/deals?min_discount=40&max_discount=65');
-      if (resDeals.ok) {
-        const deals = await resDeals.json();
-        if (Array.isArray(deals)) state.commercialDeals = deals;
-      }
-
-      // 3. Cargar Matriz de Salud de Tiendas (Store Health Matrix)
+  // Estado del sistema (salud de tiendas y feedback): se refresca sin tocar las tarjetas
+  async function refreshStatus() {
+    try {
+      // Matriz de Salud de Tiendas (Store Health Matrix)
       const resHealth = await fetch('/api/store-health');
       if (resHealth.ok) {
         const data = await resHealth.json();
@@ -887,13 +944,11 @@
         }
       }
 
-      // 4. Cargar Estadísticas de Feedback Comunitario (Punto 5)
+      // Estadísticas de Feedback Comunitario (Punto 5)
       await refreshFeedbackStats();
     } catch {
       // Servidor local offline
     }
-
-    renderBothColumns();
   }
 
   async function refreshFeedbackStats() {
@@ -919,10 +974,13 @@
   // Inicialización
   function init() {
     setupEventListeners();
-    loadData();
+    loadFeed();
+    refreshStatus();
     initWebSocket();
-    // ⏱️ Polling de respaldo cada 30 segundos (evita desincronizaciones si falla WebSocket)
-    setInterval(loadData, 30000);
+    // ⏱️ Respaldo cada 30 s por si falla el WebSocket: solo pide publicaciones NUEVAS
+    // (after_id), nunca vuelve a cargar ni a dibujar las ya recibidas.
+    setInterval(fetchNewPosts, 30000);
+    setInterval(refreshStatus, 30000);
   }
 
   if (document.readyState === 'loading') {

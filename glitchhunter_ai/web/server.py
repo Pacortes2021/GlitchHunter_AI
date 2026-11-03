@@ -208,6 +208,8 @@ async def lifespan(app: FastAPI):
     # para no bloquear el arranque del servidor mientras se scrapean las tiendas
     stats = db.get_stats()
     initial_scan = None
+    # Publicar en el canal las ofertas del catálogo actual que aún no se habían publicado
+    pipeline.publish_new_deals()
     if stats.get("total_products", 0) == 0:
         logger.info("📡 Inicializando radar: ejecutando primer escaneo LIVE de catálogo retail chileno...")
         initial_scan = MAIN_EVENT_LOOP.run_in_executor(None, pipeline.run_scan, USE_LIVE_SCRAPING)
@@ -495,6 +497,33 @@ async def get_deals(
         store_id=store_id,
     )
     return [format_commercial_deal_record(d) for d in raw_deals]
+
+
+def format_feed_post(post: Dict[str, Any]) -> Dict[str, Any]:
+    """Publicación del canal con el formato de tarjeta que espera app.js (precios y hora fijos)."""
+    payload = dict(post["payload"])
+    if post["kind"] == "deal":
+        payload["timestamp"] = post["received_at"]
+        card = format_commercial_deal_record(payload)
+    else:
+        card = payload
+    card["feed_id"] = post["id"]
+    card["feed_kind"] = post["kind"]
+    card["created_at"] = post["received_at"]
+    card["received_at"] = post["received_at"]
+    return card
+
+
+@app.get("/api/feed")
+async def get_feed(
+    after_id: int = Query(0, ge=0, description="Solo publicaciones con id mayor a este (para traer únicamente lo nuevo)"),
+    limit: int = Query(300, ge=1, le=1000, description="Cantidad máxima de publicaciones"),
+):
+    """
+    Canal de ofertas: cada oferta se publica una sola vez, con su precio y hora de recepción.
+    Ordenado de la más reciente a la más antigua.
+    """
+    return [format_feed_post(p) for p in db.get_feed(after_id=after_id, limit=limit)]
 
 
 @app.post("/api/scan", dependencies=[Depends(verify_admin_key)])
