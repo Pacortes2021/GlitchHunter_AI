@@ -31,6 +31,9 @@ from glitchhunter_ai.config import (
     API_AUTH_KEY,
     AUTO_SCAN_ENABLED,
     CORS_ORIGINS,
+    DIRECT_SCAN_CATEGORIES,
+    DIRECT_SCAN_ENABLED,
+    DIRECT_SCAN_INTERVAL_SECONDS,
     DATA_DIR,
     MIN_DISCOUNT_PERCENTAGE,
     SCAN_INTERVAL_SECONDS,
@@ -171,6 +174,28 @@ async def background_scanner_loop():
             logger.error(f"❌ Error en ciclo de escaneo automático: {exc}")
 
 
+async def direct_scanner_loop():
+    """
+    Escaneo directo frecuente de Falabella y Ripley (modo híbrido): watchlist y categorías
+    prioritarias leídas en tiempo real desde la tienda, entre los ciclos del escaneo completo.
+    """
+    logger.info(
+        f"⚡ Escaneo directo Falabella/Ripley activo (cada {DIRECT_SCAN_INTERVAL_SECONDS}s, "
+        f"categorías: {', '.join(DIRECT_SCAN_CATEGORIES) or 'solo watchlist'})."
+    )
+    while True:
+        try:
+            await asyncio.sleep(DIRECT_SCAN_INTERVAL_SECONDS)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, lambda: pipeline.run_direct_scan(categories=DIRECT_SCAN_CATEGORIES)
+            )
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.error(f"❌ Error en escaneo directo: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Ciclo de vida del servidor: inicializa BD, corre escaneo inicial y activa bucle de fondo."""
@@ -189,6 +214,11 @@ async def lifespan(app: FastAPI):
 
     # Iniciar la tarea de escaneo periódico en segundo plano
     scanner_task = asyncio.create_task(background_scanner_loop())
+    direct_task = (
+        asyncio.create_task(direct_scanner_loop())
+        if USE_LIVE_SCRAPING and AUTO_SCAN_ENABLED and DIRECT_SCAN_ENABLED
+        else None
+    )
 
     # Receptor de votos 👍/👎 de Telegram (solo con un bot real, fuera del modo simulación)
     feedback_poller = None
@@ -201,7 +231,9 @@ async def lifespan(app: FastAPI):
     if feedback_poller:
         feedback_poller.stop()
 
-    # Cancelar tarea al apagar el servidor
+    # Cancelar tareas al apagar el servidor
+    if direct_task:
+        direct_task.cancel()
     scanner_task.cancel()
     try:
         await scanner_task

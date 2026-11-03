@@ -122,6 +122,18 @@ GlitchHunter AI viene integrado con [ntfy](https://ntfy.sh), una app open source
 | **URLs** | Links 100% reales, vigentes y comprables | Enlaces de referencia creados para tests unitarios |
 | **Uso Ideal** | Producción, monitoreo continuo, cacería de ofertas | Pruebas de CI/CD, calibración de IA sin conexión |
 
+### ⚡ Modo Híbrido: Agregadores + Lectura Directa
+
+Falabella, Ripley, Paris y Líder se cubren a través de agregadores (SoloTodo / Knasta), cuyos precios llegan con **~40 minutos de retraso**. Para no perder errores de precio que duran minutos, Falabella y Ripley también se leen **directamente desde la tienda**:
+
+| Función | Variable | Qué hace |
+|---|---|---|
+| Confirmación en tiempo real | `DIRECT_CONFIRM_ENABLED=true` | Antes de alertar un candidato del agregador, relee el producto en la tienda. Si el precio ya fue corregido o no hay stock, no alerta. |
+| Escaneo directo prioritario | `DIRECT_SCAN_ENABLED=true`, `DIRECT_SCAN_INTERVAL_SECONDS=180` | Busca tu watchlist en Falabella y Ripley cada 3 minutos con precios en vivo. |
+| Categorías directas (opcional) | `DIRECT_SCAN_CATEGORIES=notebooks,smartphones` | Agrega categorías al escaneo directo. Cada página pesa ~1-2,5 MB: usa pocas. |
+
+Si una tienda responde 403/429, muestra una verificación anti-bot o deja de entregar datos, la lectura directa de esa tienda **se pausa automáticamente** (10 min, 20, 40… hasta 2 h) en vez de insistir; mientras tanto se usa el dato del agregador. Paris y Líder siguen solo con agregadores (Paris no publica precio normal en su página y Líder exige verificación anti-bot).
+
 ---
 
 ## 🧪 Ejecución de Pruebas Automatizadas

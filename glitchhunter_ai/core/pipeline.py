@@ -33,6 +33,7 @@ from glitchhunter_ai.core.models import (
 from glitchhunter_ai.core.store_health import global_store_health
 from glitchhunter_ai.notifications import DiscordAlertDispatcher, NtfyAlertDispatcher, TelegramAlertDispatcher
 from glitchhunter_ai.scrapers import get_all_scrapers
+from glitchhunter_ai.scrapers.direct_reader import DIRECT_STORES, default_direct_reader
 
 logger = logging.getLogger("GlitchHunter.Pipeline")
 console = Console()
@@ -50,8 +51,14 @@ class GlitchHuntingPipeline:
         ntfy_dispatcher: Optional[NtfyAlertDispatcher] = None,
         discord_dispatcher: Optional[DiscordAlertDispatcher] = None,
         on_glitch_callback: Optional[Callable[[GlitchAlert], Any]] = None,
+        direct_reader: Optional[Any] = None,
+        confirm_with_store: Optional[bool] = None,
     ):
+        from glitchhunter_ai.config import DIRECT_CONFIRM_ENABLED
+
         self.db = db or PriceDatabase()
+        self.direct_reader = direct_reader or default_direct_reader
+        self.confirm_with_store = DIRECT_CONFIRM_ENABLED if confirm_with_store is None else confirm_with_store
         self.math_detector = MathAnomalyDetector()
         self.inflation_verifier = InflationVerifier()
         self.semantic_filter = SemanticGlitchFilter()
@@ -137,6 +144,40 @@ class GlitchHuntingPipeline:
                 f"clasificado como accesorio ({semantic_eval.detected_item_type}) a precio comercial."
             )
             return None
+
+        # ⏱️ Confirmación en tiempo real: los precios del agregador llegan con ~40 min de retraso.
+        # Antes de alertar se relee el producto directamente en la tienda (Falabella / Ripley).
+        if (
+            self.confirm_with_store
+            and product.store_id in DIRECT_STORES
+            and product.source in ("solotodo", "knasta")
+        ):
+            fresh = self.direct_reader.fetch_product(product.store_id, str(product.url))
+            if fresh is None:
+                logger.debug(f"[Confirmación] {product.store_id} no respondió; se usa el precio del agregador para {product.id}.")
+            else:
+                if not fresh.in_stock:
+                    logger.info(f"🔁 [Confirmación] {product.title} ya no tiene stock en {product.store_name}. Alerta omitida.")
+                    return None
+                product = product.model_copy(update={
+                    "current_price": fresh.current_price,
+                    "normal_price": fresh.normal_price,
+                    "card_price": fresh.card_price,
+                    "source": "direct",
+                    "timestamp": fresh.timestamp,
+                })
+                self.db.upsert_product(product)
+                math_eval = self.math_detector.evaluate(product, baseline_price=baseline_price)
+                if not (
+                    math_eval.get("is_glitch_candidate")
+                    or math_eval.get("is_math_glitch")
+                    or math_eval.get("is_suspicious")
+                ):
+                    logger.info(
+                        f"🔁 [Confirmación] {product.title}: la tienda ya muestra ${product.best_price:,.0f} "
+                        f"(el agregador tenía un precio antiguo). Alerta omitida."
+                    )
+                    return None
 
         # 🌐 Consulta de Referencia de Mercado Inter-Tiendas
         # Se consulta solo tras los filtros locales (inflación propia y semántico) para no gastar
@@ -454,6 +495,55 @@ class GlitchHuntingPipeline:
             self._scan_lock.release()
 
     run_scan_cycle = run_scan
+
+    def run_direct_scan(
+        self,
+        keywords: Optional[List[str]] = None,
+        categories: Optional[List[str]] = None,
+        send_notifications: bool = True,
+    ) -> List[GlitchAlert]:
+        """
+        Escaneo directo y frecuente de Falabella y Ripley (modo híbrido): términos de la watchlist
+        y categorías prioritarias, con precios en tiempo real. Comparte el cerrojo con run_scan,
+        por lo que se omite si hay un escaneo completo en curso.
+        """
+        if not self._scan_lock.acquire(blocking=False):
+            logger.debug("Escaneo directo omitido: hay un escaneo en curso.")
+            return []
+
+        self.is_scanning = True
+        detected: List[GlitchAlert] = []
+        try:
+            if keywords is None:
+                keywords = self.db.get_watchlist_keywords()
+            categories = categories or []
+            if not keywords and not categories:
+                return []
+
+            seen: set = set()
+            for store_id in DIRECT_STORES:
+                batches: List[List[ProductItem]] = []
+                for kw in keywords:
+                    batches.append(self.direct_reader.search(store_id, kw))
+                for cat in categories:
+                    batches.append(self.direct_reader.fetch_category(store_id, cat))
+                for products in batches:
+                    for prod in products:
+                        if prod.id in seen:
+                            continue
+                        seen.add(prod.id)
+                        alert = self.process_product(prod, send_notifications=send_notifications)
+                        if alert:
+                            detected.append(alert)
+
+            logger.info(
+                "⚡ [Escaneo Directo] %d producto(s) revisados en tiempo real en Falabella/Ripley, %d alerta(s) nueva(s).",
+                len(seen), len(detected),
+            )
+            return detected
+        finally:
+            self.is_scanning = False
+            self._scan_lock.release()
 
     def run_watchlist_scan(
         self,

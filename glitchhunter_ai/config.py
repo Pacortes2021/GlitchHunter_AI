@@ -59,10 +59,19 @@ DISCORD_ENABLED = os.getenv("DISCORD_ENABLED", "true").lower() in ("true", "1", 
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 # Intervalo del Escaneo Automático en Segundo Plano (en segundos)
-# 60s = cada 1 minuto (solicitado para monitoreo rápido y oportuno)
-SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "60"))
+# 300s = cada 5 minutos: los agregadores actualizan cada ~40 min, escanear más seguido no agrega datos
+SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
 AUTO_SCAN_ENABLED = os.getenv("AUTO_SCAN_ENABLED", "true").lower() in ("true", "1", "yes")
 USE_LIVE_SCRAPING = os.getenv("USE_LIVE_SCRAPING", "true").lower() in ("true", "1", "yes")
+
+# Modo híbrido: lectura directa de Falabella y Ripley (precios en tiempo real, sin el retraso del agregador)
+# DIRECT_CONFIRM_ENABLED: confirma contra la tienda cada candidato detectado vía agregador antes de alertar.
+# DIRECT_SCAN_ENABLED: escaneo directo frecuente de la watchlist y de DIRECT_SCAN_CATEGORIES.
+# Cada página de la tienda pesa ~1-2,5 MB: mantén pocas categorías y un intervalo razonable.
+DIRECT_CONFIRM_ENABLED = os.getenv("DIRECT_CONFIRM_ENABLED", "true").lower() in ("true", "1", "yes")
+DIRECT_SCAN_ENABLED = os.getenv("DIRECT_SCAN_ENABLED", "true").lower() in ("true", "1", "yes")
+DIRECT_SCAN_INTERVAL_SECONDS = int(os.getenv("DIRECT_SCAN_INTERVAL_SECONDS", "180"))
+DIRECT_SCAN_CATEGORIES = [c.strip() for c in os.getenv("DIRECT_SCAN_CATEGORIES", "").split(",") if c.strip()]
 
 # Tiendas soportadas en Chile
 STORES = [
