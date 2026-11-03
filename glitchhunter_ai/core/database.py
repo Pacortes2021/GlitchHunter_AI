@@ -8,6 +8,7 @@ previa (CyberDay bait), y almacenamiento de alertas de glitches.
 from __future__ import annotations
 
 import contextlib
+import json
 from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
@@ -295,6 +296,22 @@ class PriceDatabase:
                 );
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_mkt_ref_expires ON market_reference_cache(expires_at);")
+
+            # 6b. Canal de ofertas: cada oferta se publica UNA vez, con el precio y la hora de recepción.
+            # Solo se vuelve a publicar un producto si baja aún más de precio (oferta nueva).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS offer_feed (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,
+                    product_id TEXT NOT NULL,
+                    store_id TEXT NOT NULL,
+                    best_price REAL NOT NULL,
+                    discount_pct REAL NOT NULL,
+                    received_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                );
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_product ON offer_feed(product_id);")
 
             # 7. Tabla de Feedback del Usuario (👍 Buena Oferta / 👎 Falso Positivo)
             cursor.execute("""
@@ -1126,6 +1143,56 @@ class PriceDatabase:
             "active_stores": active_stores,
             "total_history_records": total_history_records,
         }
+
+    def publish_feed_offer(
+        self,
+        kind: str,
+        product_id: str,
+        store_id: str,
+        best_price: float,
+        discount_pct: float,
+        payload: Dict[str, Any],
+    ) -> Optional[int]:
+        """
+        Publica una oferta en el canal si es nueva: el producto nunca se publicó, o ahora está
+        más barato que en su última publicación. Retorna el id de la publicación, o None si ya
+        estaba publicada a este precio (o a uno menor) y no corresponde repetirla.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT MIN(best_price) AS min_price FROM offer_feed WHERE product_id = ?;",
+                (product_id,),
+            )
+            row = cursor.fetchone()
+            if row and row["min_price"] is not None and best_price >= float(row["min_price"]) - 0.5:
+                return None
+            received_at = datetime.now(timezone.utc).isoformat()
+            cursor.execute("""
+                INSERT INTO offer_feed (kind, product_id, store_id, best_price, discount_pct, received_at, payload)
+                VALUES (?, ?, ?, ?, ?, ?, ?);
+            """, (kind, product_id, store_id, float(best_price), float(discount_pct), received_at,
+                  json.dumps(payload, ensure_ascii=False, default=str)))
+            conn.commit()
+            return int(cursor.lastrowid)
+
+    def get_feed(self, after_id: int = 0, limit: int = 300) -> List[Dict[str, Any]]:
+        """Publicaciones del canal, de la más reciente a la más antigua; con after_id, solo las posteriores."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, kind, product_id, store_id, best_price, discount_pct, received_at, payload
+                FROM offer_feed
+                WHERE id > ?
+                ORDER BY id DESC
+                LIMIT ?;
+            """, (int(after_id), int(limit)))
+            posts = []
+            for r in cursor.fetchall():
+                post = dict(r)
+                post["payload"] = json.loads(post["payload"])
+                posts.append(post)
+            return posts
 
     def get_commercial_deals(
         self,
