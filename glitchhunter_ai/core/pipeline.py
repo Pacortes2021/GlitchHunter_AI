@@ -444,6 +444,7 @@ class GlitchHuntingPipeline:
         send_notifications: Optional[bool] = None,
         rotate_categories: bool = True,
         scan_watchlist: bool = True,
+        wait_for_lock_seconds: float = 0.0,
     ) -> List[GlitchAlert]:
         """
         Ejecuta un ciclo de escaneo completo a través de todos los scrapers seleccionados.
@@ -451,7 +452,14 @@ class GlitchHuntingPipeline:
         y escaneo proactivo de la Watchlist del usuario.
         Protegido con un cerrojo atómico para impedir carreras por escaneos concurrentes (Hallazgo F).
         """
-        if not self._scan_lock.acquire(blocking=False):
+        # El escaneo automático espera a que termine un escaneo directo en curso (en vez de perder el ciclo);
+        # un escaneo manual vía API no espera y responde "ocupado".
+        acquired = (
+            self._scan_lock.acquire(timeout=wait_for_lock_seconds)
+            if wait_for_lock_seconds > 0
+            else self._scan_lock.acquire(blocking=False)
+        )
+        if not acquired:
             logger.warning("⚠️ Intento de escaneo concurrente rechazado: ya existe un ciclo de escaneo en ejecución.")
             return []
 
