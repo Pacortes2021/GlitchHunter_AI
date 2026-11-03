@@ -20,6 +20,7 @@
     lider: { name: 'Líder', color: '#2563eb' },
     mercadolibre: { name: 'Mercado Libre', color: '#ca8a04' },
     pcfactory: { name: 'PC Factory', color: '#dc2626' },
+    sodimac: { name: 'Sodimac', color: '#f97316' },
     solotodo: { name: 'SoloTodo', color: '#0d9488' }
   };
   const DEFAULT_STORE_COLOR = '#64748b';
@@ -35,8 +36,10 @@
     category: '',       // categoría normalizada ('' = todas)
     search: '',
     watchlistOnly: false,
+    hideExpired: false, // ocultar ofertas que subieron de precio, se agotaron o no se confirman
     sortBy: 'recent'    // 'recent' | 'discount' | 'savings'
   });
+  const STATUS_POLL_MS = 60000;
 
   // ---------------------------------------------------------------------------
   // Almacenamiento local seguro (puede no existir o lanzar en modo privado)
@@ -71,6 +74,7 @@
       if (Array.isArray(saved.stores)) f.stores = saved.stores.filter(s => typeof s === 'string').slice(0, 20);
       if (typeof saved.category === 'string') f.category = saved.category.slice(0, 60);
       if (typeof saved.watchlistOnly === 'boolean') f.watchlistOnly = saved.watchlistOnly;
+      if (typeof saved.hideExpired === 'boolean') f.hideExpired = saved.hideExpired;
       if (['recent', 'discount', 'savings'].includes(saved.sortBy)) f.sortBy = saved.sortBy;
     }
     return f; // la búsqueda no se recuerda a propósito
@@ -95,6 +99,7 @@
     wsConnected: false,
     unseenNew: 0,
     votes: storage.getJSON('glitchhunter_votes', {}) || {},
+    statusSince: null,    // marca de tiempo del servidor para pedir solo cambios de vigencia nuevos
     watchlist: []
   };
 
@@ -405,6 +410,8 @@
         </div>` : ''}
       </div>`;
 
+    renderStatus(el, post);
+
     // Imagen con fallback sin handlers inline
     const img = el.querySelector('.post-media img');
     if (img) {
@@ -419,6 +426,63 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Vigencia: una oferta publicada puede expirar (subió, se agotó) o quedar sin confirmar.
+  // Se marca en la misma tarjeta, sin volver a dibujarla.
+  // ---------------------------------------------------------------------------
+  function statusText(post) {
+    if (post.status !== 'expired') return '';
+    if (post.expired_reason === 'price_up') {
+      return toNum(post.price_now) > 0 ? `Expirada · ahora cuesta ${formatCLP(post.price_now)}` : 'Expirada · subió de precio';
+    }
+    if (post.expired_reason === 'out_of_stock') return 'Agotada';
+    if (post.expired_reason === 'not_seen') return 'Sin confirmar · no la vemos hace más de 24 h';
+    return 'Ya no disponible';
+  }
+
+  function renderStatus(el, post) {
+    const expired = post.status === 'expired';
+    el.classList.toggle('is-expired', expired);
+    let note = el.querySelector('.status-note');
+    if (!expired) {
+      if (note) note.remove();
+      return;
+    }
+    if (!note) {
+      note = document.createElement('div');
+      note.className = 'status-note';
+      note.setAttribute('role', 'status');
+      const body = el.querySelector('.post-body');
+      if (body) body.appendChild(note);
+    }
+    note.textContent = statusText(post); // texto plano: sin HTML del servidor
+  }
+
+  async function fetchStatusChanges() {
+    if (!state.loaded) return;
+    try {
+      const url = state.statusSince
+        ? `/api/feed/status?since=${encodeURIComponent(state.statusSince)}`
+        : '/api/feed/status';
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && typeof data.now === 'string') state.statusSince = data.now;
+      const changes = Array.isArray(data && data.changes) ? data.changes : [];
+      let touched = 0;
+      changes.forEach(c => {
+        const entry = state.posts.get(Number(c.feed_id));
+        if (!entry) return;
+        entry.post.status = c.status;
+        entry.post.expired_reason = c.expired_reason;
+        entry.post.price_now = c.price_now;
+        renderStatus(entry.el, entry.post);
+        touched++;
+      });
+      if (touched) applyFilters();
+    } catch { /* sin conexión: se reintenta en el próximo ciclo */ }
+  }
+
+  // ---------------------------------------------------------------------------
   // Filtros (solo muestran/ocultan nodos existentes)
   // ---------------------------------------------------------------------------
   function matches(entry) {
@@ -430,6 +494,7 @@
     if (f.stores.length && !f.stores.includes(d.storeId)) return false;
     if (f.category && d.category !== f.category) return false;
     if (f.watchlistOnly && !entry.post.is_watchlist_match) return false;
+    if (f.hideExpired && entry.post.status === 'expired') return false;
     if (f.search.trim()) {
       const terms = normalizeText(f.search).split(/\s+/).filter(Boolean);
       if (!terms.every(t => d.searchText.includes(t))) return false;
@@ -445,6 +510,7 @@
     if (f.stores.length) n++;
     if (f.category) n++;
     if (f.watchlistOnly) n++;
+    if (f.hideExpired) n++;
     return n;
   }
 
@@ -565,6 +631,8 @@
     document.querySelectorAll('#category-chips .chip').forEach(b => b.setAttribute('aria-pressed', String(f.category === b.dataset.category)));
     const wl = $('filter-watchlist');
     if (wl) wl.checked = f.watchlistOnly;
+    const hx = $('filter-hide-expired');
+    if (hx) hx.checked = f.hideExpired;
     const sort = $('sort-select');
     if (sort && sort.value !== f.sortBy) sort.value = f.sortBy;
     const n = activeFilterCount();
@@ -790,6 +858,8 @@
           const data = JSON.parse(event.data);
           if (data && (data.type === 'feed_updated' || data.type === 'new_glitch' || (data.alert_id && data.product))) {
             fetchNewPosts();
+          } else if (data && data.type === 'feed_status') {
+            fetchStatusChanges();
           }
         } catch { /* pings u otros mensajes */ }
       };
@@ -1092,6 +1162,10 @@
       state.filters.watchlistOnly = e.target.checked;
       applyFilters();
     });
+    $('filter-hide-expired').addEventListener('change', (e) => {
+      state.filters.hideExpired = e.target.checked;
+      applyFilters();
+    });
     $('btn-clear-filters').addEventListener('click', clearFilters);
     $('btn-empty-clear').addEventListener('click', clearFilters);
 
@@ -1286,11 +1360,13 @@
     updateThemeButton();
     syncFilterControls();
     setupEvents();
-    loadFeed().then(() => initWebSocket());
+    // La vigencia inicial ya viene en /api/feed; esta primera consulta solo fija el punto de partida
+    loadFeed().then(() => { fetchStatusChanges(); initWebSocket(); });
     loadWatchlist();
     // Respaldo cada 30 s por si falla el WebSocket: solo pide publicaciones NUEVAS (after_id).
     setInterval(() => fetchNewPosts(), POLL_MS);
     setInterval(refreshRelativeTimes, 60000);
+    setInterval(fetchStatusChanges, STATUS_POLL_MS);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

@@ -321,8 +321,19 @@ class PriceDatabase:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_product ON offer_feed(product_id);")
             # Migración: URL normalizada para deduplicar el mismo producto con IDs distintos
             cursor.execute("PRAGMA table_info(offer_feed);")
-            if "url_key" not in {r[1] for r in cursor.fetchall()}:
+            feed_cols = {r[1] for r in cursor.fetchall()}
+            if "url_key" not in feed_cols:
                 cursor.execute("ALTER TABLE offer_feed ADD COLUMN url_key TEXT;")
+            # Migración: vigencia de cada publicación (se revisa tras cada escaneo)
+            for col, ddl in (
+                ("status", "TEXT NOT NULL DEFAULT 'active'"),
+                ("expired_reason", "TEXT"),
+                ("status_changed_at", "TEXT"),
+                ("price_now", "REAL"),
+            ):
+                if col not in feed_cols:
+                    cursor.execute(f"ALTER TABLE offer_feed ADD COLUMN {col} {ddl};")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_status_changed ON offer_feed(status_changed_at);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_url ON offer_feed(url_key);")
 
             # 7. Tabla de Feedback del Usuario (👍 Buena Oferta / 👎 Falso Positivo)
@@ -1221,7 +1232,8 @@ class PriceDatabase:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, kind, product_id, store_id, best_price, discount_pct, received_at, payload
+                SELECT id, kind, product_id, store_id, best_price, discount_pct, received_at, payload,
+                       status, expired_reason, status_changed_at, price_now
                 FROM offer_feed
                 WHERE id > ?
                 ORDER BY id DESC
@@ -1233,6 +1245,72 @@ class PriceDatabase:
                 post["payload"] = json.loads(post["payload"])
                 posts.append(post)
             return posts
+
+    def refresh_feed_statuses(self, not_seen_hours: float = 24.0) -> int:
+        """
+        Revisa la vigencia de las publicaciones del canal contra el último precio visto de cada producto:
+        - 'price_up': ahora cuesta más que en la publicación (al menos 2% y $1.000);
+        - 'out_of_stock': el último escaneo lo vio sin stock;
+        - 'not_seen': ningún escaneo lo ha visto en `not_seen_hours` (puede seguir o no: sin confirmar).
+        Si vuelve a estar al precio publicado (o menos) y con stock, la publicación vuelve a 'active'.
+        Retorna cuántas publicaciones cambiaron.
+        """
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        stale_cutoff = (now - timedelta(hours=not_seen_hours)).strftime("%Y-%m-%d %H:%M:%S")
+        changed = 0
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT f.id, f.best_price, f.status, f.expired_reason, f.price_now,
+                       p.current_price, p.card_price, p.in_stock, p.last_updated
+                FROM offer_feed f
+                JOIN products p ON p.id = f.product_id;
+            """)
+            updates = []
+            for r in cursor.fetchall():
+                current = float(r["current_price"] or 0.0)
+                card = r["card_price"]
+                best_now = float(card) if card and 0 < float(card) < current else current
+                posted = float(r["best_price"])
+                if r["in_stock"] is not None and int(r["in_stock"]) == 0:
+                    status, reason = "expired", "out_of_stock"
+                elif best_now > posted * 1.02 and best_now - posted >= 1000:
+                    status, reason = "expired", "price_up"
+                elif str(r["last_updated"] or "") < stale_cutoff:
+                    status, reason = "expired", "not_seen"
+                else:
+                    status, reason = "active", None
+                price_changed = r["price_now"] is None or abs(float(r["price_now"]) - best_now) >= 1
+                if status != r["status"] or reason != r["expired_reason"] or (status == "expired" and price_changed):
+                    updates.append((status, reason, now_iso, best_now, r["id"]))
+                elif price_changed:
+                    # Precio actual al día, sin marcar cambio de estado (no hay nada que mostrar distinto)
+                    cursor.execute("UPDATE offer_feed SET price_now = ? WHERE id = ?;", (best_now, r["id"]))
+            if updates:
+                cursor.executemany("""
+                    UPDATE offer_feed SET status = ?, expired_reason = ?, status_changed_at = ?, price_now = ?
+                    WHERE id = ?;
+                """, updates)
+                changed = len(updates)
+            conn.commit()
+        return changed
+
+    def get_feed_status_changes(self, since: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Publicaciones cuyo estado cambió después de `since` (ISO). Sin `since`, las expiradas."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if since:
+                cursor.execute("""
+                    SELECT id, status, expired_reason, status_changed_at, price_now FROM offer_feed
+                    WHERE status_changed_at IS NOT NULL AND status_changed_at > ? ORDER BY status_changed_at;
+                """, (since,))
+            else:
+                cursor.execute("""
+                    SELECT id, status, expired_reason, status_changed_at, price_now FROM offer_feed
+                    WHERE status = 'expired';
+                """)
+            return [dict(r) for r in cursor.fetchall()]
 
     def get_feedback_counts(self, deal_ids: List[str]) -> Dict[str, Dict[str, int]]:
         """Votos 👍/👎 por id de oferta (alert_id o product_id)."""

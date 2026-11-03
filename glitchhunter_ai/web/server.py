@@ -561,6 +561,10 @@ def format_feed_post(post: Dict[str, Any]) -> Dict[str, Any]:
     product["store_name"] = STORE_NAMES.get(product.get("store_id") or post["store_id"], product.get("store_name"))
     card["feed_id"] = post["id"]
     card["feed_kind"] = post["kind"]
+    card["status"] = post.get("status") or "active"
+    card["expired_reason"] = post.get("expired_reason")
+    card["status_changed_at"] = post.get("status_changed_at")
+    card["price_now"] = post.get("price_now")
     card["created_at"] = post["received_at"]
     card["received_at"] = post["received_at"]
     return card
@@ -582,6 +586,29 @@ async def get_feed(
         c["upvotes"] = v.get("up", 0)
         c["downvotes"] = v.get("down", 0)
     return cards
+
+
+@app.get("/api/feed/status")
+async def get_feed_status(
+    since: Optional[str] = Query(None, max_length=40, description="ISO: solo cambios de vigencia posteriores"),
+):
+    """
+    Cambios de vigencia de las publicaciones (expirada / vigente otra vez), para actualizar las
+    tarjetas ya mostradas sin volver a descargar ni dibujar el canal. Usa `now` como próximo `since`.
+    """
+    return {
+        "now": datetime.now(timezone.utc).isoformat(),
+        "changes": [
+            {
+                "feed_id": c["id"],
+                "status": c["status"],
+                "expired_reason": c["expired_reason"],
+                "status_changed_at": c["status_changed_at"],
+                "price_now": c["price_now"],
+            }
+            for c in db.get_feed_status_changes(since)
+        ],
+    }
 
 
 @app.post("/api/scan", dependencies=[Depends(verify_admin_key)])

@@ -164,3 +164,72 @@ def test_feed_uses_one_name_per_store(tmp_path, monkeypatch):
                                        "url": f"https://www.lider.cl/{pid}", "current_price": 10000, "normal_price": 20000})
     names = {p["product"]["store_name"] for p in TestClient(server.app).get("/api/feed").json()}
     assert names == {"Líder"}
+
+
+# =====================================================================
+# Vigencia de las publicaciones (ofertas expiradas)
+# =====================================================================
+def _published(tmp_path, price=299990.0):
+    db, pipeline = _pipeline(tmp_path)
+    db.upsert_product(_deal(price))
+    pipeline.publish_new_deals()
+    return db, pipeline, db.get_feed()[0]["id"]
+
+
+def _status(db, post_id):
+    with db.get_connection() as conn:
+        return dict(conn.execute("SELECT status, expired_reason, price_now FROM offer_feed WHERE id = ?", (post_id,)).fetchone())
+
+
+def test_offer_expires_when_price_goes_up_and_reactivates_when_it_returns(tmp_path):
+    db, pipeline, pid = _published(tmp_path)
+    assert pipeline.refresh_feed_statuses() == 0
+    assert _status(db, pid)["status"] == "active"
+
+    db.upsert_product(_deal(449990.0))              # la tienda corrigió el precio
+    assert pipeline.refresh_feed_statuses() == 1
+    st = _status(db, pid)
+    assert (st["status"], st["expired_reason"], st["price_now"]) == ("expired", "price_up", 449990.0)
+
+    db.upsert_product(_deal(299990.0))              # vuelve al precio publicado
+    pipeline.refresh_feed_statuses()
+    assert _status(db, pid)["status"] == "active"
+
+
+def test_offer_expires_when_out_of_stock(tmp_path):
+    db, pipeline, pid = _published(tmp_path)
+    db.upsert_product(_deal(299990.0).model_copy(update={"in_stock": False}))
+    pipeline.refresh_feed_statuses()
+    assert _status(db, pid)["expired_reason"] == "out_of_stock"
+
+
+def test_offer_not_seen_for_a_day_is_unconfirmed(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    db, pipeline, pid = _published(tmp_path)
+    old = (datetime.now(timezone.utc) - timedelta(hours=30)).strftime("%Y-%m-%d %H:%M:%S")
+    with db.get_connection() as conn:
+        conn.execute("UPDATE products SET last_updated = ?", (old,))
+        conn.commit()
+    pipeline.refresh_feed_statuses()
+    assert _status(db, pid)["expired_reason"] == "not_seen"
+
+
+def test_feed_status_api_returns_only_changes_since(tmp_path, monkeypatch):
+    from glitchhunter_ai.web import server
+
+    db, pipeline, pid = _published(tmp_path)
+    monkeypatch.setattr(server, "db", db)
+    client = TestClient(server.app)
+
+    first = client.get("/api/feed/status").json()
+    assert first["changes"] == []
+    since = first["now"]
+
+    db.upsert_product(_deal(449990.0))
+    pipeline.refresh_feed_statuses()
+    changes = client.get("/api/feed/status", params={"since": since}).json()["changes"]
+    assert [(c["feed_id"], c["status"], c["expired_reason"]) for c in changes] == [(pid, "expired", "price_up")]
+
+    post = client.get("/api/feed").json()[0]
+    assert post["status"] == "expired" and post["price_now"] == 449990.0
