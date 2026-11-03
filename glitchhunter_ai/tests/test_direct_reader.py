@@ -219,7 +219,7 @@ def test_confirmation_skips_out_of_stock_and_non_aggregator_items(tmp_path):
     reader.fetch_product.reset_mock()
     pipeline.process_product(_aggregator_glitch(id="falabella-999", source="direct"), send_notifications=False)
     pipeline.process_product(
-        _aggregator_glitch(id="pcfactory-1", store_id="pcfactory", store_name="PC Factory", url="https://www.pcfactory.cl/producto/1"),
+        _aggregator_glitch(id="paris-1", store_id="paris", store_name="Paris", url="https://www.paris.cl/producto-1.html"),
         send_notifications=False,
     )
     reader.fetch_product.assert_not_called()
@@ -238,7 +238,7 @@ def test_run_direct_scan_searches_watchlist_in_all_direct_stores(tmp_path):
     alerts = pipeline.run_direct_scan(keywords=["galaxy s25"], send_notifications=False)
     assert len(alerts) == 1
     searched = sorted(c.args[0] for c in reader.search.call_args_list)
-    assert searched == ["falabella", "ripley", "sodimac"]
+    assert searched == ["falabella", "pcfactory", "ripley", "sodimac"]
 
     # Sin watchlist ni categorías no consulta nada
     reader.search.reset_mock()
@@ -310,4 +310,60 @@ def test_direct_scan_includes_sodimac(tmp_path):
     reader.fetch_category.return_value = []
     pipeline = _pipeline(tmp_path, reader)
     pipeline.run_direct_scan(keywords=["refrigerador"], send_notifications=False)
-    assert sorted(c.args[0] for c in reader.search.call_args_list) == ["falabella", "ripley", "sodimac"]
+    assert sorted(c.args[0] for c in reader.search.call_args_list) == ["falabella", "pcfactory", "ripley", "sodimac"]
+
+
+# =====================================================================
+# 7. PC Factory (API JSON directa)
+# =====================================================================
+def _pcf_response(page_total=63):
+    import json as _json
+    data = _json.loads(_fixture("pcfactory_search.json"))
+    data["content"]["pageable"]["totalPages"] = page_total
+    r = MagicMock(status_code=200)
+    r.json.return_value = data
+    return r
+
+
+def test_pcfactory_api_items_parsed_with_slug_url_and_no_outlet():
+    client = MagicMock()
+    client.get.return_value = _pcf_response()
+    reader = DirectStoreReader(client=client, backoff=StoreBackoff(clock=_FakeClock()))
+    items = reader.search("pcfactory", "moto g15")
+    assert len(items) == 3                                    # el producto outlet se descarta
+    first = items[0]
+    assert first.id == "pcfactory-57363"
+    assert first.url == "https://www.pcfactory.cl/producto/57363-motorola-celular-moto-g15-128gb-4gb-gris-liberado"
+    assert first.source == "direct" and first.current_price > 0
+    params = client.get.call_args.kwargs["params"]
+    assert params["search"] == "moto g15"
+
+
+def test_pcfactory_catalog_slice_rotates_through_all_pages():
+    client = MagicMock()
+    client.get.return_value = _pcf_response(page_total=5)
+    reader = DirectStoreReader(client=client, backoff=StoreBackoff(clock=_FakeClock()))
+
+    reader.fetch_catalog_slice("pcfactory", pages=3)
+    assert [c.kwargs["params"]["page"] for c in client.get.call_args_list] == [0, 1, 2]
+    client.get.reset_mock()
+    reader.fetch_catalog_slice("pcfactory", pages=3)
+    # Páginas 3 y 4, y vuelve al inicio en el siguiente ciclo
+    assert [c.kwargs["params"]["page"] for c in client.get.call_args_list] == [3, 4]
+    client.get.reset_mock()
+    reader.fetch_catalog_slice("pcfactory", pages=1)
+    assert client.get.call_args.kwargs["params"]["page"] == 0
+    assert reader.fetch_catalog_slice("falabella") == []
+
+
+def test_pcfactory_fetch_product_and_backoff():
+    client = MagicMock()
+    client.get.return_value = _pcf_response()
+    clock = _FakeClock()
+    reader = DirectStoreReader(client=client, backoff=StoreBackoff(clock=clock))
+    item = reader.fetch_product("pcfactory", "https://www.pcfactory.cl/producto/57363-motorola-celular-moto-g15")
+    assert item is not None and item.id == "pcfactory-57363"
+
+    client.get.return_value = MagicMock(status_code=429)
+    assert reader.search("pcfactory", "rtx") == []
+    assert reader.backoff.is_paused("pcfactory")

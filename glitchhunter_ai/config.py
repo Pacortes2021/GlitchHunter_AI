@@ -77,6 +77,8 @@ DIRECT_CONFIRM_ENABLED = os.getenv("DIRECT_CONFIRM_ENABLED", "true").lower() in 
 DIRECT_SCAN_ENABLED = os.getenv("DIRECT_SCAN_ENABLED", "true").lower() in ("true", "1", "yes")
 DIRECT_SCAN_INTERVAL_SECONDS = int(os.getenv("DIRECT_SCAN_INTERVAL_SECONDS", "180"))
 DIRECT_SCAN_CATEGORIES = [c.strip() for c in os.getenv("DIRECT_SCAN_CATEGORIES", "").split(",") if c.strip()]
+# PC Factory: páginas de 48 productos de su catálogo completo leídas por ciclo (~35 KB c/u, ~63 páginas en total)
+DIRECT_PCFACTORY_PAGES_PER_CYCLE = int(os.getenv("DIRECT_PCFACTORY_PAGES_PER_CYCLE", "10"))
 
 # Tiendas soportadas en Chile
 STORES = [
