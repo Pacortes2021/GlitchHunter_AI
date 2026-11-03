@@ -179,7 +179,9 @@ def test_non_tech_deals_included_by_default_but_noise_still_blocked(tmp_path):
     db.upsert_product(_product("p-reac", "Notebook HP 15 Reacondicionado", 299990, 699990))
     db.upsert_product(_product("p-funda", "Funda Silicona iPhone 15 Pro", 9990, 29990))
     pipeline.publish_new_deals()
-    assert [p["product_id"] for p in db.get_feed()] == ["p-parka"]
+    feed = db.get_feed()
+    assert [p["product_id"] for p in feed] == ["p-parka"]
+    assert feed[0]["payload"]["category"] == "otros"   # no "tecnologia" por defecto
 
 
 def test_same_product_with_different_ids_is_published_once(tmp_path):

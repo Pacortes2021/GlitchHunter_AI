@@ -572,6 +572,8 @@ class GlitchHuntingPipeline:
                 best = float(card) if card and 0 < float(card) < current else current
                 if not self._is_publishable_deal(row, best):
                     continue
+                # Categoría consistente para los filtros de la página (los scrapers usan rótulos distintos)
+                row = dict(row, category=classify_category(str(row.get("title") or "")))
                 post_id = self.db.publish_feed_offer(
                     kind="deal",
                     product_id=row["product_id"],
