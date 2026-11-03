@@ -33,8 +33,15 @@ class CategoryDefinition:
     key: str
     display_name: str
     search_terms: List[str]
-    solotodo_category_id: Optional[int] = None
+    # IDs de categoría en SoloTodo (https://publicapi.solotodo.com/categories/). Una categoría
+    # del radar puede abarcar varias de SoloTodo (ej: línea blanca = refrigeradores + lavadoras + hornos).
+    solotodo_category_ids: List[int] = field(default_factory=list)
     default_sort: SortStrategy = SortStrategy.DISCOUNT_DESC
+
+    @property
+    def solotodo_category_id(self) -> Optional[int]:
+        """Primer ID de SoloTodo (compatibilidad con código que espera uno solo)."""
+        return self.solotodo_category_ids[0] if self.solotodo_category_ids else None
 
 
 @dataclass
@@ -58,70 +65,70 @@ DEFAULT_CATEGORIES: List[CategoryDefinition] = [
         key="smartphones",
         display_name="Smartphones y Telefonía",
         search_terms=["iphone 15", "samsung galaxy s24", "smartphone xiaomi", "celular motorola"],
-        solotodo_category_id=6,
+        solotodo_category_ids=[6],  # SoloTodo: Celulares
         default_sort=SortStrategy.DISCOUNT_DESC,
     ),
     CategoryDefinition(
         key="notebooks",
         display_name="Laptops y Computación Portátil",
         search_terms=["macbook pro", "notebook gamer", "thinkpad", "laptop asus tuf"],
-        solotodo_category_id=1,
+        solotodo_category_ids=[1],  # SoloTodo: Notebooks
         default_sort=SortStrategy.PRICE_ASC,
     ),
     CategoryDefinition(
         key="televisores",
         display_name="Smart TVs y Pantallas OLED/QLED",
         search_terms=["smart tv oled", "samsung qled 65", "lg c3 55", "televisor 4k"],
-        solotodo_category_id=11,
+        solotodo_category_ids=[11],  # SoloTodo: Televisores
         default_sort=SortStrategy.DISCOUNT_DESC,
     ),
     CategoryDefinition(
         key="consolas",
         display_name="Consolas y Videojuegos",
         search_terms=["playstation 5 slim", "nintendo switch oled", "xbox series x"],
-        solotodo_category_id=33,
+        solotodo_category_ids=[33],  # SoloTodo: Consolas
         default_sort=SortStrategy.PRICE_ASC,
     ),
     CategoryDefinition(
         key="componentes",
         display_name="Componentes PC (GPUs, CPUs, SSD)",
         search_terms=["rtx 4070 super", "rtx 4080", "ryzen 7 7800x3d", "ssd 2tb nvme"],
-        solotodo_category_id=2,
+        solotodo_category_ids=[2, 3],  # SoloTodo: Tarjetas de video, Procesadores
         default_sort=SortStrategy.PRICE_ASC,
     ),
     CategoryDefinition(
         key="monitores",
         display_name="Monitores Gamer y Curvos",
         search_terms=["monitor 165hz", "monitor oled curvo", "monitor 27 144hz"],
-        solotodo_category_id=4,
+        solotodo_category_ids=[4],  # SoloTodo: Monitores
         default_sort=SortStrategy.DISCOUNT_DESC,
     ),
     CategoryDefinition(
         key="audio",
         display_name="Audio y Cancelación de Ruido",
         search_terms=["sony wh-1000xm5", "airpods pro", "soundbar samsung", "parlante jbl"],
-        solotodo_category_id=50,
+        solotodo_category_ids=[50],  # SoloTodo: Audífonos y Headsets
         default_sort=SortStrategy.DISCOUNT_DESC,
     ),
     CategoryDefinition(
         key="smartwatch",
         display_name="Smartwatches y Wearables",
         search_terms=["apple watch ultra", "galaxy watch 6", "reloj garmin"],
-        solotodo_category_id=30,
+        solotodo_category_ids=[48],  # SoloTodo: Wearables
         default_sort=SortStrategy.PRICE_ASC,
     ),
     CategoryDefinition(
         key="linea_blanca",
         display_name="Electro y Línea Blanca Premium",
         search_terms=["refrigerador inverter", "lavadora secadora", "cafetera espresso automatica"],
-        solotodo_category_id=37,
+        solotodo_category_ids=[15, 19, 17],  # SoloTodo: Refrigeradores, Lavadoras y Secadoras, Hornos y Microondas
         default_sort=SortStrategy.DISCOUNT_DESC,
     ),
     CategoryDefinition(
         key="gaming",
         display_name="Periféricos Gaming y Simulación",
         search_terms=["volante logitech g29", "teclado mecanico gamer", "mouse inalambrico gamer"],
-        solotodo_category_id=33,
+        solotodo_category_ids=[40, 41, 54],  # SoloTodo: Mouse, Teclados, Sillas Gamer
         default_sort=SortStrategy.PRICE_ASC,
     ),
 ]

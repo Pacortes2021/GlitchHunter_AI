@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import urllib.parse
@@ -166,6 +168,25 @@ def parse_clp_price(val: Any) -> float:
         return 0.0
 
 
+def knasta_normal_price(k_item: Dict[str, Any], current_price: float) -> float:
+    """
+    Precio de referencia de un producto de Knasta. Knasta calcula su % de descuento contra
+    'prev_price' (precio anterior registrado); 'price_tm' suele coincidir con el precio actual,
+    lo que dejaba ofertas reales (ej: -48%) con 0% de descuento en el radar.
+    """
+    prev = parse_clp_price(k_item.get("prev_price"))
+    tm = parse_clp_price(k_item.get("price_tm"))
+    normal = max(prev, tm)
+    return normal if normal > 0.0 else current_price
+
+
+# Caché breve de páginas de Knasta: la API no filtra por tienda, así que las 4 tiendas
+# que se leen vía agregador comparten las mismas páginas en cada ciclo de escaneo.
+_KNASTA_CACHE_TTL_SECONDS = 120.0
+_knasta_cache: Dict[str, Any] = {}
+_knasta_cache_lock = threading.Lock()
+
+
 def infer_category(title: str) -> str:
     """Infiere la categoría tecnológica en base al título."""
     t = title.lower()
@@ -201,12 +222,14 @@ class LiveRetailFeed:
         limit: int = 50,
         sort_strategy: Optional[str] = None,
         category_id: Optional[int] = None,
+        category_ids: Optional[List[int]] = None,
     ) -> List[ProductItem]:
         """
         Obtiene productos reales con stock y links verificados para una tienda específica.
-        Soporta parametrización de ordenamiento ('price_asc' o 'discount_desc')
-        y filtrado por categoría.
+        Filtra por las categorías de SoloTodo del ciclo de rotación (category_ids) y usa
+        'sort_strategy' ('price_asc' o 'discount_desc') para el orden de Knasta.
         """
+        cats = list(category_ids or ([] if category_id is None else [category_id]))
         config = STORE_MAPPING.get(store_id.lower())
         if not config:
             logger.warning(f"Tienda no configurada en LiveRetailFeed: {store_id}")
@@ -218,11 +241,13 @@ class LiveRetailFeed:
         # 1. Extracción desde SoloTodo (Live Entities de la tienda)
         solotodo_id = config["solotodo_id"]
         try:
-            st_ordering = "offer_price_usd" if sort_strategy == "price_asc" else "-discount_percentage"
-            cat_param = f"&categories={category_id}" if category_id else ""
+            # /entities/ ignora en silencio órdenes como 'offer_price_usd' o '-discount_percentage'
+            # y devuelve siempre las entidades más antiguas (ej: cartuchos de tinta en Falabella).
+            # '-id' sí se aplica (productos más recientes); el filtro por categoría acota el catálogo.
+            cat_param = "".join(f"&categories={c}" for c in cats)
             url = (
                 f"https://api.solotodo.com/entities/?is_available=1&stores={solotodo_id}"
-                f"&ordering={st_ordering}{cat_param}&page_size={limit}"
+                f"&ordering=-id{cat_param}&page_size={limit}"
             )
             resp = self.session.get(url, timeout=self.timeout)
             if resp.status_code == 200:
@@ -281,53 +306,64 @@ class LiveRetailFeed:
                 for page_num in (1, 2, 3):
                     try:
                         k_url = f"https://knasta.cl/api/results?page={page_num}&order={k_order}"
-                        resp = self.session.get(k_url, timeout=self.timeout)
-                        if resp.status_code == 200:
-                            for k_item in resp.json().get("products", []):
-                                ret = str(k_item.get("retail", "")).lower()
-                                if ret != knasta_name:
-                                    continue
-                                ext_url = k_item.get("url")
-                                if not ext_url or ext_url in seen_urls:
-                                    continue
-                                seen_urls.add(ext_url)
+                        for k_item in self._knasta_page(k_url):
+                            ret = str(k_item.get("retail", "")).lower()
+                            if ret != knasta_name:
+                                continue
+                            ext_url = k_item.get("url")
+                            if not ext_url or ext_url in seen_urls:
+                                continue
+                            seen_urls.add(ext_url)
 
-                                curr_price = parse_clp_price(k_item.get("price_value"))
-                                norm_price = parse_clp_price(k_item.get("price_tm"))
-                                if curr_price <= 0.0:
-                                    continue
-                                if norm_price <= 0.0:
-                                    norm_price = curr_price
+                            curr_price = parse_clp_price(k_item.get("price_value"))
+                            if curr_price <= 0.0:
+                                continue
+                            norm_price = knasta_normal_price(k_item, curr_price)
 
-                                title = str(k_item.get("title", "")).strip()
-                                if not title:
-                                    continue
+                            title = str(k_item.get("title", "")).strip()
+                            if not title:
+                                continue
 
-                                prod_id = canonical_product_id(store_id, ext_url) or f"{store_id}-k{k_item.get('product_id')}"
-                                img_url = k_item.get("images")
-                                cat = infer_category(title)
+                            prod_id = canonical_product_id(store_id, ext_url) or f"{store_id}-k{k_item.get('product_id')}"
+                            img_url = k_item.get("images")
+                            cat = infer_category(title)
 
-                                products.append(
-                                    ProductItem(
-                                        id=prod_id,
-                                        store_id=store_id,
-                                        store_name=config["name"],
-                                        title=title,
-                                        category=cat,
-                                        current_price=curr_price,
-                                        normal_price=norm_price,
-                                        url=ext_url,
-                                        image_url=img_url,
-                                        in_stock=True,
-                                        timestamp=datetime.now(timezone.utc),
-                                        source="knasta",
-                                    )
+                            products.append(
+                                ProductItem(
+                                    id=prod_id,
+                                    store_id=store_id,
+                                    store_name=config["name"],
+                                    title=title,
+                                    category=cat,
+                                    current_price=curr_price,
+                                    normal_price=norm_price,
+                                    url=ext_url,
+                                    image_url=img_url,
+                                    in_stock=True,
+                                    timestamp=datetime.now(timezone.utc),
+                                    source="knasta",
                                 )
+                            )
                     except Exception as exc:
                         logger.debug(f"Error consultando Knasta página {page_num} para {store_id}: {exc}")
         except Exception as exc:
             logger.debug(f"Error consultando Knasta para {store_id}: {exc}")
 
+        return products
+
+    def _knasta_page(self, url: str) -> List[Dict[str, Any]]:
+        """Productos de una página de Knasta, con caché compartida de corta duración."""
+        now = time.monotonic()
+        with _knasta_cache_lock:
+            cached = _knasta_cache.get(url)
+            if cached and now - cached[0] < _KNASTA_CACHE_TTL_SECONDS:
+                return cached[1]
+        resp = self.session.get(url, timeout=self.timeout)
+        if resp.status_code != 200:
+            return []
+        products = resp.json().get("products", []) or []
+        with _knasta_cache_lock:
+            _knasta_cache[url] = (now, products)
         return products
 
     def search_live_products(
@@ -371,11 +407,9 @@ class LiveRetailFeed:
                     seen_urls.add(ext_url)
 
                     curr_price = parse_clp_price(k_item.get("price_value"))
-                    norm_price = parse_clp_price(k_item.get("price_tm"))
                     if curr_price <= 0.0:
                         continue
-                    if norm_price <= 0.0:
-                        norm_price = curr_price
+                    norm_price = knasta_normal_price(k_item, curr_price)
 
                     title = str(k_item.get("title", "")).strip()
                     if not title:

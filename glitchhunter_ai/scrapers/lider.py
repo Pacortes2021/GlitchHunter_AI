@@ -71,7 +71,12 @@ class LiderScraper:
         """
         self.timeout = timeout
 
-    def fetch_catalog(self, use_live: bool = False) -> List[ProductItem]:
+    def fetch_catalog(
+        self,
+        use_live: bool = False,
+        active_category_ids: Optional[List[int]] = None,
+        sort_strategy: Optional[str] = None,
+    ) -> List[ProductItem]:
         """
         Punto de entrada principal para obtener el catálogo de productos.
         
@@ -85,13 +90,18 @@ class LiderScraper:
         """
         if use_live:
             logger.info("Modo LIVE activado. Intentando consultar endpoints de Líder.cl...")
-            live_items = self.fetch_live_catalog()
+            # Agregador primero, filtrado por las categorías del ciclo de rotación;
+            # la lectura propia de la tienda queda como respaldo.
+            live_items: List[ProductItem] = []
+            try:
+                from glitchhunter_ai.scrapers.live_feed import LiveRetailFeed
+                live_items = LiveRetailFeed().fetch_live_products_for_store(
+                    "lider", category_ids=active_category_ids, sort_strategy=sort_strategy
+                )
+            except Exception as exc:
+                logger.debug(f"Error consultando LiveRetailFeed para Líder: {exc}")
             if not live_items:
-                try:
-                    from glitchhunter_ai.scrapers.live_feed import LiveRetailFeed
-                    live_items = LiveRetailFeed().fetch_live_products_for_store("lider")
-                except Exception as exc:
-                    logger.debug(f"Error consultando LiveRetailFeed para Líder: {exc}")
+                live_items = self.fetch_live_catalog()
 
             if live_items:
                 logger.info("Éxito en vivo: Se obtuvieron %d productos reales de Líder.cl", len(live_items))
