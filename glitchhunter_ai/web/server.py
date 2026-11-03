@@ -59,7 +59,7 @@ from glitchhunter_ai.core.price_signals import active_event, is_odd_price, parse
 from glitchhunter_ai.core.store_health import global_store_health
 from glitchhunter_ai.notifications.telegram_bot import TelegramAlertDispatcher
 from glitchhunter_ai.notifications.telegram_feedback import TelegramFeedbackPoller
-from glitchhunter_ai.scrapers.direct_reader import DIRECT_STORES
+from glitchhunter_ai.scrapers.direct_reader import DIRECT_STORES, STORE_NAMES as DIRECT_STORE_NAMES
 
 logger = logging.getLogger("GlitchHunter.Server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -197,7 +197,7 @@ async def direct_scanner_loop():
     prioritarias leídas en tiempo real desde la tienda, entre los ciclos del escaneo completo.
     """
     logger.info(
-        f"⚡ Escaneo directo {', '.join(s.title() for s in DIRECT_STORES)} activo (cada {DIRECT_SCAN_INTERVAL_SECONDS}s, "
+        f"⚡ Escaneo directo {', '.join(DIRECT_STORE_NAMES[s] for s in DIRECT_STORES)} activo (cada {DIRECT_SCAN_INTERVAL_SECONDS}s, "
         f"categorías: {', '.join(DIRECT_SCAN_CATEGORIES) or 'solo watchlist'})."
     )
     last_event = None

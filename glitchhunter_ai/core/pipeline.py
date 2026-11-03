@@ -36,7 +36,7 @@ from glitchhunter_ai.core.models import (
 from glitchhunter_ai.core.store_health import global_store_health
 from glitchhunter_ai.notifications import DiscordAlertDispatcher, NtfyAlertDispatcher, TelegramAlertDispatcher
 from glitchhunter_ai.scrapers import get_all_scrapers
-from glitchhunter_ai.scrapers.direct_reader import DIRECT_STORES, default_direct_reader
+from glitchhunter_ai.scrapers.direct_reader import DIRECT_STORES, STORE_NAMES, default_direct_reader
 
 logger = logging.getLogger("GlitchHunter.Pipeline")
 
@@ -732,7 +732,7 @@ class GlitchHuntingPipeline:
 
             logger.info(
                 "⚡ [Escaneo Directo] %d producto(s) revisados en tiempo real en %s, %d alerta(s) nueva(s).",
-                len(seen), ", ".join(s.title() for s in DIRECT_STORES), len(detected),
+                len(seen), ", ".join(STORE_NAMES[s] for s in DIRECT_STORES), len(detected),
             )
             self.publish_new_deals()
             self.refresh_feed_statuses()
