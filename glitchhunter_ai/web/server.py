@@ -158,7 +158,9 @@ async def background_scanner_loop():
             await asyncio.sleep(SCAN_INTERVAL_SECONDS)
             now_str = datetime.now().strftime("%H:%M:%S")
             loop = asyncio.get_running_loop()
-            detected = await loop.run_in_executor(None, pipeline.run_scan, USE_LIVE_SCRAPING)
+            detected = await loop.run_in_executor(
+                None, lambda: pipeline.run_scan(USE_LIVE_SCRAPING, wait_for_lock_seconds=180)
+            )
             stats = db.get_stats()
             total_g = stats.get("total_glitches", 0)
             total_d = stats.get("moderate_deals", 0)

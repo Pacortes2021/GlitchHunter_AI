@@ -204,3 +204,17 @@ def test_frontend_is_always_revalidated():
         assert resp.status_code == 200
         assert resp.headers.get("cache-control") == "no-cache"
     assert "no-cache" not in (client.get("/api/status").headers.get("cache-control") or "")
+
+
+def test_full_scan_waits_for_running_direct_scan(tmp_path):
+    """El escaneo automático no pierde su ciclo si coincide con un escaneo directo: espera el cerrojo."""
+    import threading, time
+    pipeline = GlitchHuntingPipeline(db=_db(tmp_path))
+    pipeline.scrapers = []
+    pipeline._scan_lock.acquire()
+    threading.Timer(0.3, pipeline._scan_lock.release).start()
+    t0 = time.monotonic()
+    pipeline.run_scan(use_live=False, wait_for_lock_seconds=5, scan_watchlist=False)
+    assert 0.25 < time.monotonic() - t0 < 4           # esperó y luego corrió
+    assert pipeline._scan_lock.acquire(blocking=False)  # y liberó el cerrojo al terminar
+    pipeline._scan_lock.release()
