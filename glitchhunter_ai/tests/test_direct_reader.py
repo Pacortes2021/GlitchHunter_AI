@@ -255,3 +255,12 @@ def test_run_direct_scan_skips_while_full_scan_running(tmp_path):
         reader.search.assert_not_called()
     finally:
         pipeline._scan_lock.release()
+
+
+def test_direct_categories_available_in_both_stores():
+    """Categorías verificadas en vivo (02-11-2026) para el escaneo directo de Falabella y Ripley."""
+    from glitchhunter_ai.scrapers.direct_reader import CATEGORY_PATHS
+
+    for cat in ("smartphones", "notebooks", "televisores", "consolas"):
+        assert cat in CATEGORY_PATHS["falabella"]
+        assert cat in CATEGORY_PATHS["ripley"]

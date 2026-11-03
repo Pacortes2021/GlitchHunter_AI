@@ -46,7 +46,10 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
         "televisores": "/falabella-cl/category/cat2070/Televisores",
     },
     "ripley": {
+        "smartphones": "/tecno/celulares",
         "notebooks": "/tecno/computacion/notebooks",
+        "televisores": "/tecno/television",
+        "consolas": "/tecno/mundo-gamer",
     },
 }
 
