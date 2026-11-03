@@ -535,12 +535,31 @@ class GlitchHuntingPipeline:
             )
             if use_live:
                 self.publish_new_deals()
+                self.refresh_feed_statuses()
             return all_detected_glitches
         finally:
             self.is_scanning = False
             self._scan_lock.release()
 
     run_scan_cycle = run_scan
+
+    def refresh_feed_statuses(self) -> int:
+        """Marca como expiradas (o reactiva) las publicaciones del canal según el último precio visto."""
+        from glitchhunter_ai.config import FEED_NOT_SEEN_HOURS
+
+        try:
+            changed = self.db.refresh_feed_statuses(not_seen_hours=FEED_NOT_SEEN_HOURS)
+        except Exception as exc:
+            logger.warning(f"No se pudo revisar la vigencia de las publicaciones: {exc}")
+            return 0
+        if changed:
+            logger.info(f"🔄 [Canal] {changed} publicación(es) cambiaron de vigencia.")
+            if self.on_glitch_callback:
+                try:
+                    self.on_glitch_callback({"type": "feed_status", "changes": changed})
+                except Exception:
+                    pass
+        return changed
 
     def _publish_unverified_as_deal(self, product: ProductItem, discount_pct: float, savings_clp: float) -> None:
         """Publica como 'Oferta' un descuento ≥65% sin evidencia independiente (si pasa el filtro de calidad)."""
@@ -687,6 +706,7 @@ class GlitchHuntingPipeline:
                 len(seen), ", ".join(s.title() for s in DIRECT_STORES), len(detected),
             )
             self.publish_new_deals()
+            self.refresh_feed_statuses()
             return detected
         finally:
             self.is_scanning = False
