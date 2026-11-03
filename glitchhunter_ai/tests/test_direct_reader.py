@@ -228,7 +228,7 @@ def test_confirmation_skips_out_of_stock_and_non_aggregator_items(tmp_path):
 # =====================================================================
 # 5. Escaneo directo prioritario
 # =====================================================================
-def test_run_direct_scan_searches_watchlist_in_both_stores(tmp_path):
+def test_run_direct_scan_searches_watchlist_in_all_direct_stores(tmp_path):
     reader = MagicMock()
     glitch = _aggregator_glitch(source="direct")
     reader.search.side_effect = lambda store, kw: [glitch] if store == "falabella" else []
@@ -238,7 +238,7 @@ def test_run_direct_scan_searches_watchlist_in_both_stores(tmp_path):
     alerts = pipeline.run_direct_scan(keywords=["galaxy s25"], send_notifications=False)
     assert len(alerts) == 1
     searched = sorted(c.args[0] for c in reader.search.call_args_list)
-    assert searched == ["falabella", "ripley"]
+    assert searched == ["falabella", "ripley", "sodimac"]
 
     # Sin watchlist ni categorías no consulta nada
     reader.search.reset_mock()
@@ -264,3 +264,50 @@ def test_direct_categories_available_in_both_stores():
     for cat in ("smartphones", "notebooks", "televisores", "consolas"):
         assert cat in CATEGORY_PATHS["falabella"]
         assert cat in CATEGORY_PATHS["ripley"]
+
+
+# =====================================================================
+# 6. Sodimac (lectura directa)
+# =====================================================================
+def test_parse_sodimac_lista_page():
+    """Páginas /lista/ de Sodimac: formato del catálogo del grupo Falabella, con URL /articulo/."""
+    from glitchhunter_ai.scrapers.direct_reader import parse_sodimac_listing
+
+    items = parse_sodimac_listing(_fixture("sodimac_lista.html"), "televisores")
+    assert len(items) == 3
+    tv = items[0]
+    assert tv.id == "sodimac-158536333"
+    assert tv.store_id == "sodimac"
+    assert (tv.current_price, tv.normal_price) == (259990, 339990)
+    assert "/sodimac-cl/articulo/158536333/" in tv.url
+    assert items[1].card_price == 119990   # cmrPrice
+
+
+def test_parse_sodimac_search_page():
+    """Búsqueda de Sodimac: precios INTERNET/NORMAL; se enlaza como búsqueda por SKU (su ficha /product redirige)."""
+    from glitchhunter_ai.scrapers.direct_reader import parse_sodimac_listing
+
+    items = parse_sodimac_listing(_fixture("sodimac_search.html"), "linea_blanca")
+    assert [i.id for i in items] == ["sodimac-741630x", "sodimac-6161146", "sodimac-3229688"]
+    kids = items[0]
+    assert (kids.current_price, kids.normal_price) == (69990, 119990)
+    assert kids.url == "https://www.sodimac.cl/sodimac-cl/search?Ntt=741630X"
+    assert items[2].current_price == items[2].normal_price == 103990   # solo precio NORMAL
+
+
+def test_parse_sodimac_product_page():
+    from glitchhunter_ai.scrapers.direct_reader import parse_sodimac_product
+
+    url = "https://www.sodimac.cl/sodimac-cl/articulo/158536333/smart-tv-aoc-50-qled-4k-uhd-roku-tv-50q7067"
+    item = parse_sodimac_product(_fixture("sodimac_product.html"), url)
+    assert item.id == "sodimac-158536333" and item.store_id == "sodimac"
+    assert (item.current_price, item.normal_price) == (259990, 339990)
+
+
+def test_direct_scan_includes_sodimac(tmp_path):
+    reader = MagicMock()
+    reader.search.return_value = []
+    reader.fetch_category.return_value = []
+    pipeline = _pipeline(tmp_path, reader)
+    pipeline.run_direct_scan(keywords=["refrigerador"], send_notifications=False)
+    assert sorted(c.args[0] for c in reader.search.call_args_list) == ["falabella", "ripley", "sodimac"]
