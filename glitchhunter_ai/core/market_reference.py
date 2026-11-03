@@ -42,6 +42,10 @@ SOLOTODO_STORE_IDS: Dict[str, List[str]] = {
 
 NEW_CONDITION = "https://schema.org/NewCondition"
 
+# SoloTodo incluye tiendas de otros países con precios en otras monedas (USD, colones, lempiras):
+# solo las entidades en pesos chilenos sirven para la mediana.
+CLP_CURRENCY_ID = 1
+
 
 def _domain_matches(url: str, domains: List[str]) -> bool:
     """True si el host de la URL es uno de los dominios (o un subdominio de ellos)."""
@@ -195,6 +199,10 @@ class MarketReferenceService:
             for e in entities:
                 reg = e.get("active_registry")
                 if not reg or not reg.get("is_available"):
+                    continue
+                # Solo precios en pesos chilenos: mezclar monedas destruye la mediana
+                currency = e.get("currency_id", e.get("currency"))
+                if currency is not None and currency != CLP_CURRENCY_ID:
                     continue
                 # Solo productos nuevos: reacondicionados y open-box bajan artificialmente la mediana
                 if (e.get("condition") or NEW_CONDITION) != NEW_CONDITION:

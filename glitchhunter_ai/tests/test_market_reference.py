@@ -333,10 +333,11 @@ def _mock_response(payload, status=200):
     return resp
 
 
-def _entity(store, url, price, available=True, condition="https://schema.org/NewCondition"):
+def _entity(store, url, price, available=True, condition="https://schema.org/NewCondition", currency=1):
     return {
         "store": store,
         "store_id": store,
+        "currency": currency,
         "external_url": url,
         "condition": condition,
         "active_registry": {"is_available": available, "offer_price": str(price), "normal_price": str(price)},
@@ -440,3 +441,27 @@ def test_pipeline_timeout_fallback_does_not_block_alert(tmp_path):
         assert alert.market_stores_count == 0
         assert alert.verdict.is_glitch is True
         assert alert.verdict.severity == GlitchSeverity.CRITICO
+
+
+def test_query_solotodo_ignores_prices_in_other_currencies():
+    """
+    SoloTodo agrega tiendas de varios países. Para el LG OLED55B5PSA entrega precios en USD
+    (Ecuador, Panamá) junto a los de Chile: mezclarlos dejaría la mediana en ~1.000 "pesos".
+    """
+    service = MarketReferenceService()
+    browse = {"results": [{"product_entries": [{"product": {"id": 276715, "name": "LG OLED55B5PSA"}}]}]}
+    entities = [
+        _entity(43, "https://www.lider.cl/ip/tv/televisor-55-oled", 799990),
+        _entity(8015, "https://www.abc.cl/led-55-lg-oled", 583992),
+        _entity(5111, "https://rodelag.com/products/televisor-lg", 849.99, currency=4),
+        _entity(272, "https://www.crecos.com/televisor-lg-oled", 1198.97, currency=4),
+        _entity(274, "https://www.almacenesjapon.com/televisor-lg", 1198.97, currency=4),
+        _entity(268, "https://www.diunsa.hn/p/tv-oled-evo-lg", 20999, currency=9),
+    ]
+    service.client = MagicMock()
+    service.client.get.side_effect = [_mock_response(browse), _mock_response(entities)]
+
+    data = service._query_solotodo("OLED55B5PSA", exclude_store_id="falabella")
+    assert data is not None
+    assert sorted(data["sample_stores"]) == ["lider", "www.abc.cl"]
+    assert data["median_price"] == (799990 + 583992) / 2

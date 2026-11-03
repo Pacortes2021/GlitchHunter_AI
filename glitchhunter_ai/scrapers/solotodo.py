@@ -18,6 +18,20 @@ from glitchhunter_ai.scrapers.stealth_client import default_stealth_client
 
 logger = logging.getLogger("glitchhunter.scrapers.solotodo")
 
+# Órdenes que acepta /products/browse/. No existe un orden útil por % de descuento:
+# '-discount_percentage' responde HTTP 400 y 'discount' prioriza productos SIN descuento.
+# Para la estrategia de mayor descuento se usan los productos más consultados ('leads'),
+# donde un error de precio tiene más impacto; el descuento lo calcula después el detector.
+DEFAULT_ORDERING = "offer_price_usd"
+
+# SoloTodo agrega tiendas de varios países: cada producto trae un precio por moneda
+# (ej: USD de Ecuador/Panamá, colones de Costa Rica). Solo el precio en pesos chilenos aplica.
+CLP_CURRENCY_ID = 1
+ORDERING_BY_STRATEGY = {
+    "price_asc": "offer_price_usd",
+    "discount_desc": "leads",
+}
+
 # Mapeo de categorías clave de hardware y tecnología en SoloTodo
 TARGET_CATEGORIES = {
     1: "notebooks",
@@ -69,8 +83,15 @@ class SoloTodoScraper:
         items: List[ProductItem] = []
         try:
             resp = self.client.get(url, timeout=self.timeout)
+            if resp.status_code == 400 and ordering != DEFAULT_ORDERING:
+                # Orden rechazado por la API: reintentar con el orden por defecto en vez de quedar en 0
+                logger.warning(
+                    "SoloTodo rechazó el orden '%s' (HTTP 400) en categoría %s; reintentando con '%s'.",
+                    ordering, cat_id, DEFAULT_ORDERING,
+                )
+                return self._fetch_category_batch(cat_id, limit, DEFAULT_ORDERING)
             if resp.status_code != 200:
-                logger.debug("SoloTodo API respondió HTTP %s para categoría %s", resp.status_code, cat_id)
+                logger.warning("SoloTodo API respondió HTTP %s para categoría %s", resp.status_code, cat_id)
                 return []
 
             data = resp.json()
@@ -90,8 +111,11 @@ class SoloTodoScraper:
                 if not prod or not prices:
                     continue
 
-                curr_price = float(prices[0].get("offer_price", 0.0))
-                norm_price = float(prices[0].get("normal_price", 0.0))
+                clp = next((pr for pr in prices if pr.get("currency_id", pr.get("currency")) == CLP_CURRENCY_ID), None)
+                if clp is None:
+                    continue  # Producto sin precio en Chile
+                curr_price = float(clp.get("offer_price", 0.0))
+                norm_price = float(clp.get("normal_price", 0.0))
                 if curr_price <= 0:
                     continue
                 if norm_price <= 0:
@@ -148,7 +172,7 @@ class SoloTodoScraper:
         products: List[ProductItem] = []
         cat_ids = active_category_ids or list(TARGET_CATEGORIES.keys())[:5]
         per_cat = max(3, max_items // max(1, len(cat_ids)))
-        ordering = "-discount_percentage" if sort_strategy == "discount_desc" else "offer_price_usd"
+        ordering = ORDERING_BY_STRATEGY.get(sort_strategy or "", DEFAULT_ORDERING)
 
         try:
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
