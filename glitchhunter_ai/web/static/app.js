@@ -343,6 +343,7 @@
     } else if (post.risk_tier === 'plausible') {
       tags.push('<span class="tag tag-risk-ok" title="En este rango están la mayoría de los errores que se respetaron o compensaron">✅ Error plausible</span>');
     }
+    if (toNum(post.bulk_price_count) >= 4) tags.push(`<span class="tag tag-bulk" title="Varios productos distintos de esta tienda aparecieron al mismo precio: típico de un error al cargar el catálogo">📦 Mismo precio en ${toNum(post.bulk_price_count)} productos</span>`);
     if (post.odd_price) tags.push('<span class="tag tag-odd" title="Los precios del retail terminan en …90 o …00; una cifra rara suele venir de un descuento mal calculado">🔢 Cifra inusual</span>');
     if (d.hasCardPrice) tags.push('<span class="tag tag-card">💳 Precio tarjeta</span>');
     if (post.__isTest) tags.unshift('<span class="tag tag-test" title="Simulación: no se guarda y desaparece al recargar">🧪 PRUEBA</span>');

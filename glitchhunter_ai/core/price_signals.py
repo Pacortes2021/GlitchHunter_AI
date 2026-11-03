@@ -8,6 +8,9 @@ Señales de precio basadas en la experiencia histórica chilena (36 casos docume
   sobre todo durante eventos como CyberDay.
 - Cifra inusual: el retail chileno fija precios terminados en ...90/...00 (990, 490…).
   Los errores de cálculo de porcentajes dejan cifras arbitrarias ($9.710, $5.872, $179.991).
+- Carga masiva: varios productos distintos de una tienda al MISMO precio, con grandes descuentos
+  sobre precios normales diferentes (ej: Cencosud vendió camas y sets de dormitorio, todos a
+  $38.990), delatan un error al cargar el catálogo.
 - Modo evento: la mayoría de los errores ocurre en CyberDay, Cyber Monday, Black Friday y
   Navidad, y dura de minutos a 2 horas, así que durante esos días se escanea más seguido.
 """
@@ -17,7 +20,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 try:
     from zoneinfo import ZoneInfo
@@ -57,6 +60,36 @@ def is_odd_price(price: Optional[float], store_id: Optional[str] = None) -> bool
         return False
     cents = int(round(float(price))) % 100
     return cents not in _USUAL_ENDINGS
+
+
+BULK_MIN_PRODUCTS = 4
+BULK_MIN_DISCOUNT = 60.0
+BULK_MIN_DISTINCT_NORMALS = 3
+
+
+def detect_bulk_prices(products: Iterable[Any]) -> Dict[str, int]:
+    """
+    Productos que comparten precio exacto con otros de la misma tienda en un mismo escaneo
+    (≥4 productos distintos, ≥60% de descuento, ≥3 precios normales distintos).
+    Retorna {product_id: cantidad de productos con ese mismo precio}.
+    """
+    groups: Dict[Tuple[str, int], Dict[str, Any]] = {}
+    for p in products:
+        try:
+            best = float(p.best_price)
+            normal = float(p.normal_price or 0)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if best <= 0 or normal <= 0 or float(p.discount_percentage) < BULK_MIN_DISCOUNT:
+            continue
+        key = (str(p.store_id), int(round(best)))
+        groups.setdefault(key, {})[str(p.id)] = int(round(normal))
+    result: Dict[str, int] = {}
+    for members in groups.values():
+        if len(members) >= BULK_MIN_PRODUCTS and len(set(members.values())) >= BULK_MIN_DISTINCT_NORMALS:
+            for pid in members:
+                result[pid] = len(members)
+    return result
 
 
 @dataclass(frozen=True)
