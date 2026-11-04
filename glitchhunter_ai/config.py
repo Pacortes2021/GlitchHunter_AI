@@ -40,7 +40,8 @@ DEAL_INCLUDE_NON_TECH = os.getenv("DEAL_INCLUDE_NON_TECH", "true").lower() in ("
 DEAL_GLITCH_ONLY_STORES = {
     s.strip().lower() for s in os.getenv(
         "DEAL_GLITCH_ONLY_STORES",
-        "nike,levis,reebok,columbia,caterpillar,patagonia,underarmour,crocs,vans,doite,havaianas",
+        "nike,levis,reebok,columbia,caterpillar,patagonia,underarmour,crocs,vans,doite,havaianas,"
+        "thenorthface,converse,lacoste,marmot,sparta,dbs",
     ).split(",") if s.strip()
 }
 
@@ -133,5 +134,11 @@ STORES = [
     {"id": "doite", "name": "Doite", "domain": "doite.cl"},
     {"id": "havaianas", "name": "Havaianas", "domain": "havaianas.cl"},
     {"id": "oxford", "name": "Oxford", "domain": "oxfordstore.cl"},
+    {"id": "thenorthface", "name": "The North Face", "domain": "thenorthface.cl"},
+    {"id": "converse", "name": "Converse", "domain": "converse.cl"},
+    {"id": "lacoste", "name": "Lacoste", "domain": "lacoste.cl"},
+    {"id": "marmot", "name": "Marmot", "domain": "marmot.cl"},
+    {"id": "sparta", "name": "Sparta", "domain": "sparta.cl"},
+    {"id": "dbs", "name": "DBS", "domain": "dbs.cl"},
     {"id": "solotodo", "name": "SoloTodo", "domain": "solotodo.cl"},
 ]

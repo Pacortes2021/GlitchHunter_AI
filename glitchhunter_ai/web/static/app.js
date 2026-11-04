@@ -43,6 +43,12 @@
     doite: { name: 'Doite', color: '#0369a1' },
     havaianas: { name: 'Havaianas', color: '#facc15' },
     oxford: { name: 'Oxford', color: '#0f766e' },
+    thenorthface: { name: 'The North Face', color: '#b91c1c' },
+    converse: { name: 'Converse', color: '#1f2937' },
+    lacoste: { name: 'Lacoste', color: '#15803d' },
+    marmot: { name: 'Marmot', color: '#dc2626' },
+    sparta: { name: 'Sparta', color: '#ea580c' },
+    dbs: { name: 'DBS', color: '#db2777' },
     solotodo: { name: 'SoloTodo', color: '#0d9488' }
   };
   const DEFAULT_STORE_COLOR = '#64748b';

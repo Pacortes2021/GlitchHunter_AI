@@ -17,6 +17,7 @@ from glitchhunter_ai.core.database import PriceDatabase
 from glitchhunter_ai.core.models import ProductItem
 from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
 from glitchhunter_ai.scrapers.direct_reader import (
+    MAGENTO_STORES,
     SHOPIFY_STORES,
     VTEX_STORES,
     DirectStoreReader,
@@ -241,7 +242,7 @@ def test_run_direct_scan_searches_watchlist_in_all_direct_stores(tmp_path):
     alerts = pipeline.run_direct_scan(keywords=["galaxy s25"], send_notifications=False)
     assert len(alerts) == 1
     searched = sorted(c.args[0] for c in reader.search.call_args_list)
-    assert searched == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy", *VTEX_STORES, *SHOPIFY_STORES])
+    assert searched == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy", *VTEX_STORES, *SHOPIFY_STORES, *MAGENTO_STORES])
 
     # Sin watchlist ni categorías no consulta nada
     reader.search.reset_mock()
@@ -313,7 +314,7 @@ def test_direct_scan_includes_sodimac(tmp_path):
     reader.fetch_category.return_value = []
     pipeline = _pipeline(tmp_path, reader)
     pipeline.run_direct_scan(keywords=["refrigerador"], send_notifications=False)
-    assert sorted(c.args[0] for c in reader.search.call_args_list) == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy", *VTEX_STORES, *SHOPIFY_STORES])
+    assert sorted(c.args[0] for c in reader.search.call_args_list) == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy", *VTEX_STORES, *SHOPIFY_STORES, *MAGENTO_STORES])
 
 
 # =====================================================================
@@ -652,3 +653,48 @@ def test_shopify_product_json_without_available_is_in_stock():
     product = {"title": "Bota Mujer", "handle": "bota-mujer", "variants": [{"price": "95994", "compare_at_price": "159990"}]}
     item = parse_shopify_products("columbia", [product])[0]
     assert item.in_stock and item.current_price == 95994
+
+
+def _html_response(text, status=200):
+    resp = MagicMock()
+    resp.status_code = status
+    resp.text = text
+    return resp
+
+
+def test_parse_magento_listing_tnf_and_dbs():
+    from glitchhunter_ai.scrapers.direct_reader import parse_magento_listing
+
+    items, total = parse_magento_listing("thenorthface", _fixture("magento_tnf.html"))
+    assert total == 1028 and [i.id for i in items] == [
+        "thenorthface-chaqueta-dryvent-mono-mountain-jacket-hombre-nf0a88xf-nfjk3",
+        "thenorthface-zapatillas-fastpack-mid-wp-hombre-nf0a8g4s-nfagg",
+    ]
+    assert (items[0].current_price, items[0].normal_price) == (329990, 329990)
+    # DBS: el enlace está en .product-item-name y hay precio anterior (oldPrice)
+    dbs, total = parse_magento_listing("dbs", _fixture("magento_dbs.html"))
+    assert total == 532 and dbs[0].id == "dbs-lapiz-de-ojos-retractil-the-24h-automatic-eye-pencil-mi-41114-0"
+    assert (dbs[0].current_price, dbs[0].normal_price) == (7490, 14990)
+    assert dbs[0].title == "The 24H Automatic Eye Pencil"
+
+
+def test_magento_catalog_slice_walks_pages_then_next_section():
+    client = MagicMock()
+    client.get.return_value = _html_response(_fixture("magento_dbs.html"))   # 36 por página, total 532
+    reader = DirectStoreReader(client=client, backoff=StoreBackoff(clock=_FakeClock()))
+    reader.fetch_catalog_slice("dbs")
+    urls = [c.args[0] for c in client.get.call_args_list]
+    assert urls == ["https://dbs.cl/sale?product_list_limit=36&p=1", "https://dbs.cl/sale?product_list_limit=36&p=2"]
+    # Al pasar el total (532 = 15 páginas) salta a la siguiente sección
+    reader._magento_cursor["dbs"] = (0, 15)
+    client.get.reset_mock()
+    reader.fetch_catalog_slice("dbs")
+    assert [c.args[0] for c in client.get.call_args_list] == [
+        "https://dbs.cl/sale?product_list_limit=36&p=15", "https://dbs.cl/perfumes/mujer?product_list_limit=36&p=1",
+    ]
+
+
+def test_magento_stores_are_glitch_only():
+    from glitchhunter_ai.config import DEAL_GLITCH_ONLY_STORES
+
+    assert set(MAGENTO_STORES) <= DEAL_GLITCH_ONLY_STORES
