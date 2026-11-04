@@ -561,3 +561,17 @@ def test_vtex_block_pauses_store():
     reader = DirectStoreReader(client=client, backoff=StoreBackoff(clock=_FakeClock()))
     assert reader.fetch_catalog_slice("fensa", pages=2) == []
     assert reader.backoff.is_paused("fensa") and not reader.backoff.is_paused("sony")
+
+
+def test_vtex_inflated_list_price_uses_current_as_reference():
+    import json as _json
+    from glitchhunter_ai.scrapers.direct_reader import parse_vtex_products
+
+    products = _json.loads(_fixture("vtex_sony.json"))
+    for p in products:
+        p["link"] = p["link"].replace("https://store.sony.cl", "https://www.casaroyal.cl")
+    items = parse_vtex_products("casaroyal", products)
+    assert items and all(i.normal_price == i.current_price for i in items)
+    assert all(i.discount_percentage == 0 for i in items)
+    # Las demás tiendas VTEX mantienen su ListPrice
+    assert parse_vtex_products("sony", _json.loads(_fixture("vtex_sony.json")))[0].normal_price == 49990
