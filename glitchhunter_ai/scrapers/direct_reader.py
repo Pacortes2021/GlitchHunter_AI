@@ -38,7 +38,30 @@ VTEX_STORES: Dict[str, tuple] = {
     "fensa": ("Fensa", "https://www.tiendafensa.cl", "linea_blanca"),
     "oster": ("Oster", "https://www.oster.cl", "linea_blanca"),
     "casaroyal": ("Casa Royal", "https://www.casaroyal.cl", "tecnologia"),
+    "nike": ("Nike", "https://www.nike.cl", "otros"),
+    "levis": ("Levi's", "https://www.levi.cl", "otros"),
+    "reebok": ("Reebok", "https://www.reebok.cl", "otros"),
 }
+
+# Tiendas Shopify: /products.json es el catálogo público estándar de Shopify (precio, compare_at_price
+# y disponibilidad por variante). Shopify frena por IP en TODAS sus tiendas a la vez (tras ~6 peticiones
+# seguidas responde 403), así que se hace una sola petición Shopify cada SHOPIFY_SPACING_SECONDS,
+# rotando entre tiendas, y un 403 pausa a todas (clave de pausa compartida "shopify").
+# id -> (nombre, sitio, categoría por defecto)
+SHOPIFY_STORES: Dict[str, tuple] = {
+    "columbia": ("Columbia", "https://www.columbiachile.cl", "otros"),
+    "caterpillar": ("Caterpillar", "https://www.shopcaterpillar.cl", "otros"),
+    "patagonia": ("Patagonia", "https://cl.patagonia.com", "otros"),
+    "underarmour": ("Under Armour", "https://www.underarmour.cl", "otros"),
+    "crocs": ("Crocs", "https://www.crocs.cl", "otros"),
+    "vans": ("Vans", "https://www.vans.cl", "otros"),
+    "doite": ("Doite", "https://www.doite.cl", "otros"),
+    "havaianas": ("Havaianas", "https://www.havaianas.cl", "otros"),
+    "oxford": ("Oxford", "https://www.oxfordstore.cl", "otros"),
+}
+SHOPIFY_PAGE_SIZE = 250          # máximo de /products.json
+SHOPIFY_SPACING_SECONDS = 90.0   # una petición Shopify (de cualquier tienda) cada 90 s
+SHOPIFY_BACKOFF_KEY = "shopify"
 # Tiendas cuyo ListPrice está inflado en todo el catálogo (como el "normal" de ABC): Casa Royal
 # muestra 40%+ de descuento en ~18% de sus productos (un micrófono de $18.990 con "normal" $54.990).
 # Ahí la referencia es el precio actual y las bajas reales se detectan contra el historial propio.
@@ -47,7 +70,10 @@ VTEX_PAGE_SIZE = 50          # máximo que acepta la API
 VTEX_MAX_OFFSET = 2500       # VTEX no pagina más allá de _from=2500
 VTEX_PAGES_PER_CYCLE = 4     # 200 productos por tienda y ciclo
 
-DIRECT_STORES = ("falabella", "ripley", "paris", "abc", "jumbo", "hp", "winpy", "sodimac", "pcfactory") + tuple(VTEX_STORES)
+DIRECT_STORES = (
+    ("falabella", "ripley", "paris", "abc", "jumbo", "hp", "winpy", "sodimac", "pcfactory")
+    + tuple(VTEX_STORES) + tuple(SHOPIFY_STORES)
+)
 
 # PC Factory expone una API JSON pública (la que usa su propio sitio): búsqueda, catálogo completo
 # paginado (search=*) y detalle por id. El catálogo (~3.000 productos, 48 por página) se recorre
@@ -64,6 +90,7 @@ STORE_NAMES = {
     "falabella": "Falabella", "ripley": "Ripley", "paris": "Paris", "abc": "ABC",
     "jumbo": "Jumbo", "hp": "HP", "winpy": "Winpy", "sodimac": "Sodimac", "pcfactory": "PC Factory",
     **{sid: cfg[0] for sid, cfg in VTEX_STORES.items()},
+    **{sid: cfg[0] for sid, cfg in SHOPIFY_STORES.items()},
 }
 STORE_BASE = {
     "falabella": "https://www.falabella.com",
@@ -74,6 +101,7 @@ STORE_BASE = {
     "hp": "https://www.hp.com",
     "winpy": "https://www.winpy.cl",
     **{sid: cfg[1] for sid, cfg in VTEX_STORES.items()},
+    **{sid: cfg[1] for sid, cfg in SHOPIFY_STORES.items()},
     "sodimac": "https://www.sodimac.cl",
     "pcfactory": "https://www.pcfactory.cl",
 }
@@ -418,6 +446,42 @@ def parse_vtex_products(store_id: str, products: Any) -> List[ProductItem]:
             category=_infer_category(title, hint), current_price=current, normal_price=max(normal, current),
             card_price=None, url=url, image_url=images[0].get("imageUrl") if images else None,
             in_stock=int(offer.get("AvailableQuantity") or 0) > 0, timestamp=now, source="direct",
+        ))
+    return items
+
+
+def parse_shopify_products(store_id: str, products: Any) -> List[ProductItem]:
+    """
+    Productos de /products.json de Shopify: la variante disponible más barata
+    (price = actual, compare_at_price = normal) y el enlace /products/{handle}.
+    """
+    if not isinstance(products, list):
+        raise BlockedError("respuesta Shopify inesperada")
+    name, base, hint = SHOPIFY_STORES[store_id]
+    items: List[ProductItem] = []
+    now = datetime.now(timezone.utc)
+    for raw in products:
+        variants = [v for v in (raw.get("variants") or []) if isinstance(v, dict)]
+        # /products/{handle}.json no trae "available": sin el campo, el stock no se da por agotado
+        available = [v for v in variants if v.get("available", True)]
+        try:
+            variant = min(available or variants, key=lambda v: float(v.get("price") or 0))
+            current = float(variant.get("price") or 0)
+            normal = float(variant.get("compare_at_price") or 0)
+        except (TypeError, ValueError):
+            continue
+        title = " ".join(str(raw.get("title") or "").split())
+        handle = str(raw.get("handle") or "").strip()
+        url = f"{base}/products/{handle}"
+        pid = canonical_product_id(store_id, url)
+        if not pid or not title or current <= 0:
+            continue
+        images = raw.get("images") or []
+        items.append(ProductItem(
+            id=pid, store_id=store_id, store_name=name, title=title,
+            category=_infer_category(title, hint), current_price=current, normal_price=max(normal, current),
+            card_price=None, url=url, image_url=images[0].get("src") if images and isinstance(images[0], dict) else None,
+            in_stock=bool(available), timestamp=now, source="direct",
         ))
     return items
 
@@ -809,6 +873,10 @@ class DirectStoreReader:
         self.timeout = timeout
         self._catalog_cursor: Dict[str, int] = {}
         self._catalog_pages: Dict[str, int] = {}
+        self._shopify_lock = threading.Lock()
+        self._shopify_turn = 0                 # índice de la tienda Shopify a la que le toca
+        self._shopify_next_at = 0.0            # instante (monotónico) de la próxima petición Shopify
+        self.clock: Callable[[], float] = time.monotonic
 
     # --- PC Factory (API JSON) -------------------------------------------------
     def _pcfactory_query(self, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -840,6 +908,56 @@ class DirectStoreReader:
         if not content:
             return []
         return PCFactoryScraper().parse_pcfactory_json(content.get("items") or [])
+
+    # --- Tiendas Shopify (/products.json) ---------------------------------------
+    def _shopify_get(self, store_id: str, path: str, params: Optional[Dict[str, Any]] = None) -> Optional[Any]:
+        """GET a una tienda Shopify con la pausa compartida de Shopify. Retorna el JSON o None."""
+        if self.backoff.is_paused(SHOPIFY_BACKOFF_KEY) or self.backoff.is_paused(store_id):
+            return None
+        try:
+            resp = self.client.get(f"{SHOPIFY_STORES[store_id][1]}{path}", params=params or {}, timeout=self.timeout)
+        except Exception as exc:
+            logger.debug("Error de red en Shopify (%s): %s", store_id, exc)
+            return None
+        status = getattr(resp, "status_code", 0)
+        if status in (403, 429):
+            self.backoff.record_block(SHOPIFY_BACKOFF_KEY, f"HTTP {status} en {store_id}")
+            return None
+        if status >= 500:
+            self.backoff.record_block(store_id, f"HTTP {status}")
+            return None
+        if status != 200:
+            return None
+        try:
+            data = resp.json()
+        except Exception:
+            self.backoff.record_block(SHOPIFY_BACKOFF_KEY, f"respuesta no es JSON en {store_id}")
+            return None
+        self.backoff.record_success(SHOPIFY_BACKOFF_KEY)
+        self.backoff.record_success(store_id)
+        return data
+
+    def _shopify_catalog_slice(self, store_id: str) -> List[ProductItem]:
+        """Una página de 250 productos, solo si es el turno de esta tienda y pasó el espaciado."""
+        order = list(SHOPIFY_STORES)
+        with self._shopify_lock:
+            now = self.clock()
+            if order[self._shopify_turn % len(order)] != store_id or now < self._shopify_next_at:
+                return []
+            self._shopify_turn += 1
+            self._shopify_next_at = now + SHOPIFY_SPACING_SECONDS
+        page = self._catalog_cursor.get(store_id, 1)
+        data = self._shopify_get(store_id, "/products.json", {"limit": SHOPIFY_PAGE_SIZE, "page": page})
+        if data is None:
+            return []
+        try:
+            items = parse_shopify_products(store_id, (data or {}).get("products"))
+        except BlockedError as exc:
+            self.backoff.record_block(store_id, f"formato inesperado: {exc}")
+            return []
+        full_page = len((data or {}).get("products") or []) >= SHOPIFY_PAGE_SIZE
+        self._catalog_cursor[store_id] = page + 1 if full_page else 1
+        return items
 
     # --- Tiendas VTEX (API pública de catálogo) --------------------------------
     def _vtex_query(self, store_id: str, path: str = "", params: Optional[Dict[str, Any]] = None) -> Optional[tuple]:
@@ -894,6 +1012,8 @@ class DirectStoreReader:
         """
         if store_id in VTEX_STORES:
             return self._vtex_catalog_slice(store_id, min(pages, VTEX_PAGES_PER_CYCLE))
+        if store_id in SHOPIFY_STORES:
+            return self._shopify_catalog_slice(store_id)
         if store_id != "pcfactory":
             return []
         items: List[ProductItem] = []
@@ -980,6 +1100,8 @@ class DirectStoreReader:
             return []   # la búsqueda de Jumbo responde 404 a peticiones directas
         elif store_id in ("hp", "winpy"):
             return []   # catálogos chicos: basta con las categorías
+        elif store_id in SHOPIFY_STORES:
+            return []   # cada petición cuenta para el freno de Shopify: basta con el catálogo rotativo
         elif store_id == "pcfactory":
             return self._pcfactory_items(
                 self._pcfactory_query({"page": 0, "size": PCFACTORY_PAGE_SIZE, "search": keyword.strip()})
@@ -1002,6 +1124,12 @@ class DirectStoreReader:
             result = self._vtex_query(store_id, path=f"/{urllib.parse.quote(slug)}/p") if slug else None
             matches = [i for i in (result[0] if result else []) if i.id == f"{store_id}-{slug}"]
             return matches[0] if matches else None
+        if store_id in SHOPIFY_STORES:
+            handle = (canonical_product_id(store_id, url) or "").split("-", 1)[-1]
+            data = self._shopify_get(store_id, f"/products/{urllib.parse.quote(handle)}.json") if handle else None
+            product = (data or {}).get("product")
+            items = parse_shopify_products(store_id, [product]) if product else []
+            return items[0] if items else None
         if store_id not in PRODUCT_PARSERS:
             return None
         html = self._get_html(store_id, url)

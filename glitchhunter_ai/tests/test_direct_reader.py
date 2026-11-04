@@ -17,6 +17,7 @@ from glitchhunter_ai.core.database import PriceDatabase
 from glitchhunter_ai.core.models import ProductItem
 from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
 from glitchhunter_ai.scrapers.direct_reader import (
+    SHOPIFY_STORES,
     VTEX_STORES,
     DirectStoreReader,
     StoreBackoff,
@@ -240,7 +241,7 @@ def test_run_direct_scan_searches_watchlist_in_all_direct_stores(tmp_path):
     alerts = pipeline.run_direct_scan(keywords=["galaxy s25"], send_notifications=False)
     assert len(alerts) == 1
     searched = sorted(c.args[0] for c in reader.search.call_args_list)
-    assert searched == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy", *VTEX_STORES])
+    assert searched == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy", *VTEX_STORES, *SHOPIFY_STORES])
 
     # Sin watchlist ni categorías no consulta nada
     reader.search.reset_mock()
@@ -312,7 +313,7 @@ def test_direct_scan_includes_sodimac(tmp_path):
     reader.fetch_category.return_value = []
     pipeline = _pipeline(tmp_path, reader)
     pipeline.run_direct_scan(keywords=["refrigerador"], send_notifications=False)
-    assert sorted(c.args[0] for c in reader.search.call_args_list) == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy", *VTEX_STORES])
+    assert sorted(c.args[0] for c in reader.search.call_args_list) == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy", *VTEX_STORES, *SHOPIFY_STORES])
 
 
 # =====================================================================
@@ -575,3 +576,79 @@ def test_vtex_inflated_list_price_uses_current_as_reference():
     assert all(i.discount_percentage == 0 for i in items)
     # Las demás tiendas VTEX mantienen su ListPrice
     assert parse_vtex_products("sony", _json.loads(_fixture("vtex_sony.json")))[0].normal_price == 49990
+
+
+def _shopify_response(products, status=200):
+    resp = MagicMock()
+    resp.status_code = status
+    resp.json.return_value = {"products": products}
+    return resp
+
+
+def test_parse_shopify_products_columbia():
+    import json as _json
+    from glitchhunter_ai.scrapers.direct_reader import parse_shopify_products
+
+    items = parse_shopify_products("columbia", _json.loads(_fixture("shopify_columbia.json"))["products"])
+    assert [i.in_stock for i in items] == [False, True, False]
+    bota = items[1]
+    assert bota.id == "columbia-bota-mujer-tweed-darby-cap-negro-columbia-2128041-xp9"
+    assert (bota.current_price, bota.normal_price) == (95994, 159990)
+    assert bota.url == "https://www.columbiachile.cl/products/bota-mujer-tweed-darby-cap-negro-columbia-2128041-xp9"
+    assert canonical_product_id("columbia", bota.url) == bota.id
+
+
+def test_shopify_one_request_per_turn_with_spacing():
+    import json as _json
+
+    products = _json.loads(_fixture("shopify_columbia.json"))["products"]
+    client = MagicMock()
+    client.get.return_value = _shopify_response(products)
+    clock = _FakeClock()
+    reader = DirectStoreReader(client=client, backoff=StoreBackoff(clock=clock))
+    reader.clock = clock
+    order = list(SHOPIFY_STORES)
+
+    # En un ciclo solo consulta la tienda a la que le toca; las demás esperan su turno
+    results = {s: reader.fetch_catalog_slice(s) for s in order}
+    assert len(results[order[0]]) == 3 and all(results[s] == [] for s in order[1:])
+    assert client.get.call_count == 1
+    # Antes del espaciado no hay otra petición, aunque sea el turno de la siguiente
+    clock.t += 30
+    assert reader.fetch_catalog_slice(order[1]) == [] and client.get.call_count == 1
+    clock.t += 61
+    assert len(reader.fetch_catalog_slice(order[1])) == 3
+    assert client.get.call_args.args[0] == f"{SHOPIFY_STORES[order[1]][1]}/products.json"
+
+
+def test_shopify_403_pauses_all_shopify_stores():
+    client = MagicMock()
+    client.get.return_value = _shopify_response([], status=403)
+    clock = _FakeClock()
+    reader = DirectStoreReader(client=client, backoff=StoreBackoff(clock=clock))
+    reader.clock = clock
+    first = list(SHOPIFY_STORES)[0]
+    assert reader.fetch_catalog_slice(first) == []
+    assert reader.backoff.is_paused("shopify")
+    # Con la pausa compartida, ni la ficha de otra tienda Shopify se consulta
+    client.get.reset_mock()
+    assert reader.fetch_product("vans", "https://www.vans.cl/products/old-skool") is None
+    client.get.assert_not_called()
+
+
+def test_glitch_only_stores_do_not_publish_commercial_deals(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "deals.db")
+    db.init_db()
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
+    row = {"product_id": "nike-air-max-90/p", "store_id": "nike", "title": "Zapatilla Nike Air Max 90",
+           "normal_price": 129990, "current_price": 69990, "category": "otros"}
+    assert not pipeline._is_publishable_deal(row, 69990)
+    assert pipeline._is_publishable_deal(dict(row, store_id="oxford", product_id="oxford-bici"), 69990)
+
+
+def test_shopify_product_json_without_available_is_in_stock():
+    from glitchhunter_ai.scrapers.direct_reader import parse_shopify_products
+
+    product = {"title": "Bota Mujer", "handle": "bota-mujer", "variants": [{"price": "95994", "compare_at_price": "159990"}]}
+    item = parse_shopify_products("columbia", [product])[0]
+    assert item.in_stock and item.current_price == 95994

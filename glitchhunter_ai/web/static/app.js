@@ -31,6 +31,18 @@
     fensa: { name: 'Fensa', color: '#0e7490' },
     oster: { name: 'Oster', color: '#b91c1c' },
     casaroyal: { name: 'Casa Royal', color: '#9333ea' },
+    nike: { name: 'Nike', color: '#111111' },
+    levis: { name: "Levi's", color: '#c41230' },
+    reebok: { name: 'Reebok', color: '#e41d1b' },
+    columbia: { name: 'Columbia', color: '#1f4e79' },
+    caterpillar: { name: 'Caterpillar', color: '#ca8a04' },
+    patagonia: { name: 'Patagonia', color: '#334155' },
+    underarmour: { name: 'Under Armour', color: '#1f2937' },
+    crocs: { name: 'Crocs', color: '#65a30d' },
+    vans: { name: 'Vans', color: '#991b1b' },
+    doite: { name: 'Doite', color: '#0369a1' },
+    havaianas: { name: 'Havaianas', color: '#facc15' },
+    oxford: { name: 'Oxford', color: '#0f766e' },
     solotodo: { name: 'SoloTodo', color: '#0d9488' }
   };
   const DEFAULT_STORE_COLOR = '#64748b';
