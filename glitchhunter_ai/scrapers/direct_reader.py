@@ -39,6 +39,10 @@ VTEX_STORES: Dict[str, tuple] = {
     "oster": ("Oster", "https://www.oster.cl", "linea_blanca"),
     "casaroyal": ("Casa Royal", "https://www.casaroyal.cl", "tecnologia"),
 }
+# Tiendas cuyo ListPrice está inflado en todo el catálogo (como el "normal" de ABC): Casa Royal
+# muestra 40%+ de descuento en ~18% de sus productos (un micrófono de $18.990 con "normal" $54.990).
+# Ahí la referencia es el precio actual y las bajas reales se detectan contra el historial propio.
+VTEX_INFLATED_LIST_PRICE = {"casaroyal"}
 VTEX_PAGE_SIZE = 50          # máximo que acepta la API
 VTEX_MAX_OFFSET = 2500       # VTEX no pagina más allá de _from=2500
 VTEX_PAGES_PER_CYCLE = 4     # 200 productos por tienda y ciclo
@@ -400,7 +404,7 @@ def parse_vtex_products(store_id: str, products: Any) -> List[ProductItem]:
             sku = (raw.get("items") or [])[0]
             offer = (sku.get("sellers") or [])[0].get("commertialOffer") or {}
             current = float(offer.get("Price") or 0)
-            normal = float(offer.get("ListPrice") or 0)
+            normal = current if store_id in VTEX_INFLATED_LIST_PRICE else float(offer.get("ListPrice") or 0)
         except (AttributeError, IndexError, TypeError, ValueError):
             continue
         title = " ".join(str(raw.get("productName") or "").split())
