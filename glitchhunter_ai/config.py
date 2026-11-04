@@ -41,7 +41,7 @@ DEAL_GLITCH_ONLY_STORES = {
     s.strip().lower() for s in os.getenv(
         "DEAL_GLITCH_ONLY_STORES",
         "nike,levis,reebok,columbia,caterpillar,patagonia,underarmour,crocs,vans,doite,havaianas,"
-        "thenorthface,converse,lacoste,marmot,sparta,dbs",
+        "lippi,thenorthface,converse,lacoste,marmot,sparta,dbs",
     ).split(",") if s.strip()
 }
 
@@ -134,6 +134,9 @@ STORES = [
     {"id": "doite", "name": "Doite", "domain": "doite.cl"},
     {"id": "havaianas", "name": "Havaianas", "domain": "havaianas.cl"},
     {"id": "oxford", "name": "Oxford", "domain": "oxfordstore.cl"},
+    {"id": "aufbau", "name": "Aufbau", "domain": "aufbau.cl"},
+    {"id": "lippi", "name": "Lippi", "domain": "lippioutdoor.com"},
+    {"id": "kitchencenter", "name": "Kitchen Center", "domain": "kitchencenter.cl"},
     {"id": "thenorthface", "name": "The North Face", "domain": "thenorthface.cl"},
     {"id": "converse", "name": "Converse", "domain": "converse.cl"},
     {"id": "lacoste", "name": "Lacoste", "domain": "lacoste.cl"},

@@ -655,6 +655,19 @@ def test_shopify_product_json_without_available_is_in_stock():
     assert item.in_stock and item.current_price == 95994
 
 
+def test_new_shopify_stores_ids_and_urls():
+    from glitchhunter_ai.scrapers.direct_reader import parse_shopify_products
+    from glitchhunter_ai.scrapers.product_ids import canonical_product_id
+
+    product = {"title": "Cafetera Espresso", "handle": "cafetera-espresso", "variants": [{"price": "89990", "compare_at_price": "129990"}]}
+    for store, base in (("aufbau", "https://aufbau.cl"), ("lippi", "https://www.lippioutdoor.com"),
+                        ("kitchencenter", "https://www.kitchencenter.cl")):
+        item = parse_shopify_products(store, [product])[0]
+        assert item.id == f"{store}-cafetera-espresso"
+        assert item.url == f"{base}/products/cafetera-espresso"
+        assert canonical_product_id(store, item.url) == item.id
+
+
 def _html_response(text, status=200):
     resp = MagicMock()
     resp.status_code = status
