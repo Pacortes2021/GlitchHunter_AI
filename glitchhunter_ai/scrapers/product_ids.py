@@ -20,6 +20,8 @@ _ABC_RE = re.compile(r"/(\d{6,})\.html$")
 _JUMBO_RE = re.compile(r"^/([a-z0-9-]+)/p$")   # URLs /{slug}/p de Jumbo y tiendas VTEX
 _SLUG_P_STORES = {"jumbo", "sony", "motorola", "electrolux", "fensa", "oster", "casaroyal", "nike", "levis", "reebok"}
 _SHOPIFY_RE = re.compile(r"^/products/([a-z0-9-]+)$")   # URLs /products/{handle} de tiendas Shopify
+_MAGENTO_RE = re.compile(r"^/([a-z0-9-]+?)(?:\.html)?$")   # fichas Magento: /{slug} o /{slug}.html
+_MAGENTO_STORES = {"thenorthface", "converse", "lacoste", "marmot", "sparta", "dbs"}
 _SHOPIFY_STORES = {"columbia", "caterpillar", "patagonia", "underarmour", "crocs", "vans", "doite", "havaianas", "oxford"}
 _HP_RE = re.compile(r"/shop/[a-z0-9-]+-([a-z0-9]{5,10})\.html$")   # el SKU va al final del slug
 _WINPY_RE = re.compile(r"^/venta/([a-z0-9-]+)$")
@@ -48,6 +50,10 @@ def canonical_product_id(store_id: str, url: Optional[str]) -> Optional[str]:
     if store == "abc":
         m = _ABC_RE.search(path)
         return f"abc-{m.group(1)}" if m else None
+
+    if store in _MAGENTO_STORES:
+        m = _MAGENTO_RE.search(path.lower())
+        return f"{store}-{m.group(1)}" if m else None
 
     if store in _SHOPIFY_STORES:
         m = _SHOPIFY_RE.search(path.lower())

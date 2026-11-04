@@ -59,6 +59,20 @@ SHOPIFY_STORES: Dict[str, tuple] = {
     "havaianas": ("Havaianas", "https://www.havaianas.cl", "otros"),
     "oxford": ("Oxford", "https://www.oxfordstore.cl", "otros"),
 }
+# Tiendas Magento 2: el mismo HTML de listado que HP (li.product-item, data-price-amount con
+# finalPrice/oldPrice). Se recorren sus secciones por páginas de 36, rotando en cada ciclo.
+# id -> (nombre, sitio, categoría por defecto, secciones)
+MAGENTO_STORES: Dict[str, tuple] = {
+    "thenorthface": ("The North Face", "https://www.thenorthface.cl", "otros", ("/hombre", "/mujer")),
+    "converse": ("Converse", "https://www.converse.cl", "otros", ("/hombre", "/mujer")),
+    "lacoste": ("Lacoste", "https://www.lacoste.cl", "otros", ("/hombre", "/mujer")),
+    "marmot": ("Marmot", "https://www.marmot.cl", "otros", ("/hombre", "/mujer")),
+    "sparta": ("Sparta", "https://sparta.cl", "otros", ("/zapatillas.html",)),
+    "dbs": ("DBS", "https://dbs.cl", "otros", ("/sale", "/perfumes/mujer", "/perfumes/hombre")),
+}
+MAGENTO_PAGE_SIZE = 36
+MAGENTO_PAGES_PER_CYCLE = 2
+
 SHOPIFY_PAGE_SIZE = 250          # máximo de /products.json
 SHOPIFY_SPACING_SECONDS = 90.0   # una petición Shopify (de cualquier tienda) cada 90 s
 SHOPIFY_BACKOFF_KEY = "shopify"
@@ -72,7 +86,7 @@ VTEX_PAGES_PER_CYCLE = 4     # 200 productos por tienda y ciclo
 
 DIRECT_STORES = (
     ("falabella", "ripley", "paris", "abc", "jumbo", "hp", "winpy", "sodimac", "pcfactory")
-    + tuple(VTEX_STORES) + tuple(SHOPIFY_STORES)
+    + tuple(VTEX_STORES) + tuple(SHOPIFY_STORES) + tuple(MAGENTO_STORES)
 )
 
 # PC Factory expone una API JSON pública (la que usa su propio sitio): búsqueda, catálogo completo
@@ -91,6 +105,7 @@ STORE_NAMES = {
     "jumbo": "Jumbo", "hp": "HP", "winpy": "Winpy", "sodimac": "Sodimac", "pcfactory": "PC Factory",
     **{sid: cfg[0] for sid, cfg in VTEX_STORES.items()},
     **{sid: cfg[0] for sid, cfg in SHOPIFY_STORES.items()},
+    **{sid: cfg[0] for sid, cfg in MAGENTO_STORES.items()},
 }
 STORE_BASE = {
     "falabella": "https://www.falabella.com",
@@ -102,6 +117,7 @@ STORE_BASE = {
     "winpy": "https://www.winpy.cl",
     **{sid: cfg[1] for sid, cfg in VTEX_STORES.items()},
     **{sid: cfg[1] for sid, cfg in SHOPIFY_STORES.items()},
+    **{sid: cfg[1] for sid, cfg in MAGENTO_STORES.items()},
     "sodimac": "https://www.sodimac.cl",
     "pcfactory": "https://www.pcfactory.cl",
 }
@@ -532,6 +548,67 @@ def parse_hp_listing(html: str, category_hint: str = "tecnologia") -> List[Produ
     return items
 
 
+def parse_magento_listing(store_id: str, html: str, category_hint: Optional[str] = None) -> tuple:
+    """
+    (productos, total) de un listado Magento 2: li.product-item con su enlace (a.product-item-link,
+    o el de .product-item-name) y precios data-price-amount (finalPrice / oldPrice).
+    """
+    from bs4 import BeautifulSoup
+
+    name, base, hint, _ = MAGENTO_STORES[store_id]
+    soup = BeautifulSoup(html or "", "html.parser")
+    tiles = soup.select("li.product-item")
+    if not tiles and "data-price-amount" not in (html or ""):
+        raise BlockedError("página sin productos")
+    items: List[ProductItem] = []
+    seen: set = set()
+    now = datetime.now(timezone.utc)
+    for tile in tiles:
+        link = tile.select_one("a.product-item-link[href]") or tile.select_one(".product-item-name a[href]")
+        if link is None:
+            continue
+        url = urllib.parse.urljoin(base, link["href"].split("?")[0].split("#")[0])
+        pid = canonical_product_id(store_id, url)
+        title = " ".join((link.get("title") or link.get_text(" ")).split())
+        current, normal = _hp_prices(tile)
+        if not pid or pid in seen or not title or current <= 0:
+            continue
+        seen.add(pid)
+        img = tile.select_one("img[data-src^='http']") or tile.select_one("img[src^='http']")
+        items.append(ProductItem(
+            id=pid, store_id=store_id, store_name=name, title=title,
+            category=_infer_category(title, category_hint or hint), current_price=current, normal_price=normal,
+            card_price=None, url=url, image_url=(img.get("data-src") or img.get("src")) if img else None,
+            in_stock="agotado" not in tile.get_text(" ").lower(), timestamp=now, source="direct",
+        ))
+    toolbar = soup.select_one(".toolbar-amount") or soup.select_one(".toolbar-number")
+    numbers = re.findall(r"\d+", toolbar.get_text(" ") if toolbar else "")
+    total = int(numbers[-1]) if numbers else None
+    return items, total
+
+
+def parse_magento_product(store_id: str, html: str, url: str) -> Optional[ProductItem]:
+    """Ficha Magento 2: nombre en el h1 y precios en .product-info-main (igual que HP)."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    pid = canonical_product_id(store_id, url)
+    main = soup.select_one(".product-info-main") or soup
+    h1 = soup.select_one("h1")
+    title = " ".join(h1.get_text(" ").split()) if h1 else ""
+    current, normal = _hp_prices(main)
+    if not pid or not title or current <= 0:
+        return None
+    stock = main.select_one(".stock")
+    name, _, hint, _ = MAGENTO_STORES[store_id]
+    return ProductItem(
+        id=pid, store_id=store_id, store_name=name, title=title, category=_infer_category(title, hint),
+        current_price=current, normal_price=normal, card_price=None, url=url,
+        in_stock=not (stock and "agotado" in stock.get_text(" ").lower()),
+        timestamp=datetime.now(timezone.utc), source="direct",
+    )
+
+
 def parse_hp_product(html: str, url: str) -> Optional[ProductItem]:
     """Ficha de HP: nombre en el h1 y precios en el bloque .product-info-main."""
     from bs4 import BeautifulSoup
@@ -873,6 +950,7 @@ class DirectStoreReader:
         self.timeout = timeout
         self._catalog_cursor: Dict[str, int] = {}
         self._catalog_pages: Dict[str, int] = {}
+        self._magento_cursor: Dict[str, tuple] = {}
         self._shopify_lock = threading.Lock()
         self._shopify_turn = 0                 # índice de la tienda Shopify a la que le toca
         self._shopify_next_at = 0.0            # instante (monotónico) de la próxima petición Shopify
@@ -908,6 +986,32 @@ class DirectStoreReader:
         if not content:
             return []
         return PCFactoryScraper().parse_pcfactory_json(content.get("items") or [])
+
+    # --- Tiendas Magento 2 (listados HTML) --------------------------------------
+    def _magento_catalog_slice(self, store_id: str) -> List[ProductItem]:
+        """Las siguientes páginas de las secciones de la tienda (cursor: sección y página)."""
+        _, base, _, sections = MAGENTO_STORES[store_id]
+        items: List[ProductItem] = []
+        section_idx, page = self._magento_cursor.get(store_id, (0, 1))
+        for _ in range(MAGENTO_PAGES_PER_CYCLE):
+            path = sections[section_idx % len(sections)]
+            url = f"{base}{path}?product_list_limit={MAGENTO_PAGE_SIZE}&p={page}"
+            html = self._get_html(store_id, url)
+            if html is None:
+                break
+            try:
+                page_items, total = parse_magento_listing(store_id, html)
+            except (BlockedError, ValueError, KeyError) as exc:
+                self.backoff.record_block(store_id, f"formato inesperado: {exc}")
+                break
+            self.backoff.record_success(store_id)
+            items.extend(page_items)
+            if not page_items or not total or page * MAGENTO_PAGE_SIZE >= total:
+                section_idx, page = (section_idx + 1) % len(sections), 1   # siguiente sección
+            else:
+                page += 1
+        self._magento_cursor[store_id] = (section_idx, page)
+        return items
 
     # --- Tiendas Shopify (/products.json) ---------------------------------------
     def _shopify_get(self, store_id: str, path: str, params: Optional[Dict[str, Any]] = None) -> Optional[Any]:
@@ -1014,6 +1118,8 @@ class DirectStoreReader:
             return self._vtex_catalog_slice(store_id, min(pages, VTEX_PAGES_PER_CYCLE))
         if store_id in SHOPIFY_STORES:
             return self._shopify_catalog_slice(store_id)
+        if store_id in MAGENTO_STORES:
+            return self._magento_catalog_slice(store_id)
         if store_id != "pcfactory":
             return []
         items: List[ProductItem] = []
@@ -1055,6 +1161,7 @@ class DirectStoreReader:
         data_marker = {
             "paris": "self.__next_f", "jumbo": "self.__next_f", "abc": "data-pid",
             "hp": "data-price-amount", "winpy": "/venta/",
+            **{sid: "data-price-amount" for sid in MAGENTO_STORES},
         }.get(store_id, "__NEXT_DATA__")
         if data_marker not in html:
             lower = html[:20000].lower()
@@ -1102,6 +1209,13 @@ class DirectStoreReader:
             return []   # catálogos chicos: basta con las categorías
         elif store_id in SHOPIFY_STORES:
             return []   # cada petición cuenta para el freno de Shopify: basta con el catálogo rotativo
+        elif store_id in MAGENTO_STORES:
+            url = f"{MAGENTO_STORES[store_id][1]}/catalogsearch/result/?q={q}&product_list_limit={MAGENTO_PAGE_SIZE}"
+            html = self._get_html(store_id, url)
+            try:
+                return parse_magento_listing(store_id, html)[0] if html else []
+            except (BlockedError, ValueError, KeyError):
+                return []
         elif store_id == "pcfactory":
             return self._pcfactory_items(
                 self._pcfactory_query({"page": 0, "size": PCFACTORY_PAGE_SIZE, "search": keyword.strip()})
@@ -1130,6 +1244,9 @@ class DirectStoreReader:
             product = (data or {}).get("product")
             items = parse_shopify_products(store_id, [product]) if product else []
             return items[0] if items else None
+        if store_id in MAGENTO_STORES:
+            html = self._get_html(store_id, url)
+            return parse_magento_product(store_id, html, url) if html else None
         if store_id not in PRODUCT_PARSERS:
             return None
         html = self._get_html(store_id, url)
