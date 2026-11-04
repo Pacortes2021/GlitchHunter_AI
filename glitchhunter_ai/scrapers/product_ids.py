@@ -22,7 +22,8 @@ _SLUG_P_STORES = {"jumbo", "sony", "motorola", "electrolux", "fensa", "oster", "
 _SHOPIFY_RE = re.compile(r"^/products/([a-z0-9-]+)$")   # URLs /products/{handle} de tiendas Shopify
 _MAGENTO_RE = re.compile(r"^/([a-z0-9-]+?)(?:\.html)?$")   # fichas Magento: /{slug} o /{slug}.html
 _MAGENTO_STORES = {"thenorthface", "converse", "lacoste", "marmot", "sparta", "dbs"}
-_SHOPIFY_STORES = {"columbia", "caterpillar", "patagonia", "underarmour", "crocs", "vans", "doite", "havaianas", "oxford"}
+_SHOPIFY_STORES = {"columbia", "caterpillar", "patagonia", "underarmour", "crocs", "vans", "doite", "havaianas", "oxford",
+                   "aufbau", "lippi", "kitchencenter"}
 _HP_RE = re.compile(r"/shop/[a-z0-9-]+-([a-z0-9]{5,10})\.html$")   # el SKU va al final del slug
 _WINPY_RE = re.compile(r"^/venta/([a-z0-9-]+)$")
 # Paris: /{slug}-{CLAVE}.html (clave commercetools, ej: MKDFYM0YKP; en URLs antiguas, numérica)

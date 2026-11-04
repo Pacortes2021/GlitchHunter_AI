@@ -58,6 +58,9 @@ SHOPIFY_STORES: Dict[str, tuple] = {
     "doite": ("Doite", "https://www.doite.cl", "otros"),
     "havaianas": ("Havaianas", "https://www.havaianas.cl", "otros"),
     "oxford": ("Oxford", "https://www.oxfordstore.cl", "otros"),
+    "aufbau": ("Aufbau", "https://aufbau.cl", "tecnologia"),
+    "lippi": ("Lippi", "https://www.lippioutdoor.com", "otros"),
+    "kitchencenter": ("Kitchen Center", "https://www.kitchencenter.cl", "linea_blanca"),
 }
 # Tiendas Magento 2: el mismo HTML de listado que HP (li.product-item, data-price-amount con
 # finalPrice/oldPrice). Se recorren sus secciones por páginas de 36, rotando en cada ciclo.
