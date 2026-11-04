@@ -619,12 +619,14 @@ class GlitchHuntingPipeline:
         - categoría del radar (no ropa, muebles, etc.) y no accesorios;
         - ahorro mínimo en pesos (un -50% sobre $2.000 no es una oferta relevante).
         """
-        from glitchhunter_ai.config import DEAL_INCLUDE_NON_TECH, DEAL_MIN_SAVINGS_CLP
+        from glitchhunter_ai.config import DEAL_GLITCH_ONLY_STORES, DEAL_INCLUDE_NON_TECH, DEAL_MIN_SAVINGS_CLP
 
         product_id = str(row.get("product_id") or "")
         title = str(row.get("title") or "")
         if product_id.startswith("test-") or "[TEST-" in title:
             return False
+        if str(row.get("store_id") or "").lower() in DEAL_GLITCH_ONLY_STORES:
+            return False   # tiendas de ropa: solo errores de precio verificados
         if REFURBISHED_RE.search(title):
             return False
         category = classify_category(title)

@@ -1,0 +1,82 @@
+{
+ "products": [
+  {
+   "title": "Zapatilla Hombre Terrastride CRZ Gris Shark Columbia",
+   "handle": "zapatilla-hombre-terrastride-crz-gris-columbia-2115081-04b",
+   "variants": [
+    {
+     "price": "68994",
+     "compare_at_price": "114990",
+     "available": false
+    },
+    {
+     "price": "68994",
+     "compare_at_price": "114990",
+     "available": false
+    },
+    {
+     "price": "68994",
+     "compare_at_price": "114990",
+     "available": false
+    }
+   ],
+   "images": [
+    {
+     "src": "https://cdn.shopify.com/s/files/1/0964/4707/0504/files/2115081_04B_1.jpg?v=1770652713"
+    }
+   ]
+  },
+  {
+   "title": "Bota Mujer Tweed Darby Cap Negro Columbia",
+   "handle": "bota-mujer-tweed-darby-cap-negro-columbia-2128041-xp9",
+   "variants": [
+    {
+     "price": "95994",
+     "compare_at_price": "159990",
+     "available": false
+    },
+    {
+     "price": "95994",
+     "compare_at_price": "159990",
+     "available": true
+    },
+    {
+     "price": "95994",
+     "compare_at_price": "159990",
+     "available": false
+    }
+   ],
+   "images": [
+    {
+     "src": "https://cdn.shopify.com/s/files/1/0964/4707/0504/files/2128041_XP9_1.jpg?v=1773258555"
+    }
+   ]
+  },
+  {
+   "title": "Bota Mujer Minx Slip V Gris Columbia",
+   "handle": "bota-mujer-minx-slip-v-columbia-2079191-5hd",
+   "variants": [
+    {
+     "price": "71495",
+     "compare_at_price": "129990",
+     "available": false
+    },
+    {
+     "price": "71495",
+     "compare_at_price": "129990",
+     "available": false
+    },
+    {
+     "price": "71495",
+     "compare_at_price": "129990",
+     "available": false
+    }
+   ],
+   "images": [
+    {
+     "src": "https://cdn.shopify.com/s/files/1/0964/4707/0504/files/2079191_5HD_1.jpg?v=1770652223"
+    }
+   ]
+  }
+ ]
+}

@@ -35,6 +35,14 @@ DEAL_MAX_AGE_HOURS = float(os.getenv("DEAL_MAX_AGE_HOURS", "12"))            # S
 # Una publicación pasa a "sin confirmar" si ningún escaneo ve el producto en estas horas
 FEED_NOT_SEEN_HOURS = float(os.getenv("FEED_NOT_SEEN_HOURS", "24"))
 DEAL_INCLUDE_NON_TECH = os.getenv("DEAL_INCLUDE_NON_TECH", "true").lower() in ("true", "1", "yes")  # Ropa, muebles, etc.
+# Tiendas "solo errores de precio": sus liquidaciones normales (Nike: ~19% del catálogo con 40%+ de
+# descuento) no se publican como ofertas; solo entran al canal los errores de precio verificados.
+DEAL_GLITCH_ONLY_STORES = {
+    s.strip().lower() for s in os.getenv(
+        "DEAL_GLITCH_ONLY_STORES",
+        "nike,levis,reebok,columbia,caterpillar,patagonia,underarmour,crocs,vans,doite,havaianas",
+    ).split(",") if s.strip()
+}
 
 # Criterio de "Pérdida de Ceros" (Missing Zero Bug)
 # Ej: Producto de $899.990 publicado a $89.990 (ratio ~10x)
@@ -113,5 +121,17 @@ STORES = [
     {"id": "fensa", "name": "Fensa", "domain": "tiendafensa.cl"},
     {"id": "oster", "name": "Oster", "domain": "oster.cl"},
     {"id": "casaroyal", "name": "Casa Royal", "domain": "casaroyal.cl"},
+    {"id": "nike", "name": "Nike", "domain": "nike.cl"},
+    {"id": "levis", "name": "Levi's", "domain": "levi.cl"},
+    {"id": "reebok", "name": "Reebok", "domain": "reebok.cl"},
+    {"id": "columbia", "name": "Columbia", "domain": "columbiachile.cl"},
+    {"id": "caterpillar", "name": "Caterpillar", "domain": "shopcaterpillar.cl"},
+    {"id": "patagonia", "name": "Patagonia", "domain": "cl.patagonia.com"},
+    {"id": "underarmour", "name": "Under Armour", "domain": "underarmour.cl"},
+    {"id": "crocs", "name": "Crocs", "domain": "crocs.cl"},
+    {"id": "vans", "name": "Vans", "domain": "vans.cl"},
+    {"id": "doite", "name": "Doite", "domain": "doite.cl"},
+    {"id": "havaianas", "name": "Havaianas", "domain": "havaianas.cl"},
+    {"id": "oxford", "name": "Oxford", "domain": "oxfordstore.cl"},
     {"id": "solotodo", "name": "SoloTodo", "domain": "solotodo.cl"},
 ]
