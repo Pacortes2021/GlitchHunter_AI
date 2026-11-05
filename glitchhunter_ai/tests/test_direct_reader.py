@@ -789,7 +789,7 @@ def test_santaisabel_uses_jumbo_parser_and_stops_on_repeated_page():
                     "https://www.santaisabel.cl/botilleria"]
 
 
-def test_publish_new_deals_includes_65_plus_with_small_savings_once(tmp_path):
+def test_publish_new_deals_includes_65_plus_with_any_savings_once(tmp_path):
     db = PriceDatabase(db_path=tmp_path / "deals.db")
     db.init_db()
     pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
@@ -799,12 +799,12 @@ def test_publish_new_deals_includes_65_plus_with_small_savings_once(tmp_path):
                       in_stock=True)
     cheap = ProductItem(id="weplay-llavero", store_id="weplay", store_name="Weplay", title="Llavero Mario",
                         category="otros", current_price=990, normal_price=4990, url="https://www.weplay.cl/llavero",
-                        in_stock=True)   # 80% pero ahorra $4.000: no pasa el mínimo
+                        in_stock=True)   # 80% con $4.000 de ahorro: sin ahorro mínimo por defecto, también entra
     db.upsert_product(tee)
     db.upsert_product(cheap)
-    assert pipeline.publish_new_deals() == 1
-    assert [p["product_id"] for p in db.get_feed()] == ["weplay-boxed-tee"]
-    assert pipeline.publish_new_deals() == 0   # ya publicada a este precio
+    assert pipeline.publish_new_deals() == 2
+    assert sorted(p["product_id"] for p in db.get_feed()) == ["weplay-boxed-tee", "weplay-llavero"]
+    assert pipeline.publish_new_deals() == 0   # ya publicadas a este precio
 
 
 def test_feed_filters_return_older_posts(tmp_path):

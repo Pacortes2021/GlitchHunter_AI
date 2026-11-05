@@ -30,7 +30,7 @@ CRITICAL_DISCOUNT_PERCENTAGE = float(os.getenv("CRITICAL_DISCOUNT_PERCENTAGE", "
 MIN_ABSOLUTE_SAVINGS_CLP = float(os.getenv("MIN_ABSOLUTE_SAVINGS_CLP", "30000.0"))   # Ahorro mínimo en pesos chilenos ($30.000)
 
 # Canal de ofertas comerciales (40%-64%): filtro de calidad antes de publicar
-DEAL_MIN_SAVINGS_CLP = float(os.getenv("DEAL_MIN_SAVINGS_CLP", "10000"))     # Ahorro mínimo de una oferta
+DEAL_MIN_SAVINGS_CLP = float(os.getenv("DEAL_MIN_SAVINGS_CLP", "0"))         # Ahorro mínimo de una oferta (0 = sin mínimo)
 DEAL_PUBLISH_BATCH = int(os.getenv("DEAL_PUBLISH_BATCH", "3000"))              # Candidatas revisadas por ciclo
 DEAL_MAX_AGE_HOURS = float(os.getenv("DEAL_MAX_AGE_HOURS", "12"))            # Solo productos vistos recientemente
 # Una publicación pasa a "sin confirmar" si ningún escaneo ve el producto en estas horas

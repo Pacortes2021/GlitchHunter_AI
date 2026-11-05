@@ -32,6 +32,7 @@ def _product(pid, title, price, normal, store="paris", **kw):
 def test_deals_quality_gate_blocks_noise(tmp_path, monkeypatch):
     from glitchhunter_ai import config
     monkeypatch.setattr(config, "DEAL_INCLUDE_NON_TECH", False)  # solo categorías del radar
+    monkeypatch.setattr(config, "DEAL_MIN_SAVINGS_CLP", 10000)   # ahorro mínimo opcional (por defecto 0)
     db = _db(tmp_path)
     pipeline = GlitchHuntingPipeline(db=db)
     noise = [
