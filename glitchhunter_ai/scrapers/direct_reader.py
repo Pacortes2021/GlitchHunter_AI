@@ -112,6 +112,11 @@ SHOPIFY_STORES: Dict[str, tuple] = {
     "dermotienda": ("Dermotienda", "https://dermotienda.cl", "otros"),
     "herramientastotal": ("Herramientas Total", "https://www.herramientastotal.cl", "otros"),
     "delonghi": ("De'Longhi", "https://www.delonghi.cl", "otros"),
+    "santarita": ("Santa Rita", "https://www.santaritaonline.com", "otros"),
+    "petplanet": ("Pet Planet", "https://www.petplanet.cl", "otros"),
+    "toyng": ("Toyng", "https://www.toyng.cl", "otros"),
+    "juanvaldez": ("Juan Valdez", "https://www.juanvaldez.cl", "otros"),
+    "promusic": ("ProMusic", "https://www.promusic.cl", "otros"),
 }
 # Shopify con compare_at_price inflado: Kitchen Center muestra "antes" de exactamente el doble
 # ($409.980 = 2 × $204.990). Ahí la referencia es el precio actual, como Casa Royal en VTEX.
@@ -163,6 +168,9 @@ MAGENTO_STORES: Dict[str, tuple] = {
     "ugg": ("UGG", "https://www.ugg.cl", "otros", ("/sale", "/mujer", "/hombre")),
     "victoriassecret": ("Victoria's Secret", "https://www.victoriassecret.cl", "otros", ("/bras", "/panties", "/beauty")),
     "volcom": ("Volcom", "https://volcom.cl", "otros", ("/hombre.html", "/footwear.html")),
+    "farmaciamapuche": ("Farmacia Mapuche", "https://farmaciamapuche.cl", "otros", ("/ofertas.html", "/suplementos-y-alimentos", "/cosmetica-natural-y-belleza", "/medicamentos-naturales")),
+    "rosen": ("Rosen", "https://www.rosen.cl", "otros", ("/camas-y-colchones.html", "/muebles.html", "/ropa-de-cama.html")),
+    "cannonhome": ("Cannon Home", "https://cannonhome.cl", "otros", ("/12-ropa-de-cama", "/plaza", "/dormitorio", "/bano")),
     "wa2": ("Wa2", "https://www.wa2.cl", "otros", ("/colecciones",)),
 }
 MAGENTO_PAGE_SIZE = 36
@@ -181,7 +189,7 @@ VTEX_MAX_OFFSET = 2500       # VTEX no pagina más allá de _from=2500
 VTEX_PAGES_PER_CYCLE = 4     # 200 productos por tienda y ciclo
 
 DIRECT_STORES = (
-    ("falabella", "ripley", "paris", "abc", "jumbo", "hp", "winpy", "sodimac", "pcfactory", "spdigital")
+    ("falabella", "ripley", "paris", "abc", "jumbo", "santaisabel", "hp", "winpy", "sodimac", "pcfactory", "spdigital")
     + tuple(VTEX_STORES) + tuple(SHOPIFY_STORES) + tuple(MAGENTO_STORES)
 )
 
@@ -199,6 +207,13 @@ SPDIGITAL_SECTIONS = ("/categories/componentes/", "/categories/computacion/", "/
                       "/categories/audio-y-musica/", "/categories/conectividad-y-redes/", "/categories/hogar-y-oficina/",
                       "/categories/otras-categorias/")
 SPDIGITAL_PAGES_PER_CYCLE = 3
+# Santa Isabel (Cencosud, mismo sitio que Jumbo): secciones del supermercado con ?page=N; pasada la
+# última página repite la primera, así que la sección termina cuando una página no trae productos nuevos.
+SANTAISABEL_SECTIONS = ("/ofertas", "/botilleria", "/despensa", "/limpieza", "/cuidado-personal-y-bebe",
+                        "/hogar-jugueteria-y-libreria", "/chocolates-galletas-y-snacks", "/lacteos-huevos-y-congelados",
+                        "/mascotas", "/carnes-y-pescados", "/quesos-y-fiambres", "/productos-importados")
+SANTAISABEL_PAGES_PER_CYCLE = 3
+SANTAISABEL_MAX_PAGES = 15
 
 _NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.DOTALL)
 _BOT_CHALLENGE_MARKERS = ("captcha", "perimeterx", "px-captcha", "are you a robot", "access denied")
@@ -206,7 +221,7 @@ _BOT_CHALLENGE_MARKERS = ("captcha", "perimeterx", "px-captcha", "are you a robo
 STORE_NAMES = {
     "falabella": "Falabella", "ripley": "Ripley", "paris": "Paris", "abc": "ABC",
     "jumbo": "Jumbo", "hp": "HP", "winpy": "Winpy", "sodimac": "Sodimac", "pcfactory": "PC Factory",
-    "spdigital": "SP Digital",
+    "spdigital": "SP Digital", "santaisabel": "Santa Isabel",
     **{sid: cfg[0] for sid, cfg in VTEX_STORES.items()},
     **{sid: cfg[0] for sid, cfg in SHOPIFY_STORES.items()},
     **{sid: cfg[0] for sid, cfg in MAGENTO_STORES.items()},
@@ -225,6 +240,7 @@ STORE_BASE = {
     "sodimac": "https://www.sodimac.cl",
     "pcfactory": "https://www.pcfactory.cl",
     "spdigital": "https://www.spdigital.cl",
+    "santaisabel": "https://www.santaisabel.cl",
 }
 
 # Categorías verificadas para lectura directa (clave -> ruta)
@@ -490,10 +506,11 @@ def _next_flight(html: str) -> str:
     return "".join(json.loads('"' + c + '"') for c in chunks)
 
 
-def parse_jumbo_listing(html: str, category_hint: str = "tecnologia") -> List[ProductItem]:
+def parse_jumbo_listing(html: str, category_hint: str = "tecnologia", store_id: str = "jumbo") -> List[ProductItem]:
     """
     Productos de Jumbo: objetos "product" del flujo RSC con items[0].price (precio actual),
     listPrice (normal) y stock. La ficha usa los mismos objetos (el producto y sus relacionados).
+    Santa Isabel (también Cencosud) usa el mismo sitio, con store_id="santaisabel".
     """
     flight = _next_flight(html)
     decoder = json.JSONDecoder()
@@ -507,8 +524,8 @@ def parse_jumbo_listing(html: str, category_hint: str = "tecnologia") -> List[Pr
             continue
         slug = str(raw.get("slug") or "").strip()
         sku = (raw.get("items") or [{}])[0] or {}
-        url = f"{STORE_BASE['jumbo']}/{slug}/p"
-        pid = canonical_product_id("jumbo", url)
+        url = f"{STORE_BASE[store_id]}/{slug}/p"
+        pid = canonical_product_id(store_id, url)
         if not pid or pid in seen:
             continue
         title = " ".join(str(sku.get("name") or "").split())
@@ -522,7 +539,7 @@ def parse_jumbo_listing(html: str, category_hint: str = "tecnologia") -> List[Pr
         seen.add(pid)
         images = sku.get("images") or []
         items.append(ProductItem(
-            id=pid, store_id="jumbo", store_name=STORE_NAMES["jumbo"], title=title,
+            id=pid, store_id=store_id, store_name=STORE_NAMES[store_id], title=title,
             category=_infer_category(title, category_hint), current_price=current,
             normal_price=max(normal, current), card_price=None, url=url,
             image_url=images[0] if images and str(images[0]).startswith("http") else None,
@@ -531,13 +548,21 @@ def parse_jumbo_listing(html: str, category_hint: str = "tecnologia") -> List[Pr
     return items
 
 
-def parse_jumbo_product(html: str, url: str) -> Optional[ProductItem]:
-    """Ficha de Jumbo: el producto de la URL entre los objetos del flujo RSC."""
-    target = canonical_product_id("jumbo", url)
-    for item in parse_jumbo_listing(html):
+def parse_jumbo_product(html: str, url: str, store_id: str = "jumbo") -> Optional[ProductItem]:
+    """Ficha de Jumbo (o Santa Isabel): el producto de la URL entre los objetos del flujo RSC."""
+    target = canonical_product_id(store_id, url)
+    for item in parse_jumbo_listing(html, store_id=store_id):
         if item.id == target:
             return item
     return None
+
+
+def parse_santaisabel_listing(html: str, category_hint: str = "otros") -> List[ProductItem]:
+    return parse_jumbo_listing(html, category_hint, store_id="santaisabel")
+
+
+def parse_santaisabel_product(html: str, url: str) -> Optional[ProductItem]:
+    return parse_jumbo_product(html, url, store_id="santaisabel")
 
 
 def parse_vtex_products(store_id: str, products: Any) -> List[ProductItem]:
@@ -1118,6 +1143,7 @@ PRODUCT_PARSERS = {
     "winpy": parse_winpy_product,
     "sodimac": parse_sodimac_product,
     "spdigital": parse_spdigital_product,
+    "santaisabel": parse_santaisabel_product,
 }
 
 
@@ -1131,6 +1157,7 @@ class DirectStoreReader:
         self._catalog_cursor: Dict[str, int] = {}
         self._catalog_pages: Dict[str, int] = {}
         self._magento_cursor: Dict[str, tuple] = {}
+        self._santaisabel_seen: set = set()       # IDs de la sección en curso (detecta la última página)
         self._shopify_lock = threading.Lock()
         self._shopify_turn = 0                 # índice de la tienda Shopify a la que le toca
         self._shopify_next_at = 0.0            # instante (monotónico) de la próxima petición Shopify
@@ -1189,6 +1216,33 @@ class DirectStoreReader:
             else:
                 page += 1
         self._magento_cursor["spdigital"] = (section_idx, page)
+        return items
+
+    # --- Santa Isabel (flujo RSC como Jumbo, por secciones) ----------------------
+    def _santaisabel_catalog_slice(self) -> List[ProductItem]:
+        """Las siguientes páginas de las secciones de Santa Isabel (cursor: sección, página e IDs vistos)."""
+        items: List[ProductItem] = []
+        section_idx, page = self._magento_cursor.get("santaisabel", (0, 1))
+        for _ in range(SANTAISABEL_PAGES_PER_CYCLE):
+            path = SANTAISABEL_SECTIONS[section_idx % len(SANTAISABEL_SECTIONS)]
+            html = self._get_html("santaisabel", f"{STORE_BASE['santaisabel']}{path}" + (f"?page={page}" if page > 1 else ""))
+            if html is None:
+                break
+            try:
+                page_items = parse_santaisabel_listing(html)
+            except (BlockedError, ValueError, KeyError) as exc:
+                self.backoff.record_block("santaisabel", f"formato inesperado: {exc}")
+                break
+            self.backoff.record_success("santaisabel")
+            seen = self._santaisabel_seen if page > 1 else set()
+            new = [i for i in page_items if i.id not in seen]
+            items.extend(new)
+            self._santaisabel_seen = seen | {i.id for i in page_items}
+            if not new or page >= SANTAISABEL_MAX_PAGES:
+                section_idx, page = (section_idx + 1) % len(SANTAISABEL_SECTIONS), 1   # siguiente sección
+            else:
+                page += 1
+        self._magento_cursor["santaisabel"] = (section_idx, page)
         return items
 
     # --- Tiendas Magento 2 (listados HTML) --------------------------------------
@@ -1326,6 +1380,8 @@ class DirectStoreReader:
             return self._magento_catalog_slice(store_id)
         if store_id == "spdigital":
             return self._spdigital_catalog_slice()
+        if store_id == "santaisabel":
+            return self._santaisabel_catalog_slice()
         if store_id != "pcfactory":
             return []
         items: List[ProductItem] = []
@@ -1365,7 +1421,7 @@ class DirectStoreReader:
             return None
         html = resp.text or ""
         data_marker = {
-            "paris": "self.__next_f", "jumbo": "self.__next_f", "abc": "data-pid",
+            "paris": "self.__next_f", "jumbo": "self.__next_f", "santaisabel": "self.__next_f", "abc": "data-pid",
             "hp": "data-price-amount", "winpy": "/venta/", "spdigital": "Fractal-",
             **{sid: "data-price-amount" for sid in MAGENTO_STORES},
         }.get(store_id, "__NEXT_DATA__")
@@ -1409,7 +1465,7 @@ class DirectStoreReader:
             url = f"{STORE_BASE['abc']}/on/demandware.store/Sites-Abc-Site/es_CL/Search-Show?q={q}&sz=48"
         elif store_id == "sodimac":
             url = f"{STORE_BASE['sodimac']}/sodimac-cl/search?Ntt={q}"
-        elif store_id == "jumbo":
+        elif store_id in ("jumbo", "santaisabel"):
             return []   # la búsqueda de Jumbo responde 404 a peticiones directas
         elif store_id in ("hp", "winpy", "spdigital"):
             return []   # catálogos chicos: basta con las categorías

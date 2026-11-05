@@ -242,7 +242,7 @@ def test_run_direct_scan_searches_watchlist_in_all_direct_stores(tmp_path):
     alerts = pipeline.run_direct_scan(keywords=["galaxy s25"], send_notifications=False)
     assert len(alerts) == 1
     searched = sorted(c.args[0] for c in reader.search.call_args_list)
-    assert searched == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "spdigital", "winpy", *VTEX_STORES, *SHOPIFY_STORES, *MAGENTO_STORES])
+    assert searched == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "santaisabel", "sodimac", "spdigital", "winpy", *VTEX_STORES, *SHOPIFY_STORES, *MAGENTO_STORES])
 
     # Sin watchlist ni categorías no consulta nada
     reader.search.reset_mock()
@@ -314,7 +314,7 @@ def test_direct_scan_includes_sodimac(tmp_path):
     reader.fetch_category.return_value = []
     pipeline = _pipeline(tmp_path, reader)
     pipeline.run_direct_scan(keywords=["refrigerador"], send_notifications=False)
-    assert sorted(c.args[0] for c in reader.search.call_args_list) == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "spdigital", "winpy", *VTEX_STORES, *SHOPIFY_STORES, *MAGENTO_STORES])
+    assert sorted(c.args[0] for c in reader.search.call_args_list) == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "santaisabel", "sodimac", "spdigital", "winpy", *VTEX_STORES, *SHOPIFY_STORES, *MAGENTO_STORES])
 
 
 # =====================================================================
@@ -769,3 +769,16 @@ def test_spdigital_catalog_slice_walks_pages_and_sections():
         "https://www.spdigital.cl/categories/componentes/", "https://www.spdigital.cl/categories/componentes/2/",
         "https://www.spdigital.cl/categories/componentes/3/", "https://www.spdigital.cl/categories/computacion/",
     ]
+
+
+def test_santaisabel_uses_jumbo_parser_and_stops_on_repeated_page():
+    client = MagicMock()
+    client.get.return_value = _html_response(_fixture("jumbo_listing.html"))   # mismo sitio Cencosud
+    reader = DirectStoreReader(client=client)
+    first = reader.fetch_catalog_slice("santaisabel")
+    assert first and all(i.store_id == "santaisabel" and i.id.startswith("santaisabel-") for i in first)
+    assert first[0].url.startswith("https://www.santaisabel.cl/")
+    urls = [c.args[0] for c in client.get.call_args_list]
+    # la página 2 repite la 1: la sección termina y sigue la siguiente
+    assert urls == ["https://www.santaisabel.cl/ofertas", "https://www.santaisabel.cl/ofertas?page=2",
+                    "https://www.santaisabel.cl/botilleria"]
