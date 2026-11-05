@@ -42,6 +42,52 @@ VTEX_STORES: Dict[str, tuple] = {
     "nike": ("Nike", "https://www.nike.cl", "otros"),
     "levis": ("Levi's", "https://www.levi.cl", "otros"),
     "reebok": ("Reebok", "https://www.reebok.cl", "otros"),
+    "mimbral": ("Mimbral", "https://www.mimbral.cl", "otros"),
+    "audiomusica": ("Audiomúsica", "https://www.audiomusica.com", "audio"),
+    "dimeiggs": ("Dimeiggs", "https://www.dimeiggs.cl", "otros"),
+    "drsimi": ("Dr. Simi", "https://www.drsimi.cl", "otros"),
+    "mademsa": ("Mademsa", "https://www.tiendamademsa.cl", "linea_blanca"),
+    "dimarsa": ("Dimarsa", "https://www.dimarsa.cl", "otros"),
+    "marsella": ("Ferretería Marsella", "https://www.ferreteriamarsella.cl", "otros"),
+    "construplaza": ("Construplaza", "https://www.construplaza.cl", "otros"),
+    "tiendasalfa": ("Tiendas Alfa", "https://www.tiendasalfa.cl", "otros"),
+    "tramontina": ("Tramontina", "https://www.tramontina.cl", "otros"),
+    "dimarine": ("Dimarine", "https://www.dimarine.cl", "otros"),
+    "lavinoteca": ("La Vinoteca", "https://www.lavinoteca.cl", "otros"),
+    "maxservice": ("Maxservice", "https://www.maxservice.cl", "otros"),
+    "ventus": ("Ventus", "https://www.ventuscorp.cl", "otros"),
+    "karcher": ("Kärcher", "https://www.karcherstore.cl", "otros"),
+    "esika": ("Ésika", "https://esika.tiendabelcorp.cl", "otros"),
+    "lbel": ("L'Bel", "https://lbel.tiendabelcorp.cl", "otros"),
+    "clubsoftys": ("Club Softys", "https://www.clubsoftys.cl", "otros"),
+    "coleman": ("Coleman", "https://www.coleman.cl", "otros"),
+    "marleycoffee": ("Marley Coffee", "https://www.marleycoffee.cl", "otros"),
+    "bbqgrill": ("BBQ Grill", "https://www.bbqgrill.cl", "otros"),
+    "blanik": ("Blanik", "https://www.blanik.cl", "otros"),
+    "cotidian": ("Cotidian", "https://www.mitiendacotidian.cl", "otros"),
+    "colloky": ("Colloky", "https://www.colloky.cl", "otros"),
+    "ficcus": ("Ficcus", "https://www.ficcus.cl", "otros"),
+    "zapatos": ("Zapatos.cl", "https://www.zapatos.cl", "otros"),
+    "hm": ("H&M", "https://cl.hm.com", "otros"),
+    "dolly": ("Dolly", "https://www.dolly.cl", "otros"),
+    "ferouch": ("Ferouch", "https://www.ferouch.cl", "otros"),
+    "calvinklein": ("Calvin Klein", "https://www.calvinklein.cl", "otros"),
+    "theline": ("The Line", "https://www.theline.cl", "otros"),
+    "tommy": ("Tommy Hilfiger", "https://cl.tommy.com", "otros"),
+    "treck": ("Treck", "https://www.treck.cl", "otros"),
+    "velez": ("Vélez", "https://www.velez.cl", "otros"),
+    "privilege": ("Privilege", "https://www.privilege.cl", "otros"),
+    "newman": ("Newman", "https://www.newman.cl", "otros"),
+    "swarovski": ("Swarovski", "https://www.swarovski.cl", "otros"),
+    "womensecret": ("Women'secret", "https://www.womensecret.cl", "otros"),
+    "totto": ("Totto", "https://cl.totto.com", "otros"),
+    "oneill": ("O'Neill", "https://www.oneill.cl", "otros"),
+    "americaneagle": ("American Eagle", "https://www.ae.cl", "otros"),
+    "asics": ("Asics", "https://www.asics.cl", "otros"),
+    "trial": ("Trial", "https://www.trial.cl", "otros"),
+    "umbrale": ("Umbrale", "https://www.umbrale.cl", "otros"),
+    "mountainhardwear": ("Mountain Hardwear", "https://www.mountainhardwear.cl", "otros"),
+    "ilgioco": ("Il Gioco", "https://www.ilgioco.cl", "otros"),
 }
 
 # Tiendas Shopify: /products.json es el catálogo público estándar de Shopify (precio, compare_at_price
@@ -62,6 +108,10 @@ SHOPIFY_STORES: Dict[str, tuple] = {
     "aufbau": ("Aufbau", "https://aufbau.cl", "tecnologia"),
     "lippi": ("Lippi", "https://www.lippioutdoor.com", "otros"),
     "kitchencenter": ("Kitchen Center", "https://www.kitchencenter.cl", "otros"),
+    "sharkninja": ("SharkNinja", "https://www.sharkninja.cl", "otros"),
+    "dermotienda": ("Dermotienda", "https://dermotienda.cl", "otros"),
+    "herramientastotal": ("Herramientas Total", "https://www.herramientastotal.cl", "otros"),
+    "delonghi": ("De'Longhi", "https://www.delonghi.cl", "otros"),
 }
 # Shopify con compare_at_price inflado: Kitchen Center muestra "antes" de exactamente el doble
 # ($409.980 = 2 × $204.990). Ahí la referencia es el precio actual, como Casa Royal en VTEX.
@@ -76,6 +126,44 @@ MAGENTO_STORES: Dict[str, tuple] = {
     "marmot": ("Marmot", "https://www.marmot.cl", "otros", ("/hombre", "/mujer")),
     "sparta": ("Sparta", "https://sparta.cl", "otros", ("/zapatillas.html",)),
     "dbs": ("DBS", "https://dbs.cl", "otros", ("/sale", "/perfumes/mujer", "/perfumes/hombre")),
+    "antartica": ("Antártica", "https://www.antartica.cl", "otros", ("/promociones.html", "/libros-importados.html", "/libros.html")),
+    "weplay": ("Weplay", "https://www.weplay.cl", "consolas", ("/oferta.html", "/consolas.html")),
+    "sdn": ("SDN Neumáticos", "https://sdn.cl", "otros", ("/ofertas.html", "/neumaticos.html")),
+    "novasalud": ("Novasalud", "https://www.novasalud.cl", "otros", ("/ofertas", "/medicamentos", "/cuidado-personal")),
+    "ebest": ("eBest", "https://www.ebest.cl", "otros", ("/fotografia-video.html", "/audio.html", "/bicicleta.html")),
+    "bathandbodyworks": ("Bath & Body Works", "https://www.bathandbodyworks.cl", "otros", ("/catalogo",)),
+    "schilling": ("Schilling", "https://www.schilling.cl", "otros", ("/lentes-de-sol.html", "/lentes-opticos.html")),
+    "flex": ("Flex", "https://www.flex.cl", "otros", ("/ofertas", "/camas", "/colchones")),
+    "headchile": ("Head", "https://www.headchile.com", "otros", ("/mochilas", "/maletas")),
+    "epson": ("Tienda Epson", "https://www.tiendaepson.cl", "otros", ("/ofertas", "/impresoras", "/proyectores")),
+    "umbro": ("Umbro", "https://umbro.cl", "otros", ("/outlet", "/hombre")),
+    "kotting": ("Kotting", "https://www.kotting.cl", "otros", ("/sale.html", "/vestuario.html")),
+    "roly": ("Roly", "https://www.roly.cl", "otros", ("/hombre.html", "/mujer.html")),
+    "surprice": ("Surprice", "https://www.surprice.cl", "otros", ("/ofertas", "/hombre", "/mujer")),
+    "ash": ("Ash", "https://www.ashchile.cl", "otros", ("/women.html",)),
+    "bananarepublic": ("Banana Republic", "https://www.bananarepublic.cl", "otros", ("/sale", "/mujer-cat", "/hombre-cat")),
+    "brooksbrothers": ("Brooks Brothers", "https://www.brooksbrothers.cl", "otros", ("/hombre", "/mujer")),
+    "calubags": ("Calu Bags", "https://www.calubags.com", "otros", ("/todo-calu",)),
+    "dcshoes": ("DC Shoes", "https://www.dcshoes.cl", "otros", ("/hombre", "/mujer")),
+    "globe": ("Globe", "https://globebrand.cl", "otros", ("/footwear.html",)),
+    "guess": ("Guess", "https://www.guess.cl", "otros", ("/mujer", "/carteras", "/hombre")),
+    "jayson": ("Jayson", "https://www.jayson.cl", "otros", ("/sale.html", "/institucional.html")),
+    "kannu": ("Kannu", "https://www.kannu.cl", "otros", ("/sale.html", "/kannu-mujer.html", "/hombre.html")),
+    "kipling": ("Kipling", "https://www.kipling.cl", "otros", ("/carteras", "/mochilas", "/accesorios")),
+    "magriffe": ("Magriffe", "https://www.magriffe.cl", "otros", ("/outlet.html", "/oportunidades.html")),
+    "mammut": ("Mammut", "https://www.mammut.cl", "otros", ("/sale", "/hombre", "/mujer", "/equipamiento")),
+    "mauiandsons": ("Maui and Sons", "https://mauiandsons.cl", "otros", ("/hombre.html", "/mujer.html", "/kids.html")),
+    "mcgregor": ("McGregor", "https://www.mcgregor.cl", "otros", ("/sale.html", "/casual.html")),
+    "potros": ("Potros", "https://www.potros.cl", "otros", ("/sale.html", "/vestuario.html")),
+    "rapsodia": ("Rapsodia", "https://www.rapsodia.cl", "otros", ("/special-prices.html", "/woman.html")),
+    "ripcurl": ("Rip Curl", "https://ripcurl.cl", "otros", ("/hombre.html", "/mujer.html", "/juvenil.html")),
+    "rusty": ("Rusty", "https://rusty.cl", "otros", ("/sale.html", "/hombre.html")),
+    "stoked": ("Stoked", "https://www.stoked.cl", "otros", ("/hombre", "/mujer")),
+    "gap": ("Gap", "https://www.gap.cl", "otros", ("/mujer", "/hombre", "/ni-os")),
+    "ugg": ("UGG", "https://www.ugg.cl", "otros", ("/sale", "/mujer", "/hombre")),
+    "victoriassecret": ("Victoria's Secret", "https://www.victoriassecret.cl", "otros", ("/bras", "/panties", "/beauty")),
+    "volcom": ("Volcom", "https://volcom.cl", "otros", ("/hombre.html", "/footwear.html")),
+    "wa2": ("Wa2", "https://www.wa2.cl", "otros", ("/colecciones",)),
 }
 MAGENTO_PAGE_SIZE = 36
 MAGENTO_PAGES_PER_CYCLE = 2
@@ -84,9 +172,10 @@ SHOPIFY_PAGE_SIZE = 250          # máximo de /products.json
 SHOPIFY_SPACING_SECONDS = 90.0   # una petición Shopify (de cualquier tienda) cada 90 s
 SHOPIFY_BACKOFF_KEY = "shopify"
 # Tiendas cuyo ListPrice está inflado en todo el catálogo (como el "normal" de ABC): Casa Royal
-# muestra 40%+ de descuento en ~18% de sus productos (un micrófono de $18.990 con "normal" $54.990).
+# muestra 40%+ de descuento en ~18% de sus productos (un micrófono de $18.990 con "normal" $54.990);
+# Construplaza, Coleman e Il Gioco muestran "descuento" en casi el 100% del catálogo.
 # Ahí la referencia es el precio actual y las bajas reales se detectan contra el historial propio.
-VTEX_INFLATED_LIST_PRICE = {"casaroyal"}
+VTEX_INFLATED_LIST_PRICE = {"casaroyal", "construplaza", "coleman", "ilgioco"}
 VTEX_PAGE_SIZE = 50          # máximo que acepta la API
 VTEX_MAX_OFFSET = 2500       # VTEX no pagina más allá de _from=2500
 VTEX_PAGES_PER_CYCLE = 4     # 200 productos por tienda y ciclo
@@ -591,7 +680,7 @@ def parse_magento_listing(store_id: str, html: str, category_hint: Optional[str]
             in_stock="agotado" not in tile.get_text(" ").lower(), timestamp=now, source="direct",
         ))
     toolbar = soup.select_one(".toolbar-amount") or soup.select_one(".toolbar-number")
-    numbers = re.findall(r"\d+", toolbar.get_text(" ") if toolbar else "")
+    numbers = re.findall(r"\d+", (toolbar.get_text(" ") if toolbar else "").replace(".", "").replace(",", ""))   # "de 2.435"
     total = int(numbers[-1]) if numbers else None
     return items, total
 
