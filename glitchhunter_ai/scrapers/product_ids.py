@@ -39,6 +39,7 @@ _SHOPIFY_STORES = {"columbia", "caterpillar", "patagonia", "underarmour", "crocs
                    "delonghi"}
 _HP_RE = re.compile(r"/shop/[a-z0-9-]+-([a-z0-9]{5,10})\.html$")   # el SKU va al final del slug
 _WINPY_RE = re.compile(r"^/venta/([a-z0-9-]+)$")
+_SPDIGITAL_RE = re.compile(r"^/([a-z0-9-]+)$")   # fichas de SP Digital: /{slug}/
 # Paris: /{slug}-{CLAVE}.html (clave commercetools, ej: MKDFYM0YKP; en URLs antiguas, numérica)
 _PARIS_RE = re.compile(r"-([A-Za-z0-9]+)\.html$")
 # Ripley: /{slug}-{partNumber}p  o  /{slug}-mpm{n} (marketplace)
@@ -80,6 +81,10 @@ def canonical_product_id(store_id: str, url: Optional[str]) -> Optional[str]:
     if store == "winpy":
         m = _WINPY_RE.search(path.lower())
         return f"winpy-{m.group(1)}" if m else None
+
+    if store == "spdigital":
+        m = _SPDIGITAL_RE.search(path.lower())
+        return f"spdigital-{m.group(1)}" if m and not path.startswith("/categories") else None
 
     if store in _SLUG_P_STORES:
         m = _JUMBO_RE.search(path.lower())

@@ -181,7 +181,7 @@ VTEX_MAX_OFFSET = 2500       # VTEX no pagina más allá de _from=2500
 VTEX_PAGES_PER_CYCLE = 4     # 200 productos por tienda y ciclo
 
 DIRECT_STORES = (
-    ("falabella", "ripley", "paris", "abc", "jumbo", "hp", "winpy", "sodimac", "pcfactory")
+    ("falabella", "ripley", "paris", "abc", "jumbo", "hp", "winpy", "sodimac", "pcfactory", "spdigital")
     + tuple(VTEX_STORES) + tuple(SHOPIFY_STORES) + tuple(MAGENTO_STORES)
 )
 
@@ -193,12 +193,20 @@ PCFACTORY_API = "https://api.pcfactory.cl/pcfactory-services-catalogo/v1/catalog
 PCFACTORY_HEADERS = {"Origin": "https://www.pcfactory.cl", "Referer": "https://www.pcfactory.cl/"}
 PCFACTORY_PAGE_SIZE = 48
 
+# SP Digital (Gatsby): los listados /categories/{sección}/{página}/ traen 48 tarjetas con precio normal,
+# precio por transferencia y precio con otros medios de pago. Se recorren por secciones, como Magento.
+SPDIGITAL_SECTIONS = ("/categories/componentes/", "/categories/computacion/", "/categories/gaming-y-streaming/",
+                      "/categories/audio-y-musica/", "/categories/conectividad-y-redes/", "/categories/hogar-y-oficina/",
+                      "/categories/otras-categorias/")
+SPDIGITAL_PAGES_PER_CYCLE = 3
+
 _NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.DOTALL)
 _BOT_CHALLENGE_MARKERS = ("captcha", "perimeterx", "px-captcha", "are you a robot", "access denied")
 
 STORE_NAMES = {
     "falabella": "Falabella", "ripley": "Ripley", "paris": "Paris", "abc": "ABC",
     "jumbo": "Jumbo", "hp": "HP", "winpy": "Winpy", "sodimac": "Sodimac", "pcfactory": "PC Factory",
+    "spdigital": "SP Digital",
     **{sid: cfg[0] for sid, cfg in VTEX_STORES.items()},
     **{sid: cfg[0] for sid, cfg in SHOPIFY_STORES.items()},
     **{sid: cfg[0] for sid, cfg in MAGENTO_STORES.items()},
@@ -216,6 +224,7 @@ STORE_BASE = {
     **{sid: cfg[1] for sid, cfg in MAGENTO_STORES.items()},
     "sodimac": "https://www.sodimac.cl",
     "pcfactory": "https://www.pcfactory.cl",
+    "spdigital": "https://www.spdigital.cl",
 }
 
 # Categorías verificadas para lectura directa (clave -> ruta)
@@ -792,6 +801,78 @@ def parse_winpy_product(html: str, url: str) -> Optional[ProductItem]:
     )
 
 
+_CLP_RE = re.compile(r"\$\s?\d{1,3}(?:\.\d{3})+")
+
+
+def _spdigital_prices(texts: List[str]) -> tuple:
+    """(actual, normal) de SP Digital a partir de sus precios en orden: normal, transferencia, otros medios."""
+    prices = [_clp(t) for t in texts if _CLP_RE.fullmatch(t.strip())]
+    if len(prices) >= 3:
+        return prices[1], max(prices[0], prices[1])   # transferencia (el más bajo) y precio normal
+    if prices:
+        return prices[0], prices[0]
+    return 0.0, 0.0
+
+
+def parse_spdigital_listing(html: str, category_hint: str = "tecnologia") -> tuple:
+    """(productos, última página) de un listado de SP Digital: tarjetas Fractal-ProductCard."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    cards = soup.select('div[data-fractalds="t:m|n:productcard|v:default"]')
+    if not cards:
+        raise BlockedError("página sin productos")
+    items: List[ProductItem] = []
+    seen: set = set()
+    now = datetime.now(timezone.utc)
+    for card in cards:
+        links = [a for a in card.select("a[href]") if a.get_text(strip=True)]
+        if not links:
+            continue
+        link = max(links, key=lambda a: len(a.get_text(strip=True)))   # el nombre, no la marca
+        url = urllib.parse.urljoin(STORE_BASE["spdigital"], link["href"].split("?")[0])
+        pid = canonical_product_id("spdigital", url)
+        title = " ".join(link.get_text(" ").split())
+        box = card.select_one(".Fractal-ProductCard__price--container")
+        current, normal = _spdigital_prices(list(box.stripped_strings) if box else [])
+        if not pid or pid in seen or not title or current <= 0:
+            continue
+        seen.add(pid)
+        img = card.select_one("img[src]")
+        image = urllib.parse.urljoin("https:", img["src"]) if img else None
+        items.append(ProductItem(
+            id=pid, store_id="spdigital", store_name=STORE_NAMES["spdigital"], title=title,
+            category=_infer_category(title, category_hint), current_price=current, normal_price=normal,
+            card_price=None, url=url, image_url=image,
+            in_stock="agotado" not in card.get_text(" ").lower(), timestamp=now, source="direct",
+        ))
+    pages = [int(n) for n in re.findall(r'href="/categories/[a-z0-9-]+/(\d+)/', html or "")]
+    return items, max(pages + [1])
+
+
+def parse_spdigital_product(html: str, url: str) -> Optional[ProductItem]:
+    """Ficha de SP Digital: h1 y, a continuación, precio normal, transferencia y otros medios de pago."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    pid = canonical_product_id("spdigital", url)
+    h1 = soup.select_one("h1")
+    if not pid or h1 is None:
+        return None
+    texts = [t for t in h1.find_all_next(string=_CLP_RE)][:3]
+    current, normal = _spdigital_prices([str(t) for t in texts])
+    title = " ".join(h1.get_text(" ").split())
+    if not title or current <= 0:
+        return None
+    page_text = soup.get_text(" ").lower()
+    return ProductItem(
+        id=pid, store_id="spdigital", store_name=STORE_NAMES["spdigital"], title=title,
+        category=_infer_category(title, "tecnologia"), current_price=current, normal_price=normal,
+        card_price=None, url=url, in_stock="agotado" not in page_text,
+        timestamp=datetime.now(timezone.utc), source="direct",
+    )
+
+
 def _abc_price(node: Any, selector: str) -> float:
     span = node.select_one(f"{selector} .price-value[data-value]")
     try:
@@ -1036,6 +1117,7 @@ PRODUCT_PARSERS = {
     "hp": parse_hp_product,
     "winpy": parse_winpy_product,
     "sodimac": parse_sodimac_product,
+    "spdigital": parse_spdigital_product,
 }
 
 
@@ -1084,6 +1166,30 @@ class DirectStoreReader:
         if not content:
             return []
         return PCFactoryScraper().parse_pcfactory_json(content.get("items") or [])
+
+    # --- SP Digital (listados HTML por sección) ---------------------------------
+    def _spdigital_catalog_slice(self) -> List[ProductItem]:
+        """Las siguientes páginas de las secciones de SP Digital (cursor: sección y página)."""
+        items: List[ProductItem] = []
+        section_idx, page = self._magento_cursor.get("spdigital", (0, 1))
+        for _ in range(SPDIGITAL_PAGES_PER_CYCLE):
+            path = SPDIGITAL_SECTIONS[section_idx % len(SPDIGITAL_SECTIONS)]
+            html = self._get_html("spdigital", f"{STORE_BASE['spdigital']}{path}{f'{page}/' if page > 1 else ''}")
+            if html is None:
+                break
+            try:
+                page_items, last_page = parse_spdigital_listing(html)
+            except (BlockedError, ValueError, KeyError) as exc:
+                self.backoff.record_block("spdigital", f"formato inesperado: {exc}")
+                break
+            self.backoff.record_success("spdigital")
+            items.extend(page_items)
+            if not page_items or page >= last_page:
+                section_idx, page = (section_idx + 1) % len(SPDIGITAL_SECTIONS), 1   # siguiente sección
+            else:
+                page += 1
+        self._magento_cursor["spdigital"] = (section_idx, page)
+        return items
 
     # --- Tiendas Magento 2 (listados HTML) --------------------------------------
     def _magento_catalog_slice(self, store_id: str) -> List[ProductItem]:
@@ -1218,6 +1324,8 @@ class DirectStoreReader:
             return self._shopify_catalog_slice(store_id)
         if store_id in MAGENTO_STORES:
             return self._magento_catalog_slice(store_id)
+        if store_id == "spdigital":
+            return self._spdigital_catalog_slice()
         if store_id != "pcfactory":
             return []
         items: List[ProductItem] = []
@@ -1258,7 +1366,7 @@ class DirectStoreReader:
         html = resp.text or ""
         data_marker = {
             "paris": "self.__next_f", "jumbo": "self.__next_f", "abc": "data-pid",
-            "hp": "data-price-amount", "winpy": "/venta/",
+            "hp": "data-price-amount", "winpy": "/venta/", "spdigital": "Fractal-",
             **{sid: "data-price-amount" for sid in MAGENTO_STORES},
         }.get(store_id, "__NEXT_DATA__")
         if data_marker not in html:
@@ -1303,7 +1411,7 @@ class DirectStoreReader:
             url = f"{STORE_BASE['sodimac']}/sodimac-cl/search?Ntt={q}"
         elif store_id == "jumbo":
             return []   # la búsqueda de Jumbo responde 404 a peticiones directas
-        elif store_id in ("hp", "winpy"):
+        elif store_id in ("hp", "winpy", "spdigital"):
             return []   # catálogos chicos: basta con las categorías
         elif store_id in SHOPIFY_STORES:
             return []   # cada petición cuenta para el freno de Shopify: basta con el catálogo rotativo

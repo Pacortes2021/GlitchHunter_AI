@@ -25,6 +25,7 @@
     jumbo: { name: 'Jumbo', color: '#16a34a' },
     hp: { name: 'HP', color: '#0096d6' },
     winpy: { name: 'Winpy', color: '#f59e0b' },
+    spdigital: { name: 'SP Digital', color: '#1e3a8a' },
     sony: { name: 'Sony Store', color: '#111827' },
     motorola: { name: 'Motorola', color: '#4f46e5' },
     electrolux: { name: 'Electrolux', color: '#1e3a8a' },
