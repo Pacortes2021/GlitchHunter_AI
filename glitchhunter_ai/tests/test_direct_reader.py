@@ -242,7 +242,7 @@ def test_run_direct_scan_searches_watchlist_in_all_direct_stores(tmp_path):
     alerts = pipeline.run_direct_scan(keywords=["galaxy s25"], send_notifications=False)
     assert len(alerts) == 1
     searched = sorted(c.args[0] for c in reader.search.call_args_list)
-    assert searched == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy", *VTEX_STORES, *SHOPIFY_STORES, *MAGENTO_STORES])
+    assert searched == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "spdigital", "winpy", *VTEX_STORES, *SHOPIFY_STORES, *MAGENTO_STORES])
 
     # Sin watchlist ni categorías no consulta nada
     reader.search.reset_mock()
@@ -314,7 +314,7 @@ def test_direct_scan_includes_sodimac(tmp_path):
     reader.fetch_category.return_value = []
     pipeline = _pipeline(tmp_path, reader)
     pipeline.run_direct_scan(keywords=["refrigerador"], send_notifications=False)
-    assert sorted(c.args[0] for c in reader.search.call_args_list) == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "winpy", *VTEX_STORES, *SHOPIFY_STORES, *MAGENTO_STORES])
+    assert sorted(c.args[0] for c in reader.search.call_args_list) == sorted(["abc", "falabella", "hp", "jumbo", "paris", "pcfactory", "ripley", "sodimac", "spdigital", "winpy", *VTEX_STORES, *SHOPIFY_STORES, *MAGENTO_STORES])
 
 
 # =====================================================================
@@ -731,3 +731,41 @@ def test_vtex_slugs_with_underscores():
 
     url = "https://www.tramontina.cl/silla-tramontina-summa-diana_92030409/p"
     assert canonical_product_id("tramontina", url) == "tramontina-silla-tramontina-summa-diana_92030409"
+
+
+def test_parse_spdigital_listing():
+    from glitchhunter_ai.scrapers.direct_reader import parse_spdigital_listing
+
+    items, last_page = parse_spdigital_listing(_fixture("spdigital_listing.html"))
+    assert last_page == 3
+    gpu = items[0]
+    assert gpu.id == "spdigital-tarjeta-de-video-gigabyte-radeon-rx-9050-gaming-oc-8gb-gddr6-128-bits-pci-e-50-2x-dp-1x-hdmi"
+    assert gpu.title.startswith("Tarjeta de Video Gigabyte Radeon RX 9050")
+    assert (gpu.current_price, gpu.normal_price) == (359990, 499990)   # transferencia y precio normal
+    assert gpu.url.startswith("https://www.spdigital.cl/tarjeta-de-video")
+    assert gpu.image_url.startswith("https://media.spdigital.cl/")
+    assert all(i.current_price <= i.normal_price for i in items)
+
+
+def test_parse_spdigital_product_matches_listing():
+    from glitchhunter_ai.scrapers.direct_reader import parse_spdigital_product
+
+    url = "https://www.spdigital.cl/tarjeta-de-video-gigabyte-radeon-rx-9050-gaming-oc-8gb-gddr6-128-bits-pci-e-50-2x-dp-1x-hdmi/"
+    item = parse_spdigital_product(_fixture("spdigital_product.html"), url)
+    assert item.id == "spdigital-tarjeta-de-video-gigabyte-radeon-rx-9050-gaming-oc-8gb-gddr6-128-bits-pci-e-50-2x-dp-1x-hdmi"
+    assert (item.current_price, item.normal_price) == (359990, 499990)
+    assert item.in_stock
+
+
+def test_spdigital_catalog_slice_walks_pages_and_sections():
+    listing = _fixture("spdigital_listing.html")
+    client = MagicMock()
+    client.get.return_value = _html_response(listing)
+    reader = DirectStoreReader(client=client)
+    for _ in range(2):
+        assert reader.fetch_catalog_slice("spdigital")
+    urls = [c.args[0] for c in client.get.call_args_list]
+    assert urls[:4] == [
+        "https://www.spdigital.cl/categories/componentes/", "https://www.spdigital.cl/categories/componentes/2/",
+        "https://www.spdigital.cl/categories/componentes/3/", "https://www.spdigital.cl/categories/computacion/",
+    ]
