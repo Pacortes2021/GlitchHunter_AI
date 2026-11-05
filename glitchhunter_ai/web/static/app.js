@@ -154,6 +154,7 @@
   };
   const DEFAULT_STORE_COLOR = '#64748b';
   const INITIAL_LIMIT = 500;
+  const MATCHING_LIMIT = 1000;   // publicaciones que se traen al aplicar un filtro
   const POLL_MS = 30000;
   const NEW_HIGHLIGHT_MS = 8000;
   const MAX_CATEGORY_CHIPS = 10;
@@ -820,17 +821,20 @@
    * Devuelve { added, replaced }: agregadas (de la más antigua a la más nueva) y entradas reemplazadas
    * (ya quitadas del estado; su nodo se quita del DOM al insertar).
    */
-  function registerPosts(posts) {
+  function registerPosts(posts, { older = false } = {}) {
     const added = [];
     const replaced = [];
     [...posts]
       .filter(p => p && p.product && Number.isFinite(Number(p.feed_id)))
       .sort((a, b) => a.feed_id - b.feed_id)
       .forEach(post => {
-        if (state.posts.has(post.feed_id) || post.feed_id <= state.lastFeedId) return;
+        if (state.posts.has(post.feed_id)) return;
+        // Las publicaciones antiguas solo entran al traer resultados de un filtro (older)
+        if (!older && post.feed_id <= state.lastFeedId) return;
         const pid = post.product.id !== undefined && post.product.id !== null ? String(post.product.id) : '';
         if (pid && state.byProduct.has(pid)) {
           const oldId = state.byProduct.get(pid);
+          if (oldId > post.feed_id) return;   // ya está la publicación más reciente de este producto
           const old = state.posts.get(oldId);
           if (old) {
             state.posts.delete(oldId);
@@ -869,6 +873,35 @@
     state.appliedSort = 'recent';
     renderFilterChips();
     applyFilters();
+    loadMatching();   // filtros guardados de una visita anterior
+  }
+
+  /**
+   * Trae del servidor las publicaciones que calzan con los filtros de tipo, descuento y tienda,
+   * aunque sean más antiguas que las cargadas al inicio (la página parte con las últimas INITIAL_LIMIT).
+   */
+  let matchingSeq = 0;
+  async function loadMatching() {
+    const f = state.filters;
+    if (f.kind === 'all' && !f.minDiscount && !f.stores.length) return;
+    const params = new URLSearchParams({ limit: String(MATCHING_LIMIT) });
+    if (f.kind !== 'all') params.set('kind', f.kind);
+    if (f.minDiscount) params.set('min_discount', String(f.minDiscount));
+    if (f.stores.length) params.set('stores', f.stores.join(','));
+    const seq = ++matchingSeq;
+    try {
+      const res = await fetch(`/api/feed?${params}`);
+      if (!res.ok || seq !== matchingSeq) return;
+      const posts = await res.json();
+      const { added, replaced } = registerPosts(Array.isArray(posts) ? posts : [], { older: true });
+      if (!added.length) return;
+      replaced.forEach(e => e.el.remove());
+      const list = $('feed-list');
+      added.forEach(e => list.appendChild(e.el));
+      reorderNodes();
+      renderFilterChips();
+      applyFilters();
+    } catch { /* sin conexión: quedan las publicaciones ya cargadas */ }
   }
 
   function isScrolledAway() {
@@ -1328,6 +1361,7 @@
         state.filters.category = state.filters.category === c ? '' : c;
       } else return;
       applyFilters();
+      if (!catChip) loadMatching();
     });
 
     $('filter-watchlist').addEventListener('change', (e) => {

@@ -31,6 +31,7 @@ MIN_ABSOLUTE_SAVINGS_CLP = float(os.getenv("MIN_ABSOLUTE_SAVINGS_CLP", "30000.0"
 
 # Canal de ofertas comerciales (40%-64%): filtro de calidad antes de publicar
 DEAL_MIN_SAVINGS_CLP = float(os.getenv("DEAL_MIN_SAVINGS_CLP", "10000"))     # Ahorro mínimo de una oferta
+DEAL_PUBLISH_BATCH = int(os.getenv("DEAL_PUBLISH_BATCH", "3000"))              # Candidatas revisadas por ciclo
 DEAL_MAX_AGE_HOURS = float(os.getenv("DEAL_MAX_AGE_HOURS", "12"))            # Solo productos vistos recientemente
 # Una publicación pasa a "sin confirmar" si ningún escaneo ve el producto en estas horas
 FEED_NOT_SEEN_HOURS = float(os.getenv("FEED_NOT_SEEN_HOURS", "24"))

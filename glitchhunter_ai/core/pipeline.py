@@ -85,6 +85,7 @@ class GlitchHuntingPipeline:
         self._bulk_price_counts: Dict[str, int] = {}
         self.last_direct_scan_skipped = False   # True si el último escaneo directo se omitió por otro en curso
         self.is_scanning = False
+        self._rejected_deals: set = set()   # (product_id, precio) rechazados por el filtro de calidad
 
     def process_product(
         self,
@@ -640,27 +641,40 @@ class GlitchHuntingPipeline:
         normal = float(row.get("normal_price") or 0.0)
         return normal - best_price >= DEAL_MIN_SAVINGS_CLP
 
-    def publish_new_deals(self, min_discount: float = 40.0, max_discount: float = 65.0) -> int:
+    def publish_new_deals(self, min_discount: float = 40.0, max_discount: float = 101.0) -> int:
         """
-        Publica en el canal las ofertas comerciales (40%-64%) que aún no se habían publicado,
-        o que ahora están más baratas que en su última publicación. Las ya publicadas no se repiten.
+        Publica en el canal las ofertas (40% o más) que aún no se habían publicado, o que ahora están
+        más baratas que en su última publicación. Las ya publicadas no se repiten. Incluye los descuentos
+        de 65% o más que no llegaron como error de precio (por ejemplo, ahorros bajo $30.000).
         Solo pasan las que superan el filtro de calidad (ver _is_publishable_deal).
         """
-        from glitchhunter_ai.config import DEAL_MAX_AGE_HOURS
+        from glitchhunter_ai.config import DEAL_MAX_AGE_HOURS, DEAL_MIN_SAVINGS_CLP, DEAL_PUBLISH_BATCH
 
         published = 0
         try:
             rows = self.db.get_commercial_deals(
                 min_discount=min_discount,
                 max_discount=max_discount,
-                limit=1000,
+                limit=50000,   # todas las candidatas: la consulta ya filtra ahorro y publicadas
                 max_age_hours=DEAL_MAX_AGE_HOURS,
+                min_savings=DEAL_MIN_SAVINGS_CLP,
+                unpublished_only=True,
             )
+            checked = 0
             for row in rows:
                 current = float(row.get("current_price") or 0.0)
                 card = row.get("card_price")
                 best = float(card) if card and 0 < float(card) < current else current
+                # Los rechazados por el filtro de calidad (accesorios, reacondicionados…) no se reevalúan
+                # a este precio: si no, ocuparían siempre los primeros cupos de cada pasada.
+                key = (str(row.get("product_id")), round(best))
+                if key in self._rejected_deals:
+                    continue
+                if checked >= DEAL_PUBLISH_BATCH:
+                    break
+                checked += 1
                 if not self._is_publishable_deal(row, best):
+                    self._rejected_deals.add(key)
                     continue
                 # Categoría consistente para los filtros de la página (los scrapers usan rótulos distintos)
                 row = dict(row, category=classify_category(str(row.get("title") or "")))

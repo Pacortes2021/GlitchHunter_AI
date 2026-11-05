@@ -626,12 +626,17 @@ def format_feed_post(post: Dict[str, Any]) -> Dict[str, Any]:
 async def get_feed(
     after_id: int = Query(0, ge=0, le=2**62, description="Solo publicaciones con id mayor a este (para traer únicamente lo nuevo)"),
     limit: int = Query(300, ge=1, le=1000, description="Cantidad máxima de publicaciones"),
+    min_discount: float = Query(0, ge=0, le=100, description="Descuento mínimo (%)"),
+    kind: Optional[str] = Query(None, pattern="^(glitch|deal)$", description="Solo errores de precio u ofertas"),
+    stores: Optional[str] = Query(None, max_length=2000, description="Tiendas separadas por coma"),
 ):
     """
     Canal de ofertas: cada oferta se publica una sola vez, con su precio y hora de recepción.
-    Ordenado de la más reciente a la más antigua.
+    Ordenado de la más reciente a la más antigua. Los filtros traen también publicaciones antiguas.
     """
-    cards = [format_feed_post(p) for p in db.get_feed(after_id=after_id, limit=limit)]
+    store_list = [s.strip().lower() for s in (stores or "").split(",") if s.strip()][:50]
+    posts = db.get_feed(after_id=after_id, limit=limit, min_discount=min_discount, kind=kind, stores=store_list)
+    cards = [format_feed_post(p) for p in posts]
     votes = db.get_feedback_counts([c.get("alert_id") for c in cards])
     for c in cards:
         v = votes.get(c.get("alert_id"), {})

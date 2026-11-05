@@ -533,9 +533,12 @@ def test_vtex_catalog_slice_rotates_and_wraps():
     client.get.return_value = _vtex_response(products, total=120)
     reader = DirectStoreReader(client=client, backoff=StoreBackoff(clock=_FakeClock()))
 
-    assert len(reader.fetch_catalog_slice("sony", pages=10)) == 9   # 3 páginas de 50 cubren 120
-    offsets = [c.kwargs["params"]["_from"] for c in client.get.call_args_list]
-    assert offsets == [0, 50, 100]
+    # Carril rápido (mayor descuento) + 3 páginas de 50 que cubren 120
+    assert len(reader.fetch_catalog_slice("sony", pages=10)) == 12
+    calls = [c.kwargs["params"] for c in client.get.call_args_list]
+    assert [(p["_from"], p["O"]) for p in calls] == [
+        (0, "OrderByBestDiscountDESC"), (0, "OrderByReleaseDateDESC"), (50, "OrderByReleaseDateDESC"), (100, "OrderByReleaseDateDESC"),
+    ]
     client.get.reset_mock()
     reader.fetch_catalog_slice("sony", pages=1)
     assert client.get.call_args.kwargs["params"]["_from"] == 0   # vuelve al inicio
@@ -701,10 +704,12 @@ def test_magento_catalog_slice_walks_pages_then_next_section():
     urls = [c.args[0] for c in client.get.call_args_list]
     assert urls == ["https://dbs.cl/sale?product_list_limit=36&p=1", "https://dbs.cl/sale?product_list_limit=36&p=2"]
     # Al pasar el total (532 = 15 páginas) salta a la siguiente sección
+    # (antes, el carril rápido relee la primera página de la primera sección)
     reader._magento_cursor["dbs"] = (0, 15)
     client.get.reset_mock()
     reader.fetch_catalog_slice("dbs")
     assert [c.args[0] for c in client.get.call_args_list] == [
+        "https://dbs.cl/sale?product_list_limit=36&p=1",
         "https://dbs.cl/sale?product_list_limit=36&p=15", "https://dbs.cl/perfumes/mujer?product_list_limit=36&p=1",
     ]
 
@@ -782,3 +787,31 @@ def test_santaisabel_uses_jumbo_parser_and_stops_on_repeated_page():
     # la página 2 repite la 1: la sección termina y sigue la siguiente
     assert urls == ["https://www.santaisabel.cl/ofertas", "https://www.santaisabel.cl/ofertas?page=2",
                     "https://www.santaisabel.cl/botilleria"]
+
+
+def test_publish_new_deals_includes_65_plus_with_small_savings_once(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "deals.db")
+    db.init_db()
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
+    # 80% de descuento con $20.000 de ahorro: antes no entraba ni como oferta (tope 65%) ni como error (piso $30.000)
+    tee = ProductItem(id="weplay-boxed-tee", store_id="weplay", store_name="Weplay", title="Polera Star Wars R2D2",
+                      category="otros", current_price=4990, normal_price=24990, url="https://www.weplay.cl/boxed-tee",
+                      in_stock=True)
+    cheap = ProductItem(id="weplay-llavero", store_id="weplay", store_name="Weplay", title="Llavero Mario",
+                        category="otros", current_price=990, normal_price=4990, url="https://www.weplay.cl/llavero",
+                        in_stock=True)   # 80% pero ahorra $4.000: no pasa el mínimo
+    db.upsert_product(tee)
+    db.upsert_product(cheap)
+    assert pipeline.publish_new_deals() == 1
+    assert [p["product_id"] for p in db.get_feed()] == ["weplay-boxed-tee"]
+    assert pipeline.publish_new_deals() == 0   # ya publicada a este precio
+
+
+def test_feed_filters_return_older_posts(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "feed.db")
+    db.init_db()
+    for i, (store, pct) in enumerate((("nike", 82), ("dbs", 45), ("nike", 50))):
+        db.publish_feed_offer("deal", f"{store}-{i}", store, 1000 + i, pct, {"title": f"Producto {i}", "url": f"https://x.cl/{i}"})
+    assert [p["product_id"] for p in db.get_feed(min_discount=80)] == ["nike-0"]
+    assert [p["product_id"] for p in db.get_feed(stores=["nike"])] == ["nike-2", "nike-0"]
+    assert db.get_feed(kind="glitch") == []
