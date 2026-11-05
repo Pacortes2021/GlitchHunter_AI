@@ -199,7 +199,21 @@
   function normalizeCategory(raw) {
     if (!raw) return '';
     const first = String(raw).split('/')[0].trim().toLowerCase();
-    return first.slice(0, 40);
+    return first === 'general' ? 'otros' : first.slice(0, 40);
+  }
+
+  // Nombres legibles de las categorías internas del radar (core/categories.py)
+  const CATEGORY_LABELS = {
+    notebooks: 'Notebooks', smartphones: 'Celulares', tablets: 'Tablets', televisores: 'Televisores',
+    monitores: 'Monitores', consolas: 'Consolas', smartwatch: 'Relojes inteligentes', audio: 'Audio',
+    componentes: 'Componentes PC', gaming: 'Gaming', linea_blanca: 'Línea blanca', accesorios: 'Accesorios',
+    tecnologia: 'Tecnología', computacion: 'Computación', ropa_calzado: 'Ropa y calzado',
+    belleza: 'Belleza y perfumes', deportes: 'Deportes y aire libre', herramientas: 'Herramientas',
+    hogar: 'Hogar y cocina', otros: 'Otros'
+  };
+
+  function categoryLabel(c) {
+    return CATEGORY_LABELS[c] || capitalize(String(c || '').replace(/_/g, ' '));
   }
 
   function capitalize(s) {
@@ -361,17 +375,19 @@
     const safeCartUrl = rawCart !== '#' && rawCart !== safeUrl ? rawCart : '';
     const rawImage = product.image_url ? String(product.image_url).trim() : '';
     const safeImage = /^https?:\/\//i.test(rawImage) ? sanitizeUrl(rawImage) : '';
-    const safeCategory = escapeHtml(capitalize(d.category));
+    const safeCategory = escapeHtml(categoryLabel(d.category));
 
     const tags = [];
     tags.push(d.isGlitch
       ? '<span class="tag tag-glitch">⚡ Error de precio</span>'
       : '<span class="tag tag-deal">🏷️ Oferta</span>');
     if (verdict.is_missing_zero) tags.push('<span class="tag tag-zero" title="El precio parece tener un cero de menos">Falta un cero</span>');
-    // Nivel de riesgo según los casos chilenos documentados (ver core/price_signals.py)
-    if (post.risk_tier === 'irrisorio') {
+    // Nivel de riesgo según los casos chilenos documentados (ver core/price_signals.py),
+    // solo en errores de precio: una oferta comercial no es un "error plausible"
+    const riskTier = d.isGlitch ? post.risk_tier : null;
+    if (riskTier === 'irrisorio') {
       tags.push('<span class="tag tag-risk-high" title="Con descuentos de 95% o más, las tiendas casi siempre anulan la compra y los tribunales suelen darles la razón">⚠️ Precio irrisorio · probable anulación</span>');
-    } else if (post.risk_tier === 'plausible') {
+    } else if (riskTier === 'plausible') {
       tags.push('<span class="tag tag-risk-ok" title="En este rango están la mayoría de los errores que se respetaron o compensaron">✅ Error plausible</span>');
     }
     if (toNum(post.bulk_price_count) >= 4) tags.push(`<span class="tag tag-bulk" title="Varios productos distintos de esta tienda aparecieron al mismo precio: típico de un error al cargar el catálogo">📦 Mismo precio en ${toNum(post.bulk_price_count)} productos</span>`);
@@ -394,9 +410,9 @@
 
     // Consejos prácticos (texto fijo, sin datos del servidor)
     let tipsHtml = '';
-    if (post.risk_tier === 'irrisorio') {
+    if (riskTier === 'irrisorio') {
       tipsHtml = '<p class="tips">Casos así casi siempre se anulan con reembolso. Si compras: 1 sola unidad, guarda captura del precio y del comprobante.</p>';
-    } else if (post.risk_tier === 'plausible') {
+    } else if (riskTier === 'plausible') {
       tipsHtml = '<p class="tips">Si compras, hazlo por 1 unidad y guarda captura del precio y del comprobante. Si la tienda anula sin justificación, puedes reclamar en sernac.cl.</p>';
     }
 
@@ -666,7 +682,7 @@
         cats.push([state.filters.category, catCounts.get(state.filters.category) || 0]);
       }
       catWrap.innerHTML = cats.length
-        ? cats.map(([c, n]) => `<button type="button" class="chip" data-category="${escapeHtml(c)}" aria-pressed="${state.filters.category === c}">${escapeHtml(capitalize(c))} <span class="chip-count">${n}</span></button>`).join('')
+        ? cats.map(([c, n]) => `<button type="button" class="chip" data-category="${escapeHtml(c)}" aria-pressed="${state.filters.category === c}">${escapeHtml(categoryLabel(c))} <span class="chip-count">${n}</span></button>`).join('')
         : '<span class="muted small">Sin categorías aún</span>';
     }
   }

@@ -31,6 +31,7 @@ try:
         CRITICAL_DISCOUNT_PERCENTAGE,
         MIN_ABSOLUTE_SAVINGS_CLP,
         MIN_DISCOUNT_PERCENTAGE,
+        MISSING_ZERO_MIN_REFERENCE_CLP,
         MISSING_ZERO_RATIO_MAX,
         MISSING_ZERO_RATIO_MIN,
     )
@@ -40,6 +41,7 @@ except ImportError:
         CRITICAL_DISCOUNT_PERCENTAGE,
         MIN_ABSOLUTE_SAVINGS_CLP,
         MIN_DISCOUNT_PERCENTAGE,
+        MISSING_ZERO_MIN_REFERENCE_CLP,
         MISSING_ZERO_RATIO_MAX,
         MISSING_ZERO_RATIO_MIN,
     )
@@ -61,6 +63,7 @@ class MathAnomalyDetector:
         min_absolute_savings_clp: float = MIN_ABSOLUTE_SAVINGS_CLP,
         missing_zero_ratio_min: float = MISSING_ZERO_RATIO_MIN,
         missing_zero_ratio_max: float = MISSING_ZERO_RATIO_MAX,
+        missing_zero_min_reference: float = MISSING_ZERO_MIN_REFERENCE_CLP,
     ) -> None:
         """
         Inicializa el detector con umbrales configurables.
@@ -76,6 +79,7 @@ class MathAnomalyDetector:
         self.min_absolute_savings_clp = float(min_absolute_savings_clp)
         self.missing_zero_ratio_min = float(missing_zero_ratio_min)
         self.missing_zero_ratio_max = float(missing_zero_ratio_max)
+        self.missing_zero_min_reference = float(missing_zero_min_reference)
 
     def detect_missing_zero(
         self,
@@ -98,7 +102,8 @@ class MathAnomalyDetector:
             return False, None
 
         ratio = reference_price / current_price
-        is_missing = self.missing_zero_ratio_min <= ratio <= self.missing_zero_ratio_max
+        is_missing = (self.missing_zero_ratio_min <= ratio <= self.missing_zero_ratio_max
+                      and reference_price >= self.missing_zero_min_reference)
         return is_missing, round(ratio, 2)
 
     def calculate_discount_and_savings(

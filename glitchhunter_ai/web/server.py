@@ -48,6 +48,7 @@ from glitchhunter_ai.config import (
     WEB_PORT,
 )
 from glitchhunter_ai.core.cart_sniper import generate_direct_add_to_cart_url
+from glitchhunter_ai.core.categories import GENERIC_CATEGORIES, classify_category
 from glitchhunter_ai.core.database import PriceDatabase
 from glitchhunter_ai.core.models import (
     GlitchAlert,
@@ -602,6 +603,9 @@ def format_feed_post(post: Dict[str, Any]) -> Dict[str, Any]:
     # Un solo nombre por tienda: cada scraper usa el suyo ("Líder" / "Líder Chile", "Paris" / "Paris.cl")
     product = card.get("product") or {}
     product["store_name"] = STORE_NAMES.get(product.get("store_id") or post["store_id"], product.get("store_name"))
+    # Publicaciones con rótulo genérico ("otros", "tecnologia"): categoría según el título
+    if str(product.get("category") or "").strip().lower() in GENERIC_CATEGORIES:
+        product["category"] = classify_category(str(product.get("title") or ""))
     card["feed_id"] = post["id"]
     card["feed_kind"] = post["kind"]
     # Señales históricas: nivel de riesgo de anulación y cifra de precio inusual
