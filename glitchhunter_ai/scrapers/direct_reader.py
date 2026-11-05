@@ -187,6 +187,10 @@ VTEX_INFLATED_LIST_PRICE = {"casaroyal", "construplaza", "coleman", "ilgioco"}
 VTEX_PAGE_SIZE = 50          # máximo que acepta la API
 VTEX_MAX_OFFSET = 2500       # VTEX no pagina más allá de _from=2500
 VTEX_PAGES_PER_CYCLE = 4     # 200 productos por tienda y ciclo
+# Carril rápido: en cada ciclo, además del recorrido completo (lento, para el historial), se leen los
+# productos con mayor descuento de todo el catálogo (VTEX lo ordena) o la primera página de la sección
+# de ofertas (Magento, Santa Isabel). Así un descuento grande aparece en minutos, no en horas.
+VTEX_HOT_ORDER = "OrderByBestDiscountDESC"
 
 DIRECT_STORES = (
     ("falabella", "ripley", "paris", "abc", "jumbo", "santaisabel", "hp", "winpy", "sodimac", "pcfactory", "spdigital")
@@ -1223,6 +1227,16 @@ class DirectStoreReader:
         """Las siguientes páginas de las secciones de Santa Isabel (cursor: sección, página e IDs vistos)."""
         items: List[ProductItem] = []
         section_idx, page = self._magento_cursor.get("santaisabel", (0, 1))
+        if (section_idx % len(SANTAISABEL_SECTIONS), page) != (0, 1):
+            # Carril rápido: /ofertas se relee en cada ciclo
+            html = self._get_html("santaisabel", f"{STORE_BASE['santaisabel']}{SANTAISABEL_SECTIONS[0]}")
+            if html is None:
+                return items
+            try:
+                items.extend(parse_santaisabel_listing(html))
+            except (BlockedError, ValueError, KeyError) as exc:
+                self.backoff.record_block("santaisabel", f"formato inesperado: {exc}")
+                return items
         for _ in range(SANTAISABEL_PAGES_PER_CYCLE):
             path = SANTAISABEL_SECTIONS[section_idx % len(SANTAISABEL_SECTIONS)]
             html = self._get_html("santaisabel", f"{STORE_BASE['santaisabel']}{path}" + (f"?page={page}" if page > 1 else ""))
@@ -1251,6 +1265,16 @@ class DirectStoreReader:
         _, base, _, sections = MAGENTO_STORES[store_id]
         items: List[ProductItem] = []
         section_idx, page = self._magento_cursor.get(store_id, (0, 1))
+        if (section_idx % len(sections), page) != (0, 1):
+            # Carril rápido: la primera sección (ofertas/sale en la mayoría) se relee en cada ciclo
+            html = self._get_html(store_id, f"{base}{sections[0]}?product_list_limit={MAGENTO_PAGE_SIZE}&p=1")
+            if html is None:
+                return items
+            try:
+                items.extend(parse_magento_listing(store_id, html)[0])
+            except (BlockedError, ValueError, KeyError) as exc:
+                self.backoff.record_block(store_id, f"formato inesperado: {exc}")
+                return items
         for _ in range(MAGENTO_PAGES_PER_CYCLE):
             path = sections[section_idx % len(sections)]
             url = f"{base}{path}?product_list_limit={MAGENTO_PAGE_SIZE}&p={page}"
@@ -1350,6 +1374,10 @@ class DirectStoreReader:
 
     def _vtex_catalog_slice(self, store_id: str, pages: int) -> List[ProductItem]:
         items: List[ProductItem] = []
+        hot = self._vtex_query(store_id, params={"_from": 0, "_to": VTEX_PAGE_SIZE - 1, "O": VTEX_HOT_ORDER})
+        if hot is None:
+            return items   # tienda en pausa o sin respuesta: no se sigue con el recorrido
+        items.extend(hot[0])
         offset = self._catalog_cursor.get(store_id, 0)
         for _ in range(max(1, pages)):
             result = self._vtex_query(store_id, params={

@@ -1237,18 +1237,40 @@ class PriceDatabase:
             conn.commit()
             return int(cursor.lastrowid)
 
-    def get_feed(self, after_id: int = 0, limit: int = 300) -> List[Dict[str, Any]]:
-        """Publicaciones del canal, de la más reciente a la más antigua; con after_id, solo las posteriores."""
+    def get_feed(
+        self,
+        after_id: int = 0,
+        limit: int = 300,
+        min_discount: float = 0.0,
+        kind: Optional[str] = None,
+        stores: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Publicaciones del canal, de la más reciente a la más antigua; con after_id, solo las posteriores.
+        Los filtros (descuento mínimo, tipo, tiendas) permiten traer publicaciones antiguas que la página
+        no cargó al inicio.
+        """
+        where, params = ["id > ?"], [int(after_id)]
+        if min_discount > 0:
+            where.append("discount_pct >= ?")
+            params.append(float(min_discount))
+        if kind in ("glitch", "deal"):
+            where.append("kind = ?")
+            params.append(kind)
+        if stores:
+            where.append(f"store_id IN ({','.join('?' for _ in stores)})")
+            params.extend(stores)
+        params.append(int(limit))
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT id, kind, product_id, store_id, best_price, discount_pct, received_at, payload,
                        status, expired_reason, status_changed_at, price_now
                 FROM offer_feed
-                WHERE id > ?
+                WHERE {' AND '.join(where)}
                 ORDER BY id DESC
                 LIMIT ?;
-            """, (int(after_id), int(limit)))
+            """, params)
             posts = []
             for r in cursor.fetchall():
                 post = dict(r)
@@ -1357,6 +1379,8 @@ class PriceDatabase:
         limit: int = 100,
         store_id: Optional[str] = None,
         max_age_hours: Optional[float] = None,
+        min_savings: float = 0.0,
+        unpublished_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Retorna ofertas comerciales moderadas (ej: 40% a 64% de descuento)
@@ -1395,6 +1419,13 @@ class PriceDatabase:
             if store_id and store_id != "all":
                 query += " AND LOWER(p.store_id) = ?"
                 params.append(store_id.lower())
+            if min_savings > 0:
+                query += " AND (p.normal_price - (CASE WHEN p.card_price > 0 AND p.card_price < p.current_price THEN p.card_price ELSE p.current_price END)) >= ?"
+                params.append(float(min_savings))
+            if unpublished_only:
+                # Para el canal: solo productos sin publicación a este precio o a uno menor
+                query += """ AND NOT EXISTS (SELECT 1 FROM offer_feed f
+                                             WHERE f.product_id = p.id AND f.best_price <= (CASE WHEN p.card_price > 0 AND p.card_price < p.current_price THEN p.card_price ELSE p.current_price END))"""
             query += " ORDER BY discount_pct DESC LIMIT ?;"
             params.append(int(limit))
 
