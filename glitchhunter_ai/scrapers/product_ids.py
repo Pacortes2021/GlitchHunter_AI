@@ -17,13 +17,26 @@ from typing import Optional
 _FALABELLA_RE = re.compile(r"/product/([A-Za-z0-9]+)(?:/|$)")
 # ABC (ex La Polar, Salesforce Commerce Cloud): /{slug}/{pid}.html
 _ABC_RE = re.compile(r"/(\d{6,})\.html$")
-_JUMBO_RE = re.compile(r"^/([a-z0-9-]+)/p$")   # URLs /{slug}/p de Jumbo y tiendas VTEX
-_SLUG_P_STORES = {"jumbo", "sony", "motorola", "electrolux", "fensa", "oster", "casaroyal", "nike", "levis", "reebok"}
+_JUMBO_RE = re.compile(r"^/([a-z0-9_-]+)/p$")   # URLs /{slug}/p de Jumbo y tiendas VTEX (Tramontina usa "_")
+_SLUG_P_STORES = {"jumbo", "sony", "motorola", "electrolux", "fensa", "oster", "casaroyal", "nike", "levis",
+                  "reebok", "mimbral", "audiomusica", "dimeiggs", "drsimi", "mademsa", "dimarsa", "marsella",
+                  "construplaza", "tiendasalfa", "tramontina", "dimarine", "lavinoteca", "maxservice", "ventus",
+                  "karcher", "esika", "lbel", "clubsoftys", "coleman", "marleycoffee", "bbqgrill", "blanik",
+                  "cotidian", "colloky", "ficcus", "zapatos", "hm", "dolly", "ferouch", "calvinklein", "theline",
+                  "tommy", "treck", "velez", "privilege", "newman", "swarovski", "womensecret", "totto",
+                  "oneill", "americaneagle", "asics", "trial", "umbrale", "mountainhardwear", "ilgioco"}
 _SHOPIFY_RE = re.compile(r"^/products/([a-z0-9-]+)$")   # URLs /products/{handle} de tiendas Shopify
-_MAGENTO_RE = re.compile(r"^/([a-z0-9-]+?)(?:\.html)?$")   # fichas Magento: /{slug} o /{slug}.html
-_MAGENTO_STORES = {"thenorthface", "converse", "lacoste", "marmot", "sparta", "dbs"}
-_SHOPIFY_STORES = {"columbia", "caterpillar", "patagonia", "underarmour", "crocs", "vans", "doite", "havaianas", "oxford",
-                   "aufbau", "lippi", "kitchencenter"}
+# fichas Magento: /{slug} o /{slug}.html, a veces bajo su categoría (/ofertas/{slug} en Novasalud)
+_MAGENTO_RE = re.compile(r"^/(?:[a-z0-9-]+/)*([a-z0-9-]+?)(?:\.html)?$")
+_MAGENTO_STORES = {"thenorthface", "converse", "lacoste", "marmot", "sparta", "dbs", "antartica", "weplay", "sdn",
+                   "novasalud", "ebest", "bathandbodyworks", "schilling", "flex", "headchile", "epson", "umbro",
+                   "kotting", "roly", "surprice", "ash", "bananarepublic", "brooksbrothers", "calubags",
+                   "dcshoes", "globe", "guess", "jayson", "kannu", "kipling", "magriffe", "mammut", "mauiandsons",
+                   "mcgregor", "potros", "rapsodia", "ripcurl", "rusty", "stoked", "gap", "ugg",
+                   "victoriassecret", "volcom", "wa2"}
+_SHOPIFY_STORES = {"columbia", "caterpillar", "patagonia", "underarmour", "crocs", "vans", "doite", "havaianas",
+                   "oxford", "aufbau", "lippi", "kitchencenter", "sharkninja", "dermotienda", "herramientastotal",
+                   "delonghi"}
 _HP_RE = re.compile(r"/shop/[a-z0-9-]+-([a-z0-9]{5,10})\.html$")   # el SKU va al final del slug
 _WINPY_RE = re.compile(r"^/venta/([a-z0-9-]+)$")
 # Paris: /{slug}-{CLAVE}.html (clave commercetools, ej: MKDFYM0YKP; en URLs antiguas, numérica)

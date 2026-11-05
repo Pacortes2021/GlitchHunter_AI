@@ -637,7 +637,9 @@ def test_shopify_403_pauses_all_shopify_stores():
     client.get.assert_not_called()
 
 
-def test_glitch_only_stores_do_not_publish_commercial_deals(tmp_path):
+def test_glitch_only_stores_do_not_publish_commercial_deals(tmp_path, monkeypatch):
+    from glitchhunter_ai import config
+    monkeypatch.setattr(config, "DEAL_GLITCH_ONLY_STORES", {"nike"})   # se activa por .env
     db = PriceDatabase(db_path=tmp_path / "deals.db")
     db.init_db()
     pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
@@ -707,7 +709,25 @@ def test_magento_catalog_slice_walks_pages_then_next_section():
     ]
 
 
-def test_magento_stores_are_glitch_only():
+def test_all_stores_publish_deals_by_default():
     from glitchhunter_ai.config import DEAL_GLITCH_ONLY_STORES
 
-    assert set(MAGENTO_STORES) <= DEAL_GLITCH_ONLY_STORES
+    assert not DEAL_GLITCH_ONLY_STORES
+
+
+def test_magento_total_with_thousands_separator_and_nested_urls():
+    from glitchhunter_ai.scrapers.direct_reader import parse_magento_listing
+
+    html = """<p class="toolbar-amount">Mostrando 1-36 de <span class="toolbar-number">2.435</span></p>
+    <ol><li class="product-item"><a class="product-item-link" href="https://www.novasalud.cl/ofertas/crema-corporal">Crema Corporal</a>
+    <span data-price-type="finalPrice" data-price-amount="5293"></span></li></ol>"""
+    items, total = parse_magento_listing("novasalud", html)
+    assert total == 2435
+    assert items[0].id == "novasalud-crema-corporal"
+
+
+def test_vtex_slugs_with_underscores():
+    from glitchhunter_ai.scrapers.product_ids import canonical_product_id
+
+    url = "https://www.tramontina.cl/silla-tramontina-summa-diana_92030409/p"
+    assert canonical_product_id("tramontina", url) == "tramontina-silla-tramontina-summa-diana_92030409"

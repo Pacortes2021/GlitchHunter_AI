@@ -35,13 +35,12 @@ DEAL_MAX_AGE_HOURS = float(os.getenv("DEAL_MAX_AGE_HOURS", "12"))            # S
 # Una publicación pasa a "sin confirmar" si ningún escaneo ve el producto en estas horas
 FEED_NOT_SEEN_HOURS = float(os.getenv("FEED_NOT_SEEN_HOURS", "24"))
 DEAL_INCLUDE_NON_TECH = os.getenv("DEAL_INCLUDE_NON_TECH", "true").lower() in ("true", "1", "yes")  # Ropa, muebles, etc.
-# Tiendas "solo errores de precio": sus liquidaciones normales (Nike: ~19% del catálogo con 40%+ de
-# descuento) no se publican como ofertas; solo entran al canal los errores de precio verificados.
+# Tiendas "solo errores de precio" (opcional, vía .env): sus liquidaciones normales no se publican
+# como ofertas; solo entran al canal los errores de precio verificados. Por defecto todas publican ofertas.
 DEAL_GLITCH_ONLY_STORES = {
     s.strip().lower() for s in os.getenv(
         "DEAL_GLITCH_ONLY_STORES",
-        "nike,levis,reebok,columbia,caterpillar,patagonia,underarmour,crocs,vans,doite,havaianas,"
-        "lippi,thenorthface,converse,lacoste,marmot,sparta,dbs",
+        "",
     ).split(",") if s.strip()
 }
 
@@ -94,7 +93,7 @@ DIRECT_SCAN_CATEGORIES = [c.strip() for c in os.getenv("DIRECT_SCAN_CATEGORIES",
 # PC Factory: páginas de 48 productos de su catálogo completo leídas por ciclo (~35 KB c/u, ~63 páginas en total)
 DIRECT_PCFACTORY_PAGES_PER_CYCLE = int(os.getenv("DIRECT_PCFACTORY_PAGES_PER_CYCLE", "10"))
 # Tiendas consultadas a la vez en el escaneo directo (cada una es un sitio distinto)
-DIRECT_FETCH_WORKERS = int(os.getenv("DIRECT_FETCH_WORKERS", "8"))
+DIRECT_FETCH_WORKERS = int(os.getenv("DIRECT_FETCH_WORKERS", "16"))
 # Si el escaneo directo se omitió por un escaneo completo en curso, se reintenta a los N segundos
 DIRECT_RETRY_SECONDS = int(os.getenv("DIRECT_RETRY_SECONDS", "15"))
 
@@ -146,5 +145,93 @@ STORES = [
     {"id": "marmot", "name": "Marmot", "domain": "marmot.cl"},
     {"id": "sparta", "name": "Sparta", "domain": "sparta.cl"},
     {"id": "dbs", "name": "DBS", "domain": "dbs.cl"},
+    {"id": "mimbral", "name": "Mimbral", "domain": "mimbral.cl"},
+    {"id": "audiomusica", "name": "Audiomúsica", "domain": "audiomusica.com"},
+    {"id": "dimeiggs", "name": "Dimeiggs", "domain": "dimeiggs.cl"},
+    {"id": "drsimi", "name": "Dr. Simi", "domain": "drsimi.cl"},
+    {"id": "mademsa", "name": "Mademsa", "domain": "tiendamademsa.cl"},
+    {"id": "dimarsa", "name": "Dimarsa", "domain": "dimarsa.cl"},
+    {"id": "marsella", "name": "Ferretería Marsella", "domain": "ferreteriamarsella.cl"},
+    {"id": "construplaza", "name": "Construplaza", "domain": "construplaza.cl"},
+    {"id": "tiendasalfa", "name": "Tiendas Alfa", "domain": "tiendasalfa.cl"},
+    {"id": "tramontina", "name": "Tramontina", "domain": "tramontina.cl"},
+    {"id": "dimarine", "name": "Dimarine", "domain": "dimarine.cl"},
+    {"id": "lavinoteca", "name": "La Vinoteca", "domain": "lavinoteca.cl"},
+    {"id": "maxservice", "name": "Maxservice", "domain": "maxservice.cl"},
+    {"id": "ventus", "name": "Ventus", "domain": "ventuscorp.cl"},
+    {"id": "karcher", "name": "Kärcher", "domain": "karcherstore.cl"},
+    {"id": "esika", "name": "Ésika", "domain": "esika.tiendabelcorp.cl"},
+    {"id": "lbel", "name": "L'Bel", "domain": "lbel.tiendabelcorp.cl"},
+    {"id": "clubsoftys", "name": "Club Softys", "domain": "clubsoftys.cl"},
+    {"id": "coleman", "name": "Coleman", "domain": "coleman.cl"},
+    {"id": "marleycoffee", "name": "Marley Coffee", "domain": "marleycoffee.cl"},
+    {"id": "bbqgrill", "name": "BBQ Grill", "domain": "bbqgrill.cl"},
+    {"id": "blanik", "name": "Blanik", "domain": "blanik.cl"},
+    {"id": "cotidian", "name": "Cotidian", "domain": "mitiendacotidian.cl"},
+    {"id": "colloky", "name": "Colloky", "domain": "colloky.cl"},
+    {"id": "ficcus", "name": "Ficcus", "domain": "ficcus.cl"},
+    {"id": "zapatos", "name": "Zapatos.cl", "domain": "zapatos.cl"},
+    {"id": "hm", "name": "H&M", "domain": "cl.hm.com"},
+    {"id": "dolly", "name": "Dolly", "domain": "dolly.cl"},
+    {"id": "ferouch", "name": "Ferouch", "domain": "ferouch.cl"},
+    {"id": "calvinklein", "name": "Calvin Klein", "domain": "calvinklein.cl"},
+    {"id": "theline", "name": "The Line", "domain": "theline.cl"},
+    {"id": "tommy", "name": "Tommy Hilfiger", "domain": "cl.tommy.com"},
+    {"id": "treck", "name": "Treck", "domain": "treck.cl"},
+    {"id": "velez", "name": "Vélez", "domain": "velez.cl"},
+    {"id": "privilege", "name": "Privilege", "domain": "privilege.cl"},
+    {"id": "newman", "name": "Newman", "domain": "newman.cl"},
+    {"id": "swarovski", "name": "Swarovski", "domain": "swarovski.cl"},
+    {"id": "womensecret", "name": "Women'secret", "domain": "womensecret.cl"},
+    {"id": "totto", "name": "Totto", "domain": "cl.totto.com"},
+    {"id": "oneill", "name": "O'Neill", "domain": "oneill.cl"},
+    {"id": "americaneagle", "name": "American Eagle", "domain": "ae.cl"},
+    {"id": "asics", "name": "Asics", "domain": "asics.cl"},
+    {"id": "trial", "name": "Trial", "domain": "trial.cl"},
+    {"id": "umbrale", "name": "Umbrale", "domain": "umbrale.cl"},
+    {"id": "mountainhardwear", "name": "Mountain Hardwear", "domain": "mountainhardwear.cl"},
+    {"id": "ilgioco", "name": "Il Gioco", "domain": "ilgioco.cl"},
+    {"id": "sharkninja", "name": "SharkNinja", "domain": "sharkninja.cl"},
+    {"id": "dermotienda", "name": "Dermotienda", "domain": "dermotienda.cl"},
+    {"id": "herramientastotal", "name": "Herramientas Total", "domain": "herramientastotal.cl"},
+    {"id": "delonghi", "name": "De'Longhi", "domain": "delonghi.cl"},
+    {"id": "antartica", "name": "Antártica", "domain": "antartica.cl"},
+    {"id": "weplay", "name": "Weplay", "domain": "weplay.cl"},
+    {"id": "sdn", "name": "SDN Neumáticos", "domain": "sdn.cl"},
+    {"id": "novasalud", "name": "Novasalud", "domain": "novasalud.cl"},
+    {"id": "ebest", "name": "eBest", "domain": "ebest.cl"},
+    {"id": "bathandbodyworks", "name": "Bath & Body Works", "domain": "bathandbodyworks.cl"},
+    {"id": "schilling", "name": "Schilling", "domain": "schilling.cl"},
+    {"id": "flex", "name": "Flex", "domain": "flex.cl"},
+    {"id": "headchile", "name": "Head", "domain": "headchile.com"},
+    {"id": "epson", "name": "Tienda Epson", "domain": "tiendaepson.cl"},
+    {"id": "umbro", "name": "Umbro", "domain": "umbro.cl"},
+    {"id": "kotting", "name": "Kotting", "domain": "kotting.cl"},
+    {"id": "roly", "name": "Roly", "domain": "roly.cl"},
+    {"id": "surprice", "name": "Surprice", "domain": "surprice.cl"},
+    {"id": "ash", "name": "Ash", "domain": "ashchile.cl"},
+    {"id": "bananarepublic", "name": "Banana Republic", "domain": "bananarepublic.cl"},
+    {"id": "brooksbrothers", "name": "Brooks Brothers", "domain": "brooksbrothers.cl"},
+    {"id": "calubags", "name": "Calu Bags", "domain": "calubags.com"},
+    {"id": "dcshoes", "name": "DC Shoes", "domain": "dcshoes.cl"},
+    {"id": "globe", "name": "Globe", "domain": "globebrand.cl"},
+    {"id": "guess", "name": "Guess", "domain": "guess.cl"},
+    {"id": "jayson", "name": "Jayson", "domain": "jayson.cl"},
+    {"id": "kannu", "name": "Kannu", "domain": "kannu.cl"},
+    {"id": "kipling", "name": "Kipling", "domain": "kipling.cl"},
+    {"id": "magriffe", "name": "Magriffe", "domain": "magriffe.cl"},
+    {"id": "mammut", "name": "Mammut", "domain": "mammut.cl"},
+    {"id": "mauiandsons", "name": "Maui and Sons", "domain": "mauiandsons.cl"},
+    {"id": "mcgregor", "name": "McGregor", "domain": "mcgregor.cl"},
+    {"id": "potros", "name": "Potros", "domain": "potros.cl"},
+    {"id": "rapsodia", "name": "Rapsodia", "domain": "rapsodia.cl"},
+    {"id": "ripcurl", "name": "Rip Curl", "domain": "ripcurl.cl"},
+    {"id": "rusty", "name": "Rusty", "domain": "rusty.cl"},
+    {"id": "stoked", "name": "Stoked", "domain": "stoked.cl"},
+    {"id": "gap", "name": "Gap", "domain": "gap.cl"},
+    {"id": "ugg", "name": "UGG", "domain": "ugg.cl"},
+    {"id": "victoriassecret", "name": "Victoria's Secret", "domain": "victoriassecret.cl"},
+    {"id": "volcom", "name": "Volcom", "domain": "volcom.cl"},
+    {"id": "wa2", "name": "Wa2", "domain": "wa2.cl"},
     {"id": "solotodo", "name": "SoloTodo", "domain": "solotodo.cl"},
 ]
