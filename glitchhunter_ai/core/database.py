@@ -324,6 +324,9 @@ class PriceDatabase:
             feed_cols = {r[1] for r in cursor.fetchall()}
             if "url_key" not in feed_cols:
                 cursor.execute("ALTER TABLE offer_feed ADD COLUMN url_key TEXT;")
+            # Migración: tienda + título normalizado, para no repetir variantes del mismo producto
+            if "title_key" not in feed_cols:
+                cursor.execute("ALTER TABLE offer_feed ADD COLUMN title_key TEXT;")
             # Migración: vigencia de cada publicación (se revisa tras cada escaneo)
             for col, ddl in (
                 ("status", "TEXT NOT NULL DEFAULT 'active'"),
@@ -335,6 +338,7 @@ class PriceDatabase:
                     cursor.execute(f"ALTER TABLE offer_feed ADD COLUMN {col} {ddl};")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_status_changed ON offer_feed(status_changed_at);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_url ON offer_feed(url_key);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_title ON offer_feed(title_key);")
 
             # 7. Tabla de Feedback del Usuario (👍 Buena Oferta / 👎 Falso Positivo)
             cursor.execute("""
@@ -1206,11 +1210,17 @@ class PriceDatabase:
         # versión anterior: se identifica también por su URL sin parámetros.
         raw_url = payload.get("url") or (payload.get("product") or {}).get("url") or ""
         url_key = str(raw_url).split("?")[0].split("#")[0].rstrip("/").lower() or None
+        # Las variantes de un producto (tallas, colores, tonos) llegan con IDs y URLs distintos
+        # pero el mismo título: se publican una sola vez por tienda.
+        raw_title = payload.get("title") or (payload.get("product") or {}).get("title") or ""
+        title_norm = " ".join(str(raw_title).lower().split())
+        title_key = f"{store_id}|{title_norm}" if title_norm else None
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT MIN(best_price) AS min_price FROM offer_feed WHERE product_id = ? OR (url_key IS NOT NULL AND url_key = ?);",
-                (product_id, url_key),
+                "SELECT MIN(best_price) AS min_price FROM offer_feed WHERE product_id = ? "
+                "OR (url_key IS NOT NULL AND url_key = ?) OR (title_key IS NOT NULL AND title_key = ?);",
+                (product_id, url_key, title_key),
             )
             row = cursor.fetchone()
             if row and row["min_price"] is not None:
@@ -1220,10 +1230,10 @@ class PriceDatabase:
                     return None
             received_at = datetime.now(timezone.utc).isoformat()
             cursor.execute("""
-                INSERT INTO offer_feed (kind, product_id, store_id, best_price, discount_pct, received_at, payload, url_key)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                INSERT INTO offer_feed (kind, product_id, store_id, best_price, discount_pct, received_at, payload, url_key, title_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
             """, (kind, product_id, store_id, float(best_price), float(discount_pct), received_at,
-                  json.dumps(payload, ensure_ascii=False, default=str), url_key))
+                  json.dumps(payload, ensure_ascii=False, default=str), url_key, title_key))
             conn.commit()
             return int(cursor.lastrowid)
 

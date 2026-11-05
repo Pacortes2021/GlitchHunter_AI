@@ -49,6 +49,9 @@ DEAL_GLITCH_ONLY_STORES = {
 # Ej: Producto de $899.990 publicado a $89.990 (ratio ~10x)
 MISSING_ZERO_RATIO_MIN = float(os.getenv("MISSING_ZERO_RATIO_MIN", "8.5"))
 MISSING_ZERO_RATIO_MAX = float(os.getenv("MISSING_ZERO_RATIO_MAX", "11.5"))
+# Bajo este precio normal un ~10x no es un cero perdido sino una liquidación de productos baratos
+# (DBS: muestras de $4.490 a $440)
+MISSING_ZERO_MIN_REFERENCE_CLP = float(os.getenv("MISSING_ZERO_MIN_REFERENCE_CLP", "20000"))
 
 # Configuración de Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "mock_bot_token_glitchhunter")

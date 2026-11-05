@@ -22,6 +22,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from glitchhunter_ai.core.categories import OTHER_CATEGORY, classify_category
 from glitchhunter_ai.core.models import ProductItem
 from glitchhunter_ai.scrapers.product_ids import canonical_product_id, ripley_id_from_parent
 from glitchhunter_ai.scrapers.stealth_client import default_stealth_client
@@ -60,8 +61,11 @@ SHOPIFY_STORES: Dict[str, tuple] = {
     "oxford": ("Oxford", "https://www.oxfordstore.cl", "otros"),
     "aufbau": ("Aufbau", "https://aufbau.cl", "tecnologia"),
     "lippi": ("Lippi", "https://www.lippioutdoor.com", "otros"),
-    "kitchencenter": ("Kitchen Center", "https://www.kitchencenter.cl", "linea_blanca"),
+    "kitchencenter": ("Kitchen Center", "https://www.kitchencenter.cl", "otros"),
 }
+# Shopify con compare_at_price inflado: Kitchen Center muestra "antes" de exactamente el doble
+# ($409.980 = 2 × $204.990). Ahí la referencia es el precio actual, como Casa Royal en VTEX.
+SHOPIFY_INFLATED_COMPARE_PRICE = {"kitchencenter"}
 # Tiendas Magento 2: el mismo HTML de listado que HP (li.product-item, data-price-amount con
 # finalPrice/oldPrice). Se recorren sus secciones por páginas de 36, rotando en cada ciclo.
 # id -> (nombre, sitio, categoría por defecto, secciones)
@@ -274,6 +278,8 @@ def _infer_category(title: str, default: str) -> str:
     for keys, cat in rules:
         if any(k in t for k in keys):
             return cat
+    if default == OTHER_CATEGORY:
+        return classify_category(title)
     return default
 
 
@@ -486,7 +492,7 @@ def parse_shopify_products(store_id: str, products: Any) -> List[ProductItem]:
         try:
             variant = min(available or variants, key=lambda v: float(v.get("price") or 0))
             current = float(variant.get("price") or 0)
-            normal = float(variant.get("compare_at_price") or 0)
+            normal = 0.0 if store_id in SHOPIFY_INFLATED_COMPARE_PRICE else float(variant.get("compare_at_price") or 0)
         except (TypeError, ValueError):
             continue
         title = " ".join(str(raw.get("title") or "").split())

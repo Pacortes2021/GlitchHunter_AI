@@ -22,7 +22,7 @@ from glitchhunter_ai.ai_detector.inflation_verifier import InflationVerifier
 from glitchhunter_ai.ai_detector.math_detector import MathAnomalyDetector
 from glitchhunter_ai.ai_detector.semantic_filter import SemanticGlitchFilter
 from glitchhunter_ai.core.cart_sniper import generate_direct_add_to_cart_url
-from glitchhunter_ai.core.categories import ACCESSORY_CATEGORY, OTHER_CATEGORY, classify_category
+from glitchhunter_ai.core.categories import ACCESSORY_CATEGORY, NON_TECH_CATEGORIES, classify_category
 from glitchhunter_ai.core.price_signals import BULK_MIN_PRODUCTS, detect_bulk_prices
 from glitchhunter_ai.core.database import PriceDatabase
 from glitchhunter_ai.core.market_reference import default_market_reference
@@ -632,7 +632,7 @@ class GlitchHuntingPipeline:
         category = classify_category(title)
         if category == ACCESSORY_CATEGORY:
             return False
-        if category == OTHER_CATEGORY and not DEAL_INCLUDE_NON_TECH:
+        if category in NON_TECH_CATEGORIES and not DEAL_INCLUDE_NON_TECH:
             return False
         semantic = self.semantic_filter.classify(title=title, category=row.get("category"))
         if semantic.is_accessory and not semantic.is_main_device:

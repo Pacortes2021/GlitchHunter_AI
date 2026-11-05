@@ -116,8 +116,8 @@ def test_republish_requires_meaningful_drop(tmp_path):
 
 # --- Bug 9: categoría por palabras completas ---
 def test_category_uses_whole_words():
-    assert classify_category("Zapatilla Running Duramo SL 2.0") == "otros"       # "ram" en Duramo
-    assert classify_category("Set Ollas Tramontina 5 piezas") == "otros"
+    assert classify_category("Zapatilla Running Duramo SL 2.0") == "ropa_calzado"  # "ram" en Duramo
+    assert classify_category("Set Ollas Tramontina 5 piezas") == "hogar"
     assert classify_category("Memoria RAM DDR5 16GB") == "componentes"
     assert classify_category("Caja vacía iPhone 15 Pro") == "accesorios"
     assert classify_category("Notebook ASUS TUF RTX 4060") == "notebooks"
@@ -181,7 +181,7 @@ def test_non_tech_deals_included_by_default_but_noise_still_blocked(tmp_path):
     pipeline.publish_new_deals()
     feed = db.get_feed()
     assert [p["product_id"] for p in feed] == ["p-parka"]
-    assert feed[0]["payload"]["category"] == "otros"   # no "tecnologia" por defecto
+    assert feed[0]["payload"]["category"] == "ropa_calzado"   # no "tecnologia" por defecto
 
 
 def test_same_product_with_different_ids_is_published_once(tmp_path):
@@ -281,3 +281,43 @@ def test_stealth_client_uses_one_session_per_thread():
     t.start(); t.join()
     assert sessions[0] is not client._session
     assert client._session is client._session
+
+
+def test_missing_zero_ignores_cheap_items():
+    from glitchhunter_ai.ai_detector.math_detector import MathAnomalyDetector
+
+    detector = MathAnomalyDetector()
+    assert detector.detect_missing_zero(4490, 440)[0] is False      # muestra de perfume en liquidación
+    assert detector.detect_missing_zero(899990, 89990)[0] is True
+
+
+def test_feed_skips_variants_with_same_title(tmp_path):
+    from glitchhunter_ai.core.database import PriceDatabase
+
+    db = PriceDatabase(db_path=tmp_path / "feed.db")
+    db.init_db()
+    payload = {"title": "Perfume Mujer 100 ml", "url": "https://dbs.cl/perfume-rojo"}
+    assert db.publish_feed_offer("deal", "dbs-perfume-rojo", "dbs", 29990, 60, payload)
+    other_variant = dict(payload, url="https://dbs.cl/perfume-azul")
+    assert db.publish_feed_offer("deal", "dbs-perfume-azul", "dbs", 29990, 60, other_variant) is None
+    # Otra tienda con el mismo título sí se publica
+    assert db.publish_feed_offer("deal", "sparta-perfume", "sparta", 29990, 60, dict(payload, url="https://sparta.cl/p"))
+
+
+def test_kitchencenter_ignores_inflated_compare_price():
+    from glitchhunter_ai.scrapers.direct_reader import parse_shopify_products
+
+    product = {"title": "Cafetera Espresso", "handle": "cafetera", "variants": [{"price": "204990", "compare_at_price": "409980"}]}
+    item = parse_shopify_products("kitchencenter", [product])[0]
+    assert item.normal_price == item.current_price == 204990
+    assert item.category == "hogar"
+
+
+def test_feed_post_reclassifies_generic_category():
+    from glitchhunter_ai.web.server import format_feed_post
+
+    post = {"id": 1, "kind": "glitch", "product_id": "lippi-x", "store_id": "lippi", "best_price": 1000,
+            "discount_pct": 70, "received_at": "2026-11-04T00:00:00+00:00",
+            "payload": {"product": {"store_id": "lippi", "title": "Zapatilla Trekking Hombre", "category": "otros"},
+                        "verdict": {"discount_percentage": 70}}}
+    assert format_feed_post(post)["product"]["category"] == "ropa_calzado"
