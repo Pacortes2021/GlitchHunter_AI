@@ -60,7 +60,8 @@ class LiveSearch:
     def __init__(self, pipeline: Any, workers: int = 16, clock=time.monotonic):
         self.pipeline = pipeline
         self.reader = pipeline.direct_reader
-        self.stores = [s for s in DIRECT_STORES if supports_live_search(s)]
+        from glitchhunter_ai.config import store_enabled
+        self.stores = [s for s in DIRECT_STORES if supports_live_search(s) and store_enabled(s)]
         self.pool = ThreadPoolExecutor(max_workers=max(2, workers), thread_name_prefix="busqueda")
         self.clock = clock
         self._lock = threading.Lock()

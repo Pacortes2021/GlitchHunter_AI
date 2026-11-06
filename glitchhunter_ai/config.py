@@ -106,6 +106,22 @@ DIRECT_DEEP_MAX_SECONDS = int(os.getenv("DIRECT_DEEP_MAX_SECONDS", "900"))
 DIRECT_STORE_INTERVALS = os.getenv("DIRECT_STORE_INTERVALS", "")
 # Cada cuántos segundos se publican en el canal las ofertas nuevas que trajeron los lectores
 DIRECT_PUBLISH_EVERY_SECONDS = int(os.getenv("DIRECT_PUBLISH_EVERY_SECONDS", "20"))
+# Reparto de tiendas entre dos radares (p. ej. servidor en la nube + PC de la casa). Algunas tiendas
+# bloquean las IPs de centros de datos: el servidor las salta y el PC lee solo esas.
+#   RADAR_ONLY_STORES=ripley,paris   -> este radar lee únicamente esas tiendas
+#   RADAR_SKIP_STORES=ripley,paris   -> este radar lee todas menos esas
+RADAR_ONLY_STORES = {s.strip().lower() for s in os.getenv("RADAR_ONLY_STORES", "").split(",") if s.strip()}
+RADAR_SKIP_STORES = {s.strip().lower() for s in os.getenv("RADAR_SKIP_STORES", "").split(",") if s.strip()}
+
+
+def store_enabled(store_id: str) -> bool:
+    """True si este radar debe leer la tienda (según RADAR_ONLY_STORES / RADAR_SKIP_STORES)."""
+    sid = (store_id or "").lower()
+    if RADAR_ONLY_STORES and sid not in RADAR_ONLY_STORES:
+        return False
+    return sid not in RADAR_SKIP_STORES
+
+
 # Si el escaneo directo se omitió por un escaneo completo en curso, se reintenta a los N segundos
 DIRECT_RETRY_SECONDS = int(os.getenv("DIRECT_RETRY_SECONDS", "15"))
 

@@ -38,6 +38,7 @@ class ContinuousReader:
         catalog_pages: int = 10,
         speed_fn: Optional[Callable[[], float]] = None,
         on_published: Optional[Callable[[int], Any]] = None,
+        store_filter: Optional[Callable[[str], bool]] = None,
     ):
         self.pipeline = pipeline
         self.reader = pipeline.direct_reader
@@ -46,12 +47,20 @@ class ContinuousReader:
         self.speed_fn = speed_fn or (lambda: 1.0)
         self.on_published = on_published
         self.publish_every = publish_every
-        deep_stores = [s for s in DIRECT_STORES if s not in SHOPIFY_STORES]
+        # Reparto entre radares (RADAR_ONLY_STORES / RADAR_SKIP_STORES): este radar solo lee las suyas
+        if store_filter is None:
+            from glitchhunter_ai.config import store_enabled as store_filter
+        enabled = [s for s in DIRECT_STORES if store_filter(s)]
+        self.stores = enabled
+        hot_stores = [s for s in HOT_LANE_STORES if s in enabled]
+        deep_stores = [s for s in enabled if s not in SHOPIFY_STORES]
+        shops = [s for s in SHOPIFY_STORES if s in enabled]
+        self.reader.shopify_stores = shops
         self.scheduler: StoreScheduler = build_scheduler(
-            HOT_LANE_STORES, deep_stores, hot_interval, deep_interval, deep_min, deep_max,
+            hot_stores, deep_stores, hot_interval, deep_interval, deep_min, deep_max,
             overrides=parse_interval_overrides(store_intervals),
         )
-        if SHOPIFY_STORES:
+        if shops:
             self.scheduler.add(SHOPIFY_KEY, SHOPIFY_LANE, SHOPIFY_POLL_SECONDS)
         self.pool = ThreadPoolExecutor(max_workers=max(2, workers), thread_name_prefix="lector")
         self._stop = threading.Event()
@@ -150,7 +159,7 @@ class ContinuousReader:
             "⚡ Lectores por tienda activos: %d carriles rápidos (cada %ds), %d recorridos (ritmo base %ds, "
             "adaptativo %d-%ds) y %d tiendas Shopify por turnos.",
             hot, self.scheduler.hot_interval, deep, self.scheduler.deep_interval,
-            self.scheduler.deep_min, self.scheduler.deep_max, len(SHOPIFY_STORES),
+            self.scheduler.deep_min, self.scheduler.deep_max, len(self.reader.shopify_stores or []),
         )
 
     def stop(self) -> None:
