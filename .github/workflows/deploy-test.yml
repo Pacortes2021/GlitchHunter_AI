@@ -1,0 +1,54 @@
+name: Prueba del instalador (servidor Ubuntu)
+
+on:
+  pull_request:
+    paths: ["deploy/**", "requirements.txt", ".github/workflows/deploy-test.yml"]
+  push:
+    branches: ["main"]
+    paths: ["deploy/**", "requirements.txt"]
+
+jobs:
+  install:
+    name: Instalar como servicio y responder
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configuración de prueba (sin leer tiendas reales)
+        run: |
+          sudo mkdir -p /opt/glitchhunter
+          printf 'USE_LIVE_SCRAPING=false\nAUTO_SCAN_ENABLED=false\nWEB_HOST=127.0.0.1\nWEB_PORT=8080\nTELEGRAM_SIMULATION_MODE=true\nNTFY_ENABLED=false\n' | sudo tee /opt/glitchhunter/.env
+
+      - name: Primera instalación
+        run: sudo SOURCE_DIR="$GITHUB_WORKSPACE" bash deploy/install.sh
+
+      - name: El servicio está activo y responde
+        run: |
+          systemctl is-active glitchhunter
+          systemctl is-enabled glitchhunter
+          curl -fsS http://127.0.0.1:8080/api/status
+          curl -fsS "http://127.0.0.1:8080/api/search?q=notebook"
+          curl -fsS http://127.0.0.1:8080/ | grep -q "GlitchHunter"
+          test -f /var/lib/glitchhunter/glitchhunter.db
+
+      - name: Respaldo
+        run: |
+          sudo -u glitchhunter DATA_DIR=/var/lib/glitchhunter /usr/local/bin/glitchhunter-backup
+          ls -l /var/lib/glitchhunter/respaldos/*.db.gz
+          test -f /etc/cron.d/glitchhunter-backup
+
+      - name: Se reinicia solo si se cae
+        run: |
+          sudo systemctl kill -s SIGKILL glitchhunter
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/api/status >/dev/null 2>&1 && exit 0; sleep 2; done
+          sudo journalctl -u glitchhunter -n 50 --no-pager; exit 1
+
+      - name: Actualizar (segunda corrida) conserva datos y configuración
+        run: |
+          sudo SOURCE_DIR="$GITHUB_WORKSPACE" bash deploy/install.sh
+          sudo grep -q '^USE_LIVE_SCRAPING=false' /opt/glitchhunter/.env
+          test -f /var/lib/glitchhunter/glitchhunter.db
+
+      - name: Registro del servicio
+        if: always()
+        run: sudo journalctl -u glitchhunter -n 80 --no-pager || true
