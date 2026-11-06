@@ -260,6 +260,16 @@ class GlitchHuntingPipeline:
         missing_zero = bool(math_eval.get("is_missing_zero", False))
         confidence = float(math_eval.get("confidence_score", 95.0))
 
+        # Nunca se publica un "error de precio" sin descuento (p. ej. el precio confirmado en la tienda
+        # ya no tiene rebaja, o dos productos distintos compartían ID y "saltaba" el precio).
+        if discount_pct <= 0.0 or savings_clp <= 0.0:
+            logger.debug(f"🚫 [Sin descuento] {product.title} ({product.id}): alerta omitida.")
+            return None
+        # La caída se mide contra nuestro historial: ese es el "antes" que se muestra en la publicación
+        from_history = bool(math_eval.get("reference_is_baseline"))
+        if from_history:
+            product = product.model_copy(update={"normal_price": float(math_eval.get("reference_price") or product.normal_price)})
+
         # Modulación de confianza según Señal 1 (mercado)
         if market_inflation:
             confidence = max(20.0, confidence - 25.0)
@@ -298,6 +308,7 @@ class GlitchHuntingPipeline:
             reason=(
                 f"{'⚠️ Missing Zero Bug (~10x)' if missing_zero else f'Descuento masivo {discount_pct:.1f}%'} "
                 f"en {product.store_name} | Ahorro: ${savings_clp:,.0f} CLP".replace(",", ".")
+                + (" | 📉 Caída vs su precio habitual (la tienda no muestra rebaja)" if from_history else "")
                 + (" | ⚠️ Precio normal inflado vs mercado" if market_inflation else "")
                 + (f" | 📦 Mismo precio en {bulk_count} productos (posible error de carga masiva)" if bulk_count else "")
             ),

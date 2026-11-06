@@ -268,3 +268,40 @@ def test_search_without_results_does_not_pause_store():
     client.get.return_value = page("", status=403)
     reader.search("falabella", "tv")
     assert reader.backoff.is_paused("falabella")
+
+
+# ---------------------------------------------------------------- alertas sin descuento
+def test_magento_view_urls_use_product_number_not_category():
+    from glitchhunter_ai.scrapers.product_ids import canonical_product_id
+
+    a = "https://volcom.cl/catalog/product/view/id/472043/s/hombre-calzado-zapatillas-gris-7z210/category/4742/"
+    b = "https://volcom.cl/catalog/product/view/id/519395/s/hombre-accesorios-calcetines/category/4742/"
+    assert canonical_product_id("volcom", a) == "volcom-472043"
+    assert canonical_product_id("volcom", b) == "volcom-519395"
+    assert canonical_product_id("volcom", "https://volcom.cl/zapatillas-fusion.html") == "volcom-zapatillas-fusion"
+
+
+def test_drop_only_vs_history_reports_history_discount():
+    from glitchhunter_ai.ai_detector.math_detector import MathAnomalyDetector
+
+    item = _product("marsella-x", store="marsella", price=85944, normal=85944, title="Equilibrador de carga A5298")
+    ev = MathAnomalyDetector().evaluate(item, baseline_price=447992)
+    assert ev["is_glitch_candidate"] and ev["reference_is_baseline"]
+    assert round(ev["discount_percentage"]) == 81 and ev["reference_price"] == 447992
+    # Con rebaja visible en la tienda la referencia sigue siendo el precio tachado
+    ev2 = MathAnomalyDetector().evaluate(_product("m-2", price=20000, normal=100000), baseline_price=100000)
+    assert not ev2["reference_is_baseline"] and ev2["discount_percentage"] == 80
+
+
+def test_no_price_error_alert_with_zero_discount(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "z.db")
+    db.init_db()
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock(), confirm_with_store=False)
+    pipeline.telegram_dispatcher.send_alert = MagicMock(return_value=True)
+    pipeline.math_detector.evaluate = MagicMock(return_value={
+        "is_glitch_candidate": True, "is_suspicious": True, "is_math_glitch": True, "is_missing_zero": False,
+        "discount_percentage": 0.0, "absolute_savings_clp": 0.0, "confidence_score": 60.0,
+    })
+    item = _product("volcom-1", store="volcom", price=14990, normal=14990, title="Calcetines Full Stone 3 pack")
+    assert pipeline.process_product(item, send_notifications=False) is None
+    assert db.get_feed(limit=10) == []
