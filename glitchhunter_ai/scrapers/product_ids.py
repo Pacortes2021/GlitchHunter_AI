@@ -27,6 +27,8 @@ _SLUG_P_STORES = {"jumbo", "santaisabel", "sony", "motorola", "electrolux", "fen
                   "oneill", "americaneagle", "asics", "trial", "umbrale", "mountainhardwear", "ilgioco"}
 _SHOPIFY_RE = re.compile(r"^/products/([a-z0-9-]+)$")   # URLs /products/{handle} de tiendas Shopify
 # fichas Magento: /{slug} o /{slug}.html, a veces bajo su categoría (/ofertas/{slug} en Novasalud)
+# URL interna de Magento (/catalog/product/view/id/472043/s/…/category/4742/): el producto es el número tras /id/
+_MAGENTO_VIEW_RE = re.compile(r"/catalog/product/view/id/(\d+)(?:/|$)")
 _MAGENTO_RE = re.compile(r"^/(?:[a-z0-9-]+/)*([a-z0-9-]+?)(?:\.html)?$")
 _MAGENTO_STORES = {"thenorthface", "converse", "lacoste", "marmot", "sparta", "dbs", "antartica", "weplay", "sdn",
                    "novasalud", "ebest", "bathandbodyworks", "schilling", "flex", "headchile", "epson", "umbro",
@@ -67,6 +69,9 @@ def canonical_product_id(store_id: str, url: Optional[str]) -> Optional[str]:
         return f"abc-{m.group(1)}" if m else None
 
     if store in _MAGENTO_STORES:
+        view = _MAGENTO_VIEW_RE.search(path.lower())
+        if view:
+            return f"{store}-{view.group(1)}"
         m = _MAGENTO_RE.search(path.lower())
         return f"{store}-{m.group(1)}" if m else None
 

@@ -295,9 +295,17 @@ class MathAnomalyDetector:
                 baseline_contradiction = True
 
         # 5. Descuento y ahorro representativos del dictamen
-        primary_discount = discount_normal if normal_price > 0.0 else (discount_baseline or 0.0)
-        primary_savings = savings_normal if normal_price > 0.0 else (savings_baseline or 0.0)
-        reference_price = normal_price if normal_price > 0.0 else (float(baseline_price) if has_baseline else 0.0)
+        # Si la caída solo se ve contra nuestro historial (la tienda no muestra precio tachado, o el
+        # tachado es menor), la referencia es el historial: si no, la alerta mostraría "0% de descuento".
+        use_baseline = has_baseline and (
+            normal_price <= 0.0
+            or ((meets_baseline_threshold or mz_baseline)
+                and not (meets_normal_threshold or mz_normal or mz_curr_normal)
+                and (discount_baseline or 0.0) > discount_normal)
+        )
+        primary_discount = (discount_baseline or 0.0) if use_baseline else discount_normal
+        primary_savings = (savings_baseline or 0.0) if use_baseline else savings_normal
+        reference_price = float(baseline_price) if use_baseline else (normal_price if normal_price > 0.0 else 0.0)
 
         # 6. Cálculo del Puntaje de Confianza Matemática
         confidence_score = self.calculate_confidence_score(
@@ -367,6 +375,7 @@ class MathAnomalyDetector:
             "normal_price": normal_price,
             "baseline_price": float(baseline_price) if has_baseline else None,
             "reference_price": reference_price,
+            "reference_is_baseline": use_baseline,
             "missing_zero_ratio": active_ratio,
             "severity_hint": severity.value,
             "severity": severity,
