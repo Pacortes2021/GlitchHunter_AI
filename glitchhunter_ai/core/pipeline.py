@@ -529,6 +529,8 @@ class GlitchHuntingPipeline:
 
                     products = scraper.fetch_catalog(**kwargs)
                     total_scanned += len(products)
+                    if use_live and products and self.forwarder is not None:
+                        self.forwarder.submit(scraper.store_id, products)   # unir paneles (FORWARD_TO_URL)
                     self._note_bulk_prices(products)
                     for prod in products:
                         alert = self.process_product(prod, send_notifications=send_notifications)

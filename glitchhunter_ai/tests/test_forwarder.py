@@ -86,3 +86,20 @@ def test_ingest_endpoint_requires_key_and_processes(monkeypatch):
     monkeypatch.setattr(server, "INGEST_MAX_PRODUCTS", 1)
     body["products"].append(_product("ripley-2").model_dump(mode="json"))
     assert client.post("/api/ingest", json=body, headers={"X-API-Key": "secreta"}).status_code == 413
+
+
+def test_full_scan_forwards_live_store_reads(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "s.db")
+    db.init_db()
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
+    pipeline.telegram_dispatcher.send_alert = MagicMock(return_value=True)
+    scraper = MagicMock(store_id="ripley", store_name="Ripley")
+    scraper.fetch_catalog.return_value = [_product("ripley-s")]
+    pipeline.scrapers = [scraper]
+    pipeline.forwarder = MagicMock()
+    pipeline.run_scan(use_live=True, send_notifications=False, rotate_categories=False, scan_watchlist=False)
+    store_id, products = pipeline.forwarder.submit.call_args.args
+    assert store_id == "ripley" and products[0].id == "ripley-s"
+    pipeline.forwarder.reset_mock()
+    pipeline.run_scan(use_live=False, send_notifications=False, rotate_categories=False, scan_watchlist=False)
+    pipeline.forwarder.submit.assert_not_called()      # datos de demostración: no se envían
