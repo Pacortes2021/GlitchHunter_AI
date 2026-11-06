@@ -88,6 +88,15 @@ VTEX_STORES: Dict[str, tuple] = {
     "umbrale": ("Umbrale", "https://www.umbrale.cl", "otros"),
     "mountainhardwear": ("Mountain Hardwear", "https://www.mountainhardwear.cl", "otros"),
     "ilgioco": ("Il Gioco", "https://www.ilgioco.cl", "otros"),
+    "jansport": ("JanSport", "https://www.jansport.cl", "otros"),
+    "lindt": ("Lindt", "https://www.lindt.cl", "otros"),
+    "chilemat": ("Chilemat", "https://www.chilemat.com", "otros"),
+    "palmers": ("Palmers", "https://www.palmers.cl", "otros"),
+    "blushbar": ("Blush-Bar", "https://www.blush-bar.cl", "otros"),
+    "mk": ("MK", "https://www.mk.cl", "otros"),
+    "fernapet": ("Fernapet", "https://www.fernapet.cl", "otros"),
+    "perryellis": ("Perry Ellis", "https://www.perryellis.cl", "otros"),
+    "hit": ("Hit", "https://www.hit.cl", "otros"),
 }
 
 # Tiendas Shopify: /products.json es el catálogo público estándar de Shopify (precio, compare_at_price
@@ -117,6 +126,25 @@ SHOPIFY_STORES: Dict[str, tuple] = {
     "toyng": ("Toyng", "https://www.toyng.cl", "otros"),
     "juanvaldez": ("Juan Valdez", "https://www.juanvaldez.cl", "otros"),
     "promusic": ("ProMusic", "https://www.promusic.cl", "otros"),
+    "stevemadden": ("Steve Madden", "https://stevemadden.cl", "otros"),
+    "tiendacopec": ("Tienda Copec", "https://www.tiendacopec.cl", "otros"),
+    "raindoor": ("Raindoor", "https://www.raindoor.cl", "otros"),
+    "ansaldo": ("Ansaldo", "https://ansaldo.cl", "otros"),
+    "adagio": ("Adagio Teas", "https://adagio.cl", "otros"),
+    "a3d": ("A3D", "https://www.a3d.cl", "otros"),
+    "zola": ("Zola", "https://zola.cl", "otros"),
+    "hushpuppieskids": ("Hush Puppies Kids", "https://www.hushpuppieskids.cl", "otros"),
+    "portomenaje": ("Porto Menaje", "https://www.portomenaje.cl", "otros"),
+    "hollyconcept": ("Holly Concept", "https://hollyconcept.com", "otros"),
+    "melissa": ("Melissa", "https://melissaoficial.cl", "otros"),
+    "bamers": ("Bamers", "https://www.bamers.cl", "otros"),
+    "doce34": ("Doce34", "https://doce34.cl", "otros"),
+    "vantek": ("Vantek", "https://vantek.cl", "otros"),
+    "yeppo": ("Yeppo", "https://yeppo.cl", "otros"),
+    "mashini": ("Mashini", "https://mashini.cl", "otros"),
+    "zooyork": ("Zoo York", "https://www.zooyork.cl", "otros"),
+    "blikstore": ("Blik Store", "https://www.blikstore.com", "otros"),
+    "fashionspark": ("Fashion's Park", "https://www.fashionspark.com", "otros"),
 }
 # Shopify con compare_at_price inflado: Kitchen Center muestra "antes" de exactamente el doble
 # ($409.980 = 2 × $204.990). Ahí la referencia es el precio actual, como Casa Royal en VTEX.
@@ -172,6 +200,9 @@ MAGENTO_STORES: Dict[str, tuple] = {
     "rosen": ("Rosen", "https://www.rosen.cl", "otros", ("/camas-y-colchones.html", "/muebles.html", "/ropa-de-cama.html")),
     "cannonhome": ("Cannon Home", "https://cannonhome.cl", "otros", ("/12-ropa-de-cama", "/plaza", "/dormitorio", "/bano")),
     "wa2": ("Wa2", "https://www.wa2.cl", "otros", ("/colecciones",)),
+    "coliseum": ("Coliseum", "https://coliseumstore.cl", "otros", ('/sale', '/todo-ropa', '/hombre/calzado', '/mujer/zapatillas')),
+    "todomoda": ("Todo Moda", "https://cl.todomoda.com", "otros", ('/sale.html', '/accesorios.html')),
+    "kliper": ("Kliper", "https://www.kliper.cl", "otros", ('/ofertas', '/hombre', '/mujer')),
 }
 MAGENTO_PAGE_SIZE = 36
 MAGENTO_PAGES_PER_CYCLE = 2
@@ -183,7 +214,7 @@ SHOPIFY_BACKOFF_KEY = "shopify"
 # muestra 40%+ de descuento en ~18% de sus productos (un micrófono de $18.990 con "normal" $54.990);
 # Construplaza, Coleman e Il Gioco muestran "descuento" en casi el 100% del catálogo.
 # Ahí la referencia es el precio actual y las bajas reales se detectan contra el historial propio.
-VTEX_INFLATED_LIST_PRICE = {"casaroyal", "construplaza", "coleman", "ilgioco"}
+VTEX_INFLATED_LIST_PRICE = {"casaroyal", "construplaza", "coleman", "ilgioco", "jansport", "chilemat", "fernapet"}
 VTEX_PAGE_SIZE = 50          # máximo que acepta la API
 VTEX_MAX_OFFSET = 2500       # VTEX no pagina más allá de _from=2500
 VTEX_PAGES_PER_CYCLE = 4     # 200 productos por tienda y ciclo
