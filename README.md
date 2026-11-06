@@ -88,6 +88,12 @@ Abre en tu navegador:
 
 ---
 
+## ☁️ Correrlo 24/7 gratis en la nube
+
+Para que el radar no dependa de tu computador, instálalo en una máquina gratuita de Oracle Cloud (región Santiago).
+Un instalador de una línea lo deja como servicio que se reinicia solo y respalda la base de datos todos los días.
+Paso a paso: [deploy/GUIA_ORACLE_CLOUD.md](deploy/GUIA_ORACLE_CLOUD.md).
+
 ## 🖥️ Interfaz Web: Vista de Dos Columnas
 
 La interfaz fue rediseñada en una estética minimalista **Blanco & Verde Esmeralda**:

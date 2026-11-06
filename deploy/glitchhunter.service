@@ -1,0 +1,28 @@
+[Unit]
+Description=GlitchHunter AI - radar de ofertas
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+WorkingDirectory=@INSTALL_DIR@
+# La configuración se lee de @INSTALL_DIR@/.env (python-dotenv)
+Environment=PYTHONUNBUFFERED=1
+Environment=GLITCHHUNTER_DATA_DIR=@DATA_DIR@
+ExecStart=@INSTALL_DIR@/venv/bin/python run.py server
+Restart=always
+RestartSec=10
+# Apagado ordenado (cierra lectores y base de datos); si se cuelga, se fuerza a los 30 s
+TimeoutStopSec=30
+KillSignal=SIGINT
+# Endurecimiento básico
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=@DATA_DIR@ @INSTALL_DIR@
+
+[Install]
+WantedBy=multi-user.target
