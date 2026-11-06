@@ -197,6 +197,48 @@ DIRECT_STORES = (
     + tuple(VTEX_STORES) + tuple(SHOPIFY_STORES) + tuple(MAGENTO_STORES)
 )
 
+# Secciones de ofertas: el carril rápido de una tienda Magento relee su primera sección solo si es una de estas
+_SALE_SECTION_RE = re.compile(r"sale|oferta|outlet|promo|special|oportunidad|liquidac|descuento|rebaja", re.IGNORECASE)
+# Colecciones Shopify de ofertas: primero los nombres exactos, luego cualquier coincidencia
+_SHOPIFY_SALE_EXACT = ("sale", "ofertas", "outlet", "descuentos", "liquidacion", "rebajas", "promociones", "oferta")
+_SHOPIFY_SALE_RE = re.compile(r"sale|oferta|outlet|descuento|liquidac|rebaja|promo|cyber|black", re.IGNORECASE)
+
+
+def supports_live_search(store_id: str) -> bool:
+    """Tiendas cuyo buscador propio se puede consultar (DirectStoreReader.search devuelve resultados)."""
+    return (store_id in VTEX_STORES or store_id in MAGENTO_STORES
+            or store_id in ("falabella", "ripley", "paris", "abc", "sodimac", "pcfactory"))
+
+
+def magento_has_sale_section(store_id: str) -> bool:
+    return bool(_SALE_SECTION_RE.search(MAGENTO_STORES[store_id][3][0]))
+
+
+def pick_shopify_sale_collection(collections: List[Dict[str, Any]]) -> Optional[str]:
+    """Handle de la colección de ofertas de una tienda Shopify (de /collections.json), o None."""
+    candidates = []
+    for c in collections:
+        handle = str(c.get("handle") or "")
+        text = f"{handle} {c.get('title') or ''}"
+        if not handle or not _SHOPIFY_SALE_RE.search(text):
+            continue
+        count = c.get("products_count")
+        if count == 0:
+            continue
+        exact = handle.lower() in _SHOPIFY_SALE_EXACT
+        candidates.append((not exact, -(count or 0), handle))
+    return min(candidates)[2] if candidates else None
+
+
+# Tiendas con carril rápido (una petición a sus ofertas en cada turno corto)
+HOT_LANE_STORES = (
+    tuple(VTEX_STORES) + tuple(s for s in MAGENTO_STORES if magento_has_sale_section(s)) + ("santaisabel",)
+)
+# Tiendas con recorrido de catálogo propio (las demás solo leen la watchlist y las categorías)
+CATALOG_STORES = (
+    ("santaisabel", "pcfactory", "spdigital") + tuple(VTEX_STORES) + tuple(MAGENTO_STORES)
+)
+
 # PC Factory expone una API JSON pública (la que usa su propio sitio): búsqueda, catálogo completo
 # paginado (search=*) y detalle por id. El catálogo (~3.000 productos, 48 por página) se recorre
 # por partes en cada ciclo para no saturar su API: con 10 páginas por ciclo de 3 min, una vuelta
@@ -1165,6 +1207,9 @@ class DirectStoreReader:
         self._shopify_lock = threading.Lock()
         self._shopify_turn = 0                 # índice de la tienda Shopify a la que le toca
         self._shopify_next_at = 0.0            # instante (monotónico) de la próxima petición Shopify
+        self._shopify_hot_turn = 0             # siguiente tienda del carril rápido Shopify
+        self._shopify_hot_next = False         # alterna turnos de carril rápido y de recorrido
+        self._shopify_sale: Dict[str, Optional[str]] = {}   # colección de ofertas (None = no tiene)
         self.clock: Callable[[], float] = time.monotonic
 
     # --- PC Factory (API JSON) -------------------------------------------------
@@ -1223,11 +1268,11 @@ class DirectStoreReader:
         return items
 
     # --- Santa Isabel (flujo RSC como Jumbo, por secciones) ----------------------
-    def _santaisabel_catalog_slice(self) -> List[ProductItem]:
+    def _santaisabel_catalog_slice(self, lane: str = "both") -> List[ProductItem]:
         """Las siguientes páginas de las secciones de Santa Isabel (cursor: sección, página e IDs vistos)."""
         items: List[ProductItem] = []
         section_idx, page = self._magento_cursor.get("santaisabel", (0, 1))
-        if (section_idx % len(SANTAISABEL_SECTIONS), page) != (0, 1):
+        if lane == "hot" or (lane == "both" and (section_idx % len(SANTAISABEL_SECTIONS), page) != (0, 1)):
             # Carril rápido: /ofertas se relee en cada ciclo
             html = self._get_html("santaisabel", f"{STORE_BASE['santaisabel']}{SANTAISABEL_SECTIONS[0]}")
             if html is None:
@@ -1236,6 +1281,9 @@ class DirectStoreReader:
                 items.extend(parse_santaisabel_listing(html))
             except (BlockedError, ValueError, KeyError) as exc:
                 self.backoff.record_block("santaisabel", f"formato inesperado: {exc}")
+                return items
+            if lane == "hot":
+                self.backoff.record_success("santaisabel")
                 return items
         for _ in range(SANTAISABEL_PAGES_PER_CYCLE):
             path = SANTAISABEL_SECTIONS[section_idx % len(SANTAISABEL_SECTIONS)]
@@ -1260,12 +1308,14 @@ class DirectStoreReader:
         return items
 
     # --- Tiendas Magento 2 (listados HTML) --------------------------------------
-    def _magento_catalog_slice(self, store_id: str) -> List[ProductItem]:
+    def _magento_catalog_slice(self, store_id: str, lane: str = "both") -> List[ProductItem]:
         """Las siguientes páginas de las secciones de la tienda (cursor: sección y página)."""
         _, base, _, sections = MAGENTO_STORES[store_id]
         items: List[ProductItem] = []
+        if lane == "hot" and not magento_has_sale_section(store_id):
+            return items
         section_idx, page = self._magento_cursor.get(store_id, (0, 1))
-        if (section_idx % len(sections), page) != (0, 1):
+        if lane == "hot" or (lane == "both" and (section_idx % len(sections), page) != (0, 1)):
             # Carril rápido: la primera sección (ofertas/sale en la mayoría) se relee en cada ciclo
             html = self._get_html(store_id, f"{base}{sections[0]}?product_list_limit={MAGENTO_PAGE_SIZE}&p=1")
             if html is None:
@@ -1274,6 +1324,9 @@ class DirectStoreReader:
                 items.extend(parse_magento_listing(store_id, html)[0])
             except (BlockedError, ValueError, KeyError) as exc:
                 self.backoff.record_block(store_id, f"formato inesperado: {exc}")
+                return items
+            if lane == "hot":
+                self.backoff.record_success(store_id)
                 return items
         for _ in range(MAGENTO_PAGES_PER_CYCLE):
             path = sections[section_idx % len(sections)]
@@ -1345,6 +1398,69 @@ class DirectStoreReader:
         self._catalog_cursor[store_id] = page + 1 if full_page else 1
         return items
 
+    def _shopify_discover_sale(self, store_id: str) -> None:
+        """Busca (una vez) la colección pública de ofertas de la tienda en /collections.json."""
+        data = self._shopify_get(store_id, "/collections.json", {"limit": 250})
+        if data is None:
+            return   # sin respuesta: se reintenta en otra vuelta
+        self._shopify_sale[store_id] = pick_shopify_sale_collection((data or {}).get("collections") or [])
+        logger.info("🛍️ [Shopify] %s: colección de ofertas %s.", STORE_NAMES.get(store_id, store_id),
+                    self._shopify_sale[store_id] or "no encontrada (solo recorrido)")
+
+    def _shopify_hot(self, store_id: str) -> List[ProductItem]:
+        handle = self._shopify_sale.get(store_id)
+        if not handle:
+            return []
+        data = self._shopify_get(store_id, f"/collections/{urllib.parse.quote(handle)}/products.json",
+                                 {"limit": SHOPIFY_PAGE_SIZE})
+        try:
+            return parse_shopify_products(store_id, (data or {}).get("products")) if data else []
+        except BlockedError as exc:
+            self.backoff.record_block(store_id, f"formato inesperado: {exc}")
+            return []
+
+    def fetch_shopify_next(self) -> Optional[tuple]:
+        """
+        Una petición Shopify si pasó el espaciado global: (tienda, carril, productos), o None si aún no toca.
+        Los turnos se alternan entre el carril rápido (la colección de ofertas de la siguiente tienda que
+        la tenga) y el recorrido del catálogo completo, así que el ritmo total de peticiones no cambia.
+        """
+        order = list(SHOPIFY_STORES)
+        with self._shopify_lock:
+            now = self.clock()
+            if now < self._shopify_next_at or self.backoff.is_paused(SHOPIFY_BACKOFF_KEY):
+                return None
+            self._shopify_next_at = now + SHOPIFY_SPACING_SECONDS
+            self._shopify_hot_next = not self._shopify_hot_next
+            hot_store = None
+            if self._shopify_hot_next:
+                for _ in range(len(order)):
+                    cand = order[self._shopify_hot_turn % len(order)]
+                    self._shopify_hot_turn += 1
+                    if self._shopify_sale.get(cand, "?") is not None:   # desconocida o con colección
+                        hot_store = cand
+                        break
+            if hot_store is None:
+                deep_store = order[self._shopify_turn % len(order)]
+                self._shopify_turn += 1
+        if hot_store is not None:
+            if hot_store not in self._shopify_sale:
+                self._shopify_discover_sale(hot_store)
+                return hot_store, "hot", []
+            return hot_store, "hot", self._shopify_hot(hot_store)
+        page = self._catalog_cursor.get(deep_store, 1)
+        data = self._shopify_get(deep_store, "/products.json", {"limit": SHOPIFY_PAGE_SIZE, "page": page})
+        if data is None:
+            return deep_store, "deep", []
+        try:
+            items = parse_shopify_products(deep_store, (data or {}).get("products"))
+        except BlockedError as exc:
+            self.backoff.record_block(deep_store, f"formato inesperado: {exc}")
+            return deep_store, "deep", []
+        full_page = len((data or {}).get("products") or []) >= SHOPIFY_PAGE_SIZE
+        self._catalog_cursor[deep_store] = page + 1 if full_page else 1
+        return deep_store, "deep", items
+
     # --- Tiendas VTEX (API pública de catálogo) --------------------------------
     def _vtex_query(self, store_id: str, path: str = "", params: Optional[Dict[str, Any]] = None) -> Optional[tuple]:
         """(productos, total) de la API de catálogo VTEX, con el mismo freno automático que las páginas."""
@@ -1372,12 +1488,15 @@ class DirectStoreReader:
         total = int(resources.rsplit("/", 1)[-1]) if resources.rsplit("/", 1)[-1].isdigit() else None
         return items, total
 
-    def _vtex_catalog_slice(self, store_id: str, pages: int) -> List[ProductItem]:
+    def _vtex_catalog_slice(self, store_id: str, pages: int, lane: str = "both") -> List[ProductItem]:
         items: List[ProductItem] = []
-        hot = self._vtex_query(store_id, params={"_from": 0, "_to": VTEX_PAGE_SIZE - 1, "O": VTEX_HOT_ORDER})
-        if hot is None:
-            return items   # tienda en pausa o sin respuesta: no se sigue con el recorrido
-        items.extend(hot[0])
+        if lane in ("both", "hot"):
+            hot = self._vtex_query(store_id, params={"_from": 0, "_to": VTEX_PAGE_SIZE - 1, "O": VTEX_HOT_ORDER})
+            if hot is None:
+                return items   # tienda en pausa o sin respuesta: no se sigue con el recorrido
+            items.extend(hot[0])
+            if lane == "hot":
+                return items
         offset = self._catalog_cursor.get(store_id, 0)
         for _ in range(max(1, pages)):
             result = self._vtex_query(store_id, params={
@@ -1394,6 +1513,28 @@ class DirectStoreReader:
                 break
         self._catalog_cursor[store_id] = offset
         return items
+
+    def fetch_hot(self, store_id: str) -> List[ProductItem]:
+        """Carril rápido: una petición a lo que más cambia (mejor descuento u ofertas) de la tienda."""
+        if store_id in VTEX_STORES:
+            return self._vtex_catalog_slice(store_id, 0, lane="hot")
+        if store_id in MAGENTO_STORES:
+            return self._magento_catalog_slice(store_id, lane="hot")
+        if store_id == "santaisabel":
+            return self._santaisabel_catalog_slice(lane="hot")
+        return []
+
+    def fetch_deep(self, store_id: str, pages: int = 10) -> List[ProductItem]:
+        """Recorrido: las siguientes páginas del catálogo completo, sin el carril rápido."""
+        if store_id in VTEX_STORES:
+            return self._vtex_catalog_slice(store_id, min(pages, VTEX_PAGES_PER_CYCLE), lane="deep")
+        if store_id in MAGENTO_STORES:
+            return self._magento_catalog_slice(store_id, lane="deep")
+        if store_id == "santaisabel":
+            return self._santaisabel_catalog_slice(lane="deep")
+        if store_id in SHOPIFY_STORES:
+            return []   # Shopify va por fetch_shopify_next (espaciado global)
+        return self.fetch_catalog_slice(store_id, pages)
 
     def fetch_catalog_slice(self, store_id: str, pages: int = 10) -> List[ProductItem]:
         """

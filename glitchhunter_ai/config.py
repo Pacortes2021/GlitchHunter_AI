@@ -95,6 +95,17 @@ DIRECT_SCAN_CATEGORIES = [c.strip() for c in os.getenv("DIRECT_SCAN_CATEGORIES",
 DIRECT_PCFACTORY_PAGES_PER_CYCLE = int(os.getenv("DIRECT_PCFACTORY_PAGES_PER_CYCLE", "10"))
 # Tiendas consultadas a la vez en el escaneo directo (cada una es un sitio distinto)
 DIRECT_FETCH_WORKERS = int(os.getenv("DIRECT_FETCH_WORKERS", "16"))
+# Ritmo por tienda (lectores independientes): cada tienda tiene su propio turno, sin ciclo común.
+# Carril rápido: una petición a las ofertas / mejor descuento de la tienda cada N segundos.
+DIRECT_HOT_INTERVAL_SECONDS = int(os.getenv("DIRECT_HOT_INTERVAL_SECONDS", "60"))
+# Recorrido del catálogo: ritmo base, adaptativo entre el mínimo (tienda con ofertas nuevas) y el máximo (sin respuesta)
+DIRECT_DEEP_INTERVAL_SECONDS = int(os.getenv("DIRECT_DEEP_INTERVAL_SECONDS", str(DIRECT_SCAN_INTERVAL_SECONDS)))
+DIRECT_DEEP_MIN_SECONDS = int(os.getenv("DIRECT_DEEP_MIN_SECONDS", "60"))
+DIRECT_DEEP_MAX_SECONDS = int(os.getenv("DIRECT_DEEP_MAX_SECONDS", "900"))
+# Ritmo base del recorrido para tiendas puntuales: "gap=60,santaisabel=120"
+DIRECT_STORE_INTERVALS = os.getenv("DIRECT_STORE_INTERVALS", "")
+# Cada cuántos segundos se publican en el canal las ofertas nuevas que trajeron los lectores
+DIRECT_PUBLISH_EVERY_SECONDS = int(os.getenv("DIRECT_PUBLISH_EVERY_SECONDS", "20"))
 # Si el escaneo directo se omitió por un escaneo completo en curso, se reintenta a los N segundos
 DIRECT_RETRY_SECONDS = int(os.getenv("DIRECT_RETRY_SECONDS", "15"))
 

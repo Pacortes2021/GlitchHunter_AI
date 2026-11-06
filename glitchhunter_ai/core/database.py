@@ -13,8 +13,10 @@ from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
 import sqlite3
+import re
 import statistics
 import sys
+import unicodedata
 from typing import Any, Dict, List, Optional, Union
 import uuid
 
@@ -69,6 +71,12 @@ def _enum_value(value: Any) -> str:
     if value is None:
         return ""
     return str(getattr(value, "value", value))
+
+
+def _search_norm(text: Any) -> str:
+    """Minúsculas y sin tildes, para que 'cafe' encuentre 'Café'."""
+    decomposed = unicodedata.normalize("NFKD", str(text or "").lower())
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
 
 class PriceDatabase:
@@ -1436,6 +1444,52 @@ class PriceDatabase:
                 item = dict(row)
                 results.append(item)
             return results
+
+    _BEST_SQL = "(CASE WHEN p.card_price > 0 AND p.card_price < p.current_price THEN p.card_price ELSE p.current_price END)"
+
+    def get_best_prices(self, product_ids: List[str]) -> Dict[str, float]:
+        """Mejor precio guardado (tarjeta o normal) de cada producto ya conocido."""
+        out: Dict[str, float] = {}
+        ids = list(dict.fromkeys(product_ids))
+        with self.get_connection() as conn:
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                rows = conn.execute(
+                    f"SELECT p.id, {self._BEST_SQL} AS best FROM products p WHERE p.id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                ).fetchall()
+                out.update({r[0]: float(r[1] or 0) for r in rows})
+        return out
+
+    def search_products(self, query: str, limit: int = 200, only_discounted: bool = False) -> List[Dict[str, Any]]:
+        """
+        Busca en el catálogo guardado (todas las tiendas leídas): todas las palabras deben estar en el
+        título, sin importar mayúsculas ni tildes. Ordena por descuento.
+        """
+        words = [w for w in re.split(r"\s+", _search_norm(query).strip()) if len(w) >= 2][:6]
+        if not words:
+            return []
+        best = self._BEST_SQL
+        sql = f"""
+            SELECT p.id AS product_id, p.store_id, p.title, p.category, p.url, p.image_url,
+                   p.current_price, p.card_price, p.normal_price, {best} AS best_price,
+                   CASE WHEN p.normal_price > {best} AND p.normal_price > 0
+                        THEN ROUND((p.normal_price - {best}) / p.normal_price * 100, 1) ELSE 0 END AS discount_pct,
+                   p.last_updated
+            FROM products p
+            WHERE (p.in_stock IS NULL OR p.in_stock = 1)
+        """
+        params: list = []
+        for w in words:
+            sql += " AND search_norm(p.title) LIKE ?"
+            params.append(f"%{w}%")
+        if only_discounted:
+            sql += f" AND p.normal_price > {best}"
+        sql += " ORDER BY discount_pct DESC, best_price ASC LIMIT ?"
+        params.append(int(limit))
+        with self.get_connection() as conn:
+            conn.create_function("search_norm", 1, _search_norm, deterministic=True)
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     def mark_telegram_sent(self, alert_id: str) -> bool:
         """Marca una alerta como despachada por Telegram."""
