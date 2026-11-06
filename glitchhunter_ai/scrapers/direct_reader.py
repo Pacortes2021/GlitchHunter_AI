@@ -1236,6 +1236,7 @@ class DirectStoreReader:
         self._magento_cursor: Dict[str, tuple] = {}
         self._santaisabel_seen: set = set()       # IDs de la sección en curso (detecta la última página)
         self._shopify_lock = threading.Lock()
+        self.shopify_stores: Optional[List[str]] = None   # None = todas; lo fija el lector continuo
         self._shopify_turn = 0                 # índice de la tienda Shopify a la que le toca
         self._shopify_next_at = 0.0            # instante (monotónico) de la próxima petición Shopify
         self._shopify_hot_turn = 0             # siguiente tienda del carril rápido Shopify
@@ -1409,7 +1410,9 @@ class DirectStoreReader:
 
     def _shopify_catalog_slice(self, store_id: str) -> List[ProductItem]:
         """Una página de 250 productos, solo si es el turno de esta tienda y pasó el espaciado."""
-        order = list(SHOPIFY_STORES)
+        order = list(SHOPIFY_STORES) if self.shopify_stores is None else list(self.shopify_stores)
+        if not order:
+            return None
         with self._shopify_lock:
             now = self.clock()
             if order[self._shopify_turn % len(order)] != store_id or now < self._shopify_next_at:
@@ -1456,7 +1459,9 @@ class DirectStoreReader:
         Los turnos se alternan entre el carril rápido (la colección de ofertas de la siguiente tienda que
         la tenga) y el recorrido del catálogo completo, así que el ritmo total de peticiones no cambia.
         """
-        order = list(SHOPIFY_STORES)
+        order = list(SHOPIFY_STORES) if self.shopify_stores is None else list(self.shopify_stores)
+        if not order:
+            return None
         with self._shopify_lock:
             now = self.clock()
             if now < self._shopify_next_at or self.backoff.is_paused(SHOPIFY_BACKOFF_KEY):

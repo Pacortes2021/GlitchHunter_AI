@@ -305,3 +305,54 @@ def test_no_price_error_alert_with_zero_discount(tmp_path):
     item = _product("volcom-1", store="volcom", price=14990, normal=14990, title="Calcetines Full Stone 3 pack")
     assert pipeline.process_product(item, send_notifications=False) is None
     assert db.get_feed(limit=10) == []
+
+
+def test_store_split_between_radars(monkeypatch):
+    """RADAR_ONLY_STORES / RADAR_SKIP_STORES reparten las tiendas entre dos radares sin solaparse."""
+    from glitchhunter_ai import config
+    from glitchhunter_ai.core.continuous_reader import SHOPIFY_KEY, ContinuousReader
+
+    blocked = {"ripley", "paris", "sodimac", list(SHOPIFY_STORES)[0]}
+    pipeline = MagicMock()
+    pipeline.direct_reader = DirectStoreReader(client=MagicMock())
+
+    monkeypatch.setattr(config, "RADAR_ONLY_STORES", set())
+    monkeypatch.setattr(config, "RADAR_SKIP_STORES", blocked)
+    server = ContinuousReader(pipeline, workers=2, hot_interval=60, deep_interval=180, deep_min=60, deep_max=900)
+    server_stores = {s for (s, _) in server.scheduler.lanes} | set(pipeline.direct_reader.shopify_stores)
+    assert not (server_stores & blocked)
+    assert (SHOPIFY_KEY, "turno") in server.scheduler.lanes
+    server.pool.shutdown(wait=False)
+
+    monkeypatch.setattr(config, "RADAR_ONLY_STORES", blocked)
+    monkeypatch.setattr(config, "RADAR_SKIP_STORES", set())
+    home_reader = DirectStoreReader(client=MagicMock())
+    pipeline.direct_reader = home_reader
+    home = ContinuousReader(pipeline, workers=2, hot_interval=60, deep_interval=180, deep_min=60, deep_max=900)
+    home_stores = {s for (s, _) in home.scheduler.lanes if s != SHOPIFY_KEY} | set(home_reader.shopify_stores)
+    assert home_stores == blocked
+    assert home_reader.shopify_stores == [list(SHOPIFY_STORES)[0]]
+    home.pool.shutdown(wait=False)
+
+    live = LiveSearch(pipeline, workers=2)
+    assert set(live.stores) <= blocked and "ripley" in live.stores
+
+
+def test_shopify_rotation_with_no_enabled_shops_does_nothing():
+    reader = DirectStoreReader(client=MagicMock())
+    reader.shopify_stores = []
+    assert reader.fetch_shopify_next() is None
+    reader.client.get.assert_not_called()
+
+
+def test_shopify_alias_covers_all_shopify_stores(monkeypatch):
+    from glitchhunter_ai import config
+    first = list(SHOPIFY_STORES)[0]
+    monkeypatch.setattr(config, "RADAR_ONLY_STORES", set())
+    monkeypatch.setattr(config, "RADAR_SKIP_STORES", {"shopify", "ripley"})
+    assert not config.store_enabled(first) and not config.store_enabled("ripley")
+    assert config.store_enabled("pcfactory")
+    monkeypatch.setattr(config, "RADAR_ONLY_STORES", {"shopify", "ripley"})
+    monkeypatch.setattr(config, "RADAR_SKIP_STORES", set())
+    assert config.store_enabled(first) and config.store_enabled("ripley")
+    assert not config.store_enabled("pcfactory")

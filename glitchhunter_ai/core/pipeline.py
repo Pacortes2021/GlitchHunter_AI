@@ -493,9 +493,10 @@ class GlitchHuntingPipeline:
             except Exception as e:
                 logger.debug(f"Error en expire_stale_deals: {e}")
 
+            from glitchhunter_ai.config import store_enabled
             target_scrapers = [
                 s for s in self.scrapers
-                if store_ids is None or s.store_id in store_ids
+                if (store_ids is None or s.store_id in store_ids) and store_enabled(s.store_id)
             ]
 
             # 1. Rotación Round-Robin de Categorías y Estrategia de Ordenamiento
@@ -754,7 +755,8 @@ class GlitchHuntingPipeline:
             # El procesamiento y la base de datos siguen en este hilo, en el orden de DIRECT_STORES.
             fetched: Dict[str, List[List[ProductItem]]] = {}
             with ThreadPoolExecutor(max_workers=DIRECT_FETCH_WORKERS, thread_name_prefix="direct") as pool:
-                futures = {pool.submit(fetch_store, s): s for s in DIRECT_STORES}
+                from glitchhunter_ai.config import store_enabled
+                futures = {pool.submit(fetch_store, s): s for s in DIRECT_STORES if store_enabled(s)}
                 for fut in as_completed(futures):
                     store_id = futures[fut]
                     try:
