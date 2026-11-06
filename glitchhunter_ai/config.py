@@ -110,6 +110,7 @@ DIRECT_PUBLISH_EVERY_SECONDS = int(os.getenv("DIRECT_PUBLISH_EVERY_SECONDS", "20
 # bloquean las IPs de centros de datos: el servidor las salta y el PC lee solo esas.
 #   RADAR_ONLY_STORES=ripley,paris   -> este radar lee únicamente esas tiendas
 #   RADAR_SKIP_STORES=ripley,paris   -> este radar lee todas menos esas
+# "shopify" en cualquiera de las dos listas equivale a todas las tiendas Shopify.
 RADAR_ONLY_STORES = {s.strip().lower() for s in os.getenv("RADAR_ONLY_STORES", "").split(",") if s.strip()}
 RADAR_SKIP_STORES = {s.strip().lower() for s in os.getenv("RADAR_SKIP_STORES", "").split(",") if s.strip()}
 
@@ -117,9 +118,18 @@ RADAR_SKIP_STORES = {s.strip().lower() for s in os.getenv("RADAR_SKIP_STORES", "
 def store_enabled(store_id: str) -> bool:
     """True si este radar debe leer la tienda (según RADAR_ONLY_STORES / RADAR_SKIP_STORES)."""
     sid = (store_id or "").lower()
-    if RADAR_ONLY_STORES and sid not in RADAR_ONLY_STORES:
+
+    def listed(stores: set) -> bool:
+        if sid in stores:
+            return True
+        if "shopify" in stores:
+            from glitchhunter_ai.scrapers.direct_reader import SHOPIFY_STORES
+            return sid in SHOPIFY_STORES
         return False
-    return sid not in RADAR_SKIP_STORES
+
+    if RADAR_ONLY_STORES and not listed(RADAR_ONLY_STORES):
+        return False
+    return not listed(RADAR_SKIP_STORES)
 
 
 # Si el escaneo directo se omitió por un escaneo completo en curso, se reintenta a los N segundos

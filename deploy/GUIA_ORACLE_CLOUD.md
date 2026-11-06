@@ -184,9 +184,9 @@ Cuando el radar ya funcione en la nube, **apaga el del Mac**. Si quedan los dos 
 ## 8. Si algo falla
 
 - **Una tienda deja de aportar ofertas.** Las IPs de centros de datos se bloquean más que las de casa. Revisa *Estado → Salud de las tiendas* en el panel, o `sudo journalctl -u glitchhunter | grep "bloqueó"`. El radar pausa sola la tienda bloqueada y la retoma después; no hay que hacer nada.
-- **Tiendas que bloquean siempre la IP del servidor** (p. ej. Ripley, Paris, Sodimac). Repártelas con el PC de la casa:
-  - en el servidor, `/opt/glitchhunter/.env`: `RADAR_SKIP_STORES=ripley,paris,sodimac` y reinicia;
-  - en el PC, su `.env`: `RADAR_ONLY_STORES=ripley,paris,sodimac`.
+- **Tiendas que bloquean siempre la IP del servidor** (p. ej. Ripley, Paris, Falabella, Sodimac y las tiendas Shopify). Repártelas con el PC de la casa:
+  - en el servidor, `/opt/glitchhunter/.env`: `RADAR_SKIP_STORES=ripley,paris,falabella,sodimac,shopify` y reinicia;
+  - en el PC, su `.env`: `RADAR_ONLY_STORES=ripley,paris,falabella,sodimac,shopify` (`shopify` = todas las tiendas Shopify).
   Así cada tienda la lee un solo radar y no recibe visitas dobles.
 - **El servicio no arranca.** Revisa el error con `sudo journalctl -u glitchhunter -n 100`.
 - **Oracle detiene la máquina por "inactiva".** Oracle puede recuperar máquinas gratis que pasan 7 días casi sin uso. El radar usa CPU y red todo el día, así que no debería pasar. Si pasa, enciéndela desde la consola. Pasar la cuenta a *Pay As You Go* lo evita, y los recursos gratis siguen sin costo; si lo haces, crea un *Budget* con alerta en $1 para enterarte de cualquier cobro.

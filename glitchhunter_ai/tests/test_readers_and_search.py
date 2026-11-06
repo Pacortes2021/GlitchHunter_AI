@@ -343,3 +343,16 @@ def test_shopify_rotation_with_no_enabled_shops_does_nothing():
     reader.shopify_stores = []
     assert reader.fetch_shopify_next() is None
     reader.client.get.assert_not_called()
+
+
+def test_shopify_alias_covers_all_shopify_stores(monkeypatch):
+    from glitchhunter_ai import config
+    first = list(SHOPIFY_STORES)[0]
+    monkeypatch.setattr(config, "RADAR_ONLY_STORES", set())
+    monkeypatch.setattr(config, "RADAR_SKIP_STORES", {"shopify", "ripley"})
+    assert not config.store_enabled(first) and not config.store_enabled("ripley")
+    assert config.store_enabled("pcfactory")
+    monkeypatch.setattr(config, "RADAR_ONLY_STORES", {"shopify", "ripley"})
+    monkeypatch.setattr(config, "RADAR_SKIP_STORES", set())
+    assert config.store_enabled(first) and config.store_enabled("ripley")
+    assert not config.store_enabled("pcfactory")
