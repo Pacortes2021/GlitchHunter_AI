@@ -24,7 +24,7 @@ _SLUG_P_STORES = {"jumbo", "santaisabel", "sony", "motorola", "electrolux", "fen
                   "karcher", "esika", "lbel", "clubsoftys", "coleman", "marleycoffee", "bbqgrill", "blanik",
                   "cotidian", "colloky", "ficcus", "zapatos", "hm", "dolly", "ferouch", "calvinklein", "theline",
                   "tommy", "treck", "velez", "privilege", "newman", "swarovski", "womensecret", "totto",
-                  "oneill", "americaneagle", "asics", "trial", "umbrale", "mountainhardwear", "ilgioco"}
+                  "oneill", "americaneagle", "asics", "trial", "umbrale", "mountainhardwear", "ilgioco", "jansport", "lindt", "chilemat", "palmers", "blushbar", "mk", "fernapet", "perryellis", "hit"}
 _SHOPIFY_RE = re.compile(r"^/products/([a-z0-9-]+)$")   # URLs /products/{handle} de tiendas Shopify
 # fichas Magento: /{slug} o /{slug}.html, a veces bajo su categoría (/ofertas/{slug} en Novasalud)
 # URL interna de Magento (/catalog/product/view/id/472043/s/…/category/4742/): el producto es el número tras /id/
@@ -35,10 +35,10 @@ _MAGENTO_STORES = {"thenorthface", "converse", "lacoste", "marmot", "sparta", "d
                    "kotting", "roly", "surprice", "ash", "bananarepublic", "brooksbrothers", "calubags",
                    "dcshoes", "globe", "guess", "jayson", "kannu", "kipling", "magriffe", "mammut", "mauiandsons",
                    "mcgregor", "potros", "rapsodia", "ripcurl", "rusty", "stoked", "gap", "ugg",
-                   "victoriassecret", "volcom", "wa2", "farmaciamapuche", "rosen", "cannonhome"}
+                   "victoriassecret", "volcom", "wa2", "farmaciamapuche", "rosen", "cannonhome", "coliseum", "todomoda", "kliper"}
 _SHOPIFY_STORES = {"columbia", "caterpillar", "patagonia", "underarmour", "crocs", "vans", "doite", "havaianas",
                    "oxford", "aufbau", "lippi", "kitchencenter", "sharkninja", "dermotienda", "herramientastotal",
-                   "delonghi", "santarita", "petplanet", "toyng", "juanvaldez", "promusic"}
+                   "delonghi", "santarita", "petplanet", "toyng", "juanvaldez", "promusic", "stevemadden", "tiendacopec", "raindoor", "ansaldo", "adagio", "a3d", "zola", "hushpuppieskids", "portomenaje", "hollyconcept", "melissa", "bamers", "doce34", "vantek", "yeppo", "mashini", "zooyork", "blikstore", "fashionspark"}
 _HP_RE = re.compile(r"/shop/[a-z0-9-]+-([a-z0-9]{5,10})\.html$")   # el SKU va al final del slug
 _WINPY_RE = re.compile(r"^/venta/([a-z0-9-]+)$")
 _SPDIGITAL_RE = re.compile(r"^/([a-z0-9-]+)$")   # fichas de SP Digital: /{slug}/
