@@ -132,6 +132,14 @@ def store_enabled(store_id: str) -> bool:
     return not listed(RADAR_SKIP_STORES)
 
 
+# Unir paneles: este radar envía cada lectura a otro (su POST /api/ingest), que la procesa y publica.
+# Ej. en el PC de la casa, con un túnel SSH al servidor:  FORWARD_TO_URL=http://127.0.0.1:8090
+# FORWARD_API_KEY es la API_AUTH_KEY del servidor de destino.
+FORWARD_TO_URL = os.getenv("FORWARD_TO_URL", "").strip()
+FORWARD_API_KEY = os.getenv("FORWARD_API_KEY", "").strip()
+# Máximo de productos por lectura recibida en /api/ingest
+INGEST_MAX_PRODUCTS = int(os.getenv("INGEST_MAX_PRODUCTS", "5000"))
+
 # Si el escaneo directo se omitió por un escaneo completo en curso, se reintenta a los N segundos
 DIRECT_RETRY_SECONDS = int(os.getenv("DIRECT_RETRY_SECONDS", "15"))
 

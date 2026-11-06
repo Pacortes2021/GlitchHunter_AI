@@ -28,6 +28,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from glitchhunter_ai.config import (
+    FORWARD_API_KEY,
+    FORWARD_TO_URL,
+    INGEST_MAX_PRODUCTS,
     ALLOW_TEST_GLITCH,
     API_AUTH_KEY,
     AUTO_SCAN_ENABLED,
@@ -66,6 +69,7 @@ from glitchhunter_ai.core.models import (
     SemanticClassificationResult,
 )
 from glitchhunter_ai.core.continuous_reader import ContinuousReader
+from glitchhunter_ai.core.forwarder import Forwarder
 from glitchhunter_ai.core.live_search import LiveSearch
 from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
 from glitchhunter_ai.core.price_signals import active_event, is_odd_price, parse_event_windows, risk_tier
@@ -312,6 +316,13 @@ async def lifespan(app: FastAPI):
     if USE_LIVE_SCRAPING and AUTO_SCAN_ENABLED and DIRECT_SCAN_ENABLED:
         readers = build_continuous_reader()
         readers.start()
+    # Unir paneles: cada lectura de este radar también se envía al radar de destino
+    forwarder = None
+    if FORWARD_TO_URL:
+        if not FORWARD_API_KEY:
+            logger.warning("⚠️ [Reenvío] FORWARD_TO_URL sin FORWARD_API_KEY: el servidor de destino rechazará las lecturas.")
+        forwarder = Forwarder(FORWARD_TO_URL, FORWARD_API_KEY).start()
+        pipeline.forwarder = forwarder
     direct_task = None
 
     # Receptor de votos 👍/👎 de Telegram (solo con un bot real, fuera del modo simulación)
@@ -324,6 +335,8 @@ async def lifespan(app: FastAPI):
 
     if feedback_poller:
         feedback_poller.stop()
+    if forwarder:
+        forwarder.stop()
 
     # Cancelar tareas al apagar el servidor
     if readers:
@@ -757,6 +770,29 @@ async def get_live_search(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Búsqueda no encontrada o expirada.")
     return job
+
+
+class IngestRequest(BaseModel):
+    store_id: str = Field(..., min_length=1, max_length=64)
+    products: List[ProductItem]
+
+
+@app.post("/api/ingest", dependencies=[Depends(verify_admin_key)])
+async def ingest_products(req: IngestRequest):
+    """
+    Recibe la lectura de una tienda hecha por otro radar (el PC de la casa lee las tiendas que
+    bloquean al servidor) y la procesa como una lectura propia: historial, detección y canal.
+    Exige API_AUTH_KEY: sin clave configurada nadie puede inyectar productos.
+    """
+    if not API_AUTH_KEY:
+        raise HTTPException(status_code=403, detail="Configura API_AUTH_KEY en este servidor para recibir lecturas.")
+    if len(req.products) > INGEST_MAX_PRODUCTS:
+        raise HTTPException(status_code=413, detail=f"Máximo {INGEST_MAX_PRODUCTS} productos por lectura.")
+    store_id = req.store_id.lower()
+    products = [p for p in req.products if p.store_id.lower() == store_id]
+    loop = asyncio.get_running_loop()
+    alerts, fresh = await loop.run_in_executor(None, pipeline.process_store_products, store_id, products)
+    return {"status": "ok", "store_id": store_id, "received": len(products), "fresh": fresh, "alerts": len(alerts)}
 
 
 @app.get("/api/readers")

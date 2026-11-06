@@ -86,6 +86,7 @@ class GlitchHuntingPipeline:
         self.last_direct_scan_skipped = False   # True si el último escaneo directo se omitió por otro en curso
         self.is_scanning = False
         self._rejected_deals: set = set()   # (product_id, precio) rechazados por el filtro de calidad
+        self.forwarder = None   # core/forwarder.Forwarder: envía cada lectura a otro radar (FORWARD_TO_URL)
 
     def process_product(
         self,
@@ -814,6 +815,8 @@ class GlitchHuntingPipeline:
         products = list(unique.values())
         if not products:
             return [], 0
+        if self.forwarder is not None:
+            self.forwarder.submit(store_id, products)
         if not self._scan_lock.acquire(timeout=lock_timeout):
             logger.warning("⚠️ [Lector %s] %d producto(s) descartados: cerrojo ocupado.", store_id, len(products))
             return [], 0
