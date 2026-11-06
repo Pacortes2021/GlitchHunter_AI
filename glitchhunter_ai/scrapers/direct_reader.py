@@ -1572,8 +1572,12 @@ class DirectStoreReader:
         self._catalog_cursor[store_id] = page
         return items
 
-    def _get_html(self, store_id: str, url: str) -> Optional[str]:
-        """Descarga la página; ante bloqueo activa la pausa de la tienda y retorna None."""
+    def _get_html(self, store_id: str, url: str, allow_empty: bool = False) -> Optional[str]:
+        """
+        Descarga la página; ante bloqueo activa la pausa de la tienda y retorna None.
+        allow_empty: una página sin productos (búsqueda sin resultados) no cuenta como bloqueo,
+        salvo que sea una verificación anti-bot.
+        """
         if self.backoff.is_paused(store_id):
             logger.debug("Lectura directa de %s en pausa (%.0f s restantes).", store_id, self.backoff.remaining_seconds(store_id))
             return None
@@ -1596,19 +1600,23 @@ class DirectStoreReader:
         }.get(store_id, "__NEXT_DATA__")
         if data_marker not in html:
             lower = html[:20000].lower()
-            reason = "verificación anti-bot" if any(m in lower for m in _BOT_CHALLENGE_MARKERS) else "página sin datos"
-            self.backoff.record_block(store_id, reason)
+            challenged = any(m in lower for m in _BOT_CHALLENGE_MARKERS)
+            if allow_empty and not challenged:
+                return None
+            self.backoff.record_block(store_id, "verificación anti-bot" if challenged else "página sin datos")
             return None
         return html
 
-    def _listing(self, store_id: str, url: str, category_hint: str) -> List[ProductItem]:
-        html = self._get_html(store_id, url)
+    def _listing(self, store_id: str, url: str, category_hint: str, tolerant: bool = False) -> List[ProductItem]:
+        """tolerant (búsquedas): sin resultados o con un formato distinto no pausa la tienda."""
+        html = self._get_html(store_id, url, allow_empty=tolerant)
         if html is None:
             return []
         try:
             items = LISTING_PARSERS[store_id](html, category_hint)
         except (BlockedError, ValueError, KeyError) as exc:
-            self.backoff.record_block(store_id, f"formato inesperado: {exc}")
+            if not tolerant:
+                self.backoff.record_block(store_id, f"formato inesperado: {exc}")
             return []
         self.backoff.record_success(store_id)
         return items
@@ -1642,7 +1650,7 @@ class DirectStoreReader:
             return []   # cada petición cuenta para el freno de Shopify: basta con el catálogo rotativo
         elif store_id in MAGENTO_STORES:
             url = f"{MAGENTO_STORES[store_id][1]}/catalogsearch/result/?q={q}&product_list_limit={MAGENTO_PAGE_SIZE}"
-            html = self._get_html(store_id, url)
+            html = self._get_html(store_id, url, allow_empty=True)   # sin resultados no es un bloqueo
             try:
                 return parse_magento_listing(store_id, html)[0] if html else []
             except (BlockedError, ValueError, KeyError):
@@ -1653,7 +1661,7 @@ class DirectStoreReader:
             )
         else:
             return []
-        return self._listing(store_id, url, "tecnologia")
+        return self._listing(store_id, url, "tecnologia", tolerant=True)
 
     def fetch_product(self, store_id: str, url: str) -> Optional[ProductItem]:
         """Precio en tiempo real de un producto. None si la tienda no responde o está en pausa."""
