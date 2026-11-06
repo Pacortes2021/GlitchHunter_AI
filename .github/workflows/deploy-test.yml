@@ -46,7 +46,7 @@ jobs:
       - name: Actualizar (segunda corrida) conserva datos y configuración
         run: |
           sudo SOURCE_DIR="$GITHUB_WORKSPACE" bash deploy/install.sh
-          grep -q '^USE_LIVE_SCRAPING=false' /opt/glitchhunter/.env
+          sudo grep -q '^USE_LIVE_SCRAPING=false' /opt/glitchhunter/.env
           test -f /var/lib/glitchhunter/glitchhunter.db
 
       - name: Registro del servicio
