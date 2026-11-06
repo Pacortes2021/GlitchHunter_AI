@@ -188,6 +188,15 @@ Cuando el radar ya funcione en la nube, **apaga el del Mac**. Si quedan los dos 
   - en el servidor, `/opt/glitchhunter/.env`: `RADAR_SKIP_STORES=ripley,paris,falabella,sodimac,shopify` y reinicia;
   - en el PC, su `.env`: `RADAR_ONLY_STORES=ripley,paris,falabella,sodimac,shopify` (`shopify` = todas las tiendas Shopify).
   Así cada tienda la lee un solo radar y no recibe visitas dobles.
+- **Ver todo en el panel del servidor.** El PC puede enviar lo que lee al servidor, que lo procesa como propio:
+  1. Abre en el PC un túnel que se reconecta solo (déjalo corriendo en una terminal):
+
+     ```bash
+     while true; do ssh -N -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes -L 8090:127.0.0.1:8080 ubuntu@IP; sleep 5; done
+     ```
+
+  2. En el `.env` del PC: `FORWARD_TO_URL=http://127.0.0.1:8090` y `FORWARD_API_KEY=` la clave del panel del servidor.
+  3. Reinicia el radar del PC. Si el túnel se corta, las lecturas esperan y se envían al volver.
 - **El servicio no arranca.** Revisa el error con `sudo journalctl -u glitchhunter -n 100`.
 - **Oracle detiene la máquina por "inactiva".** Oracle puede recuperar máquinas gratis que pasan 7 días casi sin uso. El radar usa CPU y red todo el día, así que no debería pasar. Si pasa, enciéndela desde la consola. Pasar la cuenta a *Pay As You Go* lo evita, y los recursos gratis siguen sin costo; si lo haces, crea un *Budget* con alerta en $1 para enterarte de cualquier cobro.
 - **Volver a empezar.** Vuelve a correr el instalador; no borra la base de datos ni la configuración.
