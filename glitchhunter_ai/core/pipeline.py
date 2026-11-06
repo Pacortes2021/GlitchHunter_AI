@@ -779,6 +779,56 @@ class GlitchHuntingPipeline:
             self.is_scanning = False
             self._scan_lock.release()
 
+    def count_fresh_deals(self, products: List[ProductItem], min_discount: float = 40.0) -> int:
+        """Productos con ≥min_discount% que son nuevos en el radar o bajaron de precio desde la última lectura."""
+        candidates = [p for p in products if p.normal_price > 0
+                      and (p.normal_price - p.best_price) / p.normal_price * 100 >= min_discount]
+        if not candidates:
+            return 0
+        known = self.db.get_best_prices([p.id for p in candidates])
+        return sum(1 for p in candidates if p.id not in known or p.best_price < known[p.id] - 0.5)
+
+    def process_store_products(
+        self, store_id: str, products: List[ProductItem], send_notifications: bool = True, lock_timeout: float = 120.0,
+    ) -> tuple:
+        """
+        Procesa la lectura de UNA tienda (lectores independientes por tienda). Espera su turno en el
+        cerrojo en vez de saltarse la lectura. Retorna (alertas, ofertas frescas) o ([], 0) si no hubo turno.
+        """
+        unique: Dict[str, ProductItem] = {}
+        for prod in products:
+            unique.setdefault(prod.id, prod)
+        products = list(unique.values())
+        if not products:
+            return [], 0
+        if not self._scan_lock.acquire(timeout=lock_timeout):
+            logger.warning("⚠️ [Lector %s] %d producto(s) descartados: cerrojo ocupado.", store_id, len(products))
+            return [], 0
+        detected: List[GlitchAlert] = []
+        try:
+            fresh = self.count_fresh_deals(products)
+            self._bulk_price_counts = {}
+            self._note_bulk_prices(products)
+            for prod in products:
+                alert = self.process_product(prod, send_notifications=send_notifications)
+                if alert:
+                    detected.append(alert)
+            return detected, fresh
+        finally:
+            self._bulk_price_counts = {}
+            self._scan_lock.release()
+
+    def publish_tick(self) -> int:
+        """Publica en el canal las ofertas nuevas y revisa la vigencia (lo llama el lector continuo)."""
+        if not self._scan_lock.acquire(timeout=120.0):
+            return 0
+        try:
+            published = self.publish_new_deals()
+            self.refresh_feed_statuses()
+            return published
+        finally:
+            self._scan_lock.release()
+
     def run_watchlist_scan(
         self,
         use_live: bool = False,

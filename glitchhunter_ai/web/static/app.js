@@ -809,6 +809,7 @@
     state.filters = { ...DEFAULT_FILTERS, stores: [], sortBy: state.filters.sortBy };
     const input = $('search-input');
     if (input) input.value = '';
+    deepSetQuery('');
     applyFilters();
   }
 
@@ -1315,6 +1316,179 @@
   // ---------------------------------------------------------------------------
   // Eventos
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Búsqueda profunda: todo el catálogo que el radar ya leyó (al escribir) y el
+  // buscador propio de cada tienda compatible (con Enter o "Buscar en vivo").
+  // ---------------------------------------------------------------------------
+  const DEEP_PAGE = 40;
+  const deep = { query: '', local: [], live: new Map(), jobId: null, liveQuery: '', pollTimer: null, shown: DEEP_PAGE, seq: 0, liveInfo: null };
+
+  function deepSetStatus(text) { const el = $('deep-status'); if (el) el.textContent = text; }
+
+  function deepProgress(done, total) {
+    const wrap = document.querySelector('.deep-progress');
+    const bar = $('deep-progress-bar');
+    if (!wrap || !bar) return;
+    if (!total || done >= total) { wrap.hidden = true; bar.style.width = '0'; return; }
+    wrap.hidden = false;
+    bar.style.width = `${Math.round((done / total) * 100)}%`;
+  }
+
+  function deepMerged() {
+    const byId = new Map();
+    for (const r of deep.local) byId.set(r.product_id, r);
+    if (deep.liveQuery === deep.query) for (const [id, r] of deep.live) byId.set(id, r);
+    let rows = [...byId.values()];
+    const onlyDiscount = $('deep-only-discount') && $('deep-only-discount').checked;
+    if (onlyDiscount) rows = rows.filter(r => Number(r.discount_pct) > 0);
+    rows.sort((a, b) => (Number(b.discount_pct) - Number(a.discount_pct)) || (Number(a.best_price) - Number(b.best_price)));
+    return rows;
+  }
+
+  function deepItemHtml(r) {
+    const store = (STORES[r.store_id] && STORES[r.store_id].name) || r.store_name || r.store_id;
+    const off = Math.round(Number(r.discount_pct) || 0);
+    const img = r.image_url && sanitizeUrl(r.image_url) !== '#'
+      ? `<img class="deep-img" src="${sanitizeUrl(r.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`
+      : '<span class="deep-img-empty" aria-hidden="true"></span>';
+    const normal = Number(r.normal_price) > Number(r.best_price) ? `<s>${formatCLP(r.normal_price)}</s>` : '';
+    return `<li class="deep-item">
+      ${img}
+      <div class="deep-main">
+        <a class="deep-name" href="${sanitizeUrl(r.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.title)}</a>
+        <div class="deep-meta"><span class="deep-store">${escapeHtml(store)}</span>${r.source === 'live' ? '<span class="deep-live">en vivo</span>' : ''}</div>
+      </div>
+      <div class="deep-price"><strong>${formatCLP(r.best_price)}</strong>${normal}${off > 0 ? `<span class="deep-off${off >= 65 ? ' is-big' : ''}">-${off}%</span>` : ''}</div>
+    </li>`;
+  }
+
+  function deepRender() {
+    const section = $('deep-search');
+    if (!section) return;
+    if (deep.query.length < 2) { section.hidden = true; return; }
+    section.hidden = false;
+    const title = $('deep-search-title');
+    if (title) title.textContent = `“${deep.query}” en todas las tiendas`;
+    const rows = deepMerged();
+    $('deep-results').innerHTML = rows.slice(0, deep.shown).map(deepItemHtml).join('');
+    const more = $('btn-deep-more');
+    if (more) more.hidden = rows.length <= deep.shown;
+    const liveBtn = $('btn-deep-live');
+    const info = deep.liveInfo;
+    if (info && deep.liveQuery === deep.query) {
+      if (info.finished) {
+        deepSetStatus(`${rows.length} producto(s). Búsqueda en vivo lista: ${info.stores_with_results} de ${info.total_stores} tiendas con resultados.`);
+      } else {
+        deepSetStatus(`Buscando en vivo… ${info.done_stores} de ${info.total_stores} tiendas (${rows.length} producto(s) hasta ahora).`);
+      }
+      deepProgress(info.finished ? 1 : info.done_stores, info.finished ? 1 : info.total_stores);
+      if (liveBtn) liveBtn.disabled = !info.finished;
+    } else {
+      deepSetStatus(rows.length
+        ? `${rows.length} producto(s) en el catálogo que el radar ya leyó. Presiona Enter para buscar también en vivo en cada tienda.`
+        : 'Nada en el catálogo leído. Presiona Enter para buscar en vivo en cada tienda.');
+      deepProgress(0, 0);
+      if (liveBtn) liveBtn.disabled = false;
+    }
+  }
+
+  async function deepLoadLocal() {
+    const q = deep.query;
+    const seq = ++deep.seq;
+    if (q.length < 2) { deep.local = []; deepRender(); return; }
+    try {
+      const res = await fetch(`/api/search?${new URLSearchParams({ q, limit: '300' })}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (seq !== deep.seq) return;   // llegó otra búsqueda mientras tanto
+      deep.local = data.results || [];
+      deep.shown = DEEP_PAGE;
+      deepRender();
+    } catch (e) {
+      if (seq === deep.seq) deepSetStatus('No se pudo buscar en el catálogo.');
+    }
+  }
+
+  async function deepPoll() {
+    clearTimeout(deep.pollTimer);
+    if (!deep.jobId) return;
+    try {
+      const res = await fetch(`/api/search/live/${encodeURIComponent(deep.jobId)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      deepApplyJob(await res.json());
+    } catch (e) {
+      deep.jobId = null;
+      deepSetStatus('Se perdió la búsqueda en vivo. Intenta de nuevo.');
+      deepProgress(0, 0);
+    }
+  }
+
+  function deepApplyJob(job) {
+    deep.liveInfo = job;
+    deep.live = new Map((job.results || []).map(r => [r.product_id, r]));
+    deepRender();
+    if (!job.finished) deep.pollTimer = setTimeout(deepPoll, 1200);
+    else deep.jobId = null;
+  }
+
+  async function deepStartLive() {
+    const q = deep.query;
+    if (q.length < 2) return;
+    clearTimeout(deep.pollTimer);
+    deep.liveQuery = q;
+    deep.live = new Map();
+    deep.liveInfo = { finished: false, done_stores: 0, total_stores: 1, stores_with_results: 0 };
+    deepRender();
+    try {
+      const res = await authenticatedFetch('/api/search/live', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ q })
+      });
+      if (res.status === 429) { deep.liveInfo = null; deep.liveQuery = ''; deepRender(); deepSetStatus('Hay otras búsquedas en vivo en curso. Intenta en unos segundos.'); return; }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const job = await res.json();
+      if (deep.liveQuery !== q) return;
+      deep.jobId = job.id;
+      deepApplyJob(job);
+    } catch (e) {
+      deep.liveInfo = null; deep.liveQuery = '';
+      deepRender();
+      deepSetStatus('No se pudo iniciar la búsqueda en vivo.');
+    }
+  }
+
+  function deepSetQuery(raw) {
+    const q = String(raw || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+    if (q === deep.query) return;
+    deep.query = q;
+    deep.shown = DEEP_PAGE;
+    if (deep.liveQuery !== q) { clearTimeout(deep.pollTimer); deep.jobId = null; deep.liveInfo = null; }
+    deepLoadLocal();
+  }
+
+  function setupDeepSearch(search) {
+    let timer = null;
+    search.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => deepSetQuery(search.value), 350);
+    });
+    search.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      clearTimeout(timer);
+      deepSetQuery(search.value);
+      deepStartLive();
+    });
+    const live = $('btn-deep-live');
+    if (live) live.addEventListener('click', deepStartLive);
+    const only = $('deep-only-discount');
+    if (only) only.addEventListener('change', () => { deep.shown = DEEP_PAGE; deepRender(); });
+    const more = $('btn-deep-more');
+    if (more) more.addEventListener('click', () => { deep.shown += DEEP_PAGE; deepRender(); });
+    if (search.value) deepSetQuery(search.value);
+  }
+
   function setupEvents() {
     // Búsqueda (con pequeño retardo)
     const search = $('search-input');
@@ -1327,6 +1501,7 @@
           applyFilters();
         }, 120);
       });
+      setupDeepSearch(search);
     }
 
     // Atajo "/" para buscar

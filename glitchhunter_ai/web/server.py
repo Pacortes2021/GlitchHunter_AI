@@ -32,8 +32,16 @@ from glitchhunter_ai.config import (
     API_AUTH_KEY,
     AUTO_SCAN_ENABLED,
     CORS_ORIGINS,
+    DIRECT_DEEP_INTERVAL_SECONDS,
+    DIRECT_DEEP_MAX_SECONDS,
+    DIRECT_DEEP_MIN_SECONDS,
+    DIRECT_FETCH_WORKERS,
+    DIRECT_HOT_INTERVAL_SECONDS,
+    DIRECT_PCFACTORY_PAGES_PER_CYCLE,
+    DIRECT_PUBLISH_EVERY_SECONDS,
     DIRECT_SCAN_CATEGORIES,
     DIRECT_SCAN_ENABLED,
+    DIRECT_STORE_INTERVALS,
     DIRECT_RETRY_SECONDS,
     DIRECT_SCAN_INTERVAL_SECONDS,
     EVENT_DIRECT_SCAN_INTERVAL_SECONDS,
@@ -57,6 +65,8 @@ from glitchhunter_ai.core.models import (
     ProductItem,
     SemanticClassificationResult,
 )
+from glitchhunter_ai.core.continuous_reader import ContinuousReader
+from glitchhunter_ai.core.live_search import LiveSearch
 from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
 from glitchhunter_ai.core.price_signals import active_event, is_odd_price, parse_event_windows, risk_tier
 from glitchhunter_ai.core.store_health import global_store_health
@@ -106,6 +116,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 db = PriceDatabase()
 pipeline = GlitchHuntingPipeline(db=db)
+live_search = LiveSearch(pipeline, workers=DIRECT_FETCH_WORKERS)
 
 MAIN_EVENT_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
@@ -241,6 +252,40 @@ async def direct_scanner_loop():
             delay = float(current_direct_interval())
 
 
+CONTINUOUS_READER: Optional[ContinuousReader] = None
+
+
+def event_speed() -> float:
+    """Factor de ritmo de los lectores: en eventos comerciales todo se lee más seguido."""
+    if active_event(EVENT_WINDOW_LIST, EVENT_MODE) and DIRECT_SCAN_INTERVAL_SECONDS > 0:
+        return max(0.25, min(1.0, EVENT_DIRECT_SCAN_INTERVAL_SECONDS / DIRECT_SCAN_INTERVAL_SECONDS))
+    return 1.0
+
+
+def _notify_feed_published(count: int) -> None:
+    if MAIN_EVENT_LOOP is not None:
+        asyncio.run_coroutine_threadsafe(manager.broadcast({"type": "feed_new", "count": count}), MAIN_EVENT_LOOP)
+
+
+def build_continuous_reader() -> ContinuousReader:
+    global CONTINUOUS_READER
+    CONTINUOUS_READER = ContinuousReader(
+        pipeline,
+        workers=DIRECT_FETCH_WORKERS,
+        hot_interval=DIRECT_HOT_INTERVAL_SECONDS,
+        deep_interval=DIRECT_DEEP_INTERVAL_SECONDS,
+        deep_min=DIRECT_DEEP_MIN_SECONDS,
+        deep_max=DIRECT_DEEP_MAX_SECONDS,
+        store_intervals=DIRECT_STORE_INTERVALS,
+        publish_every=DIRECT_PUBLISH_EVERY_SECONDS,
+        categories=DIRECT_SCAN_CATEGORIES,
+        catalog_pages=DIRECT_PCFACTORY_PAGES_PER_CYCLE,
+        speed_fn=event_speed,
+        on_published=_notify_feed_published,
+    )
+    return CONTINUOUS_READER
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Ciclo de vida del servidor: inicializa BD, corre escaneo inicial y activa bucle de fondo."""
@@ -262,11 +307,12 @@ async def lifespan(app: FastAPI):
 
     # Iniciar la tarea de escaneo periódico en segundo plano
     scanner_task = asyncio.create_task(background_scanner_loop())
-    direct_task = (
-        asyncio.create_task(direct_scanner_loop())
-        if USE_LIVE_SCRAPING and AUTO_SCAN_ENABLED and DIRECT_SCAN_ENABLED
-        else None
-    )
+    # Lectores por tienda: cada tienda con su propio ritmo (reemplaza al escaneo directo por ciclos)
+    readers = None
+    if USE_LIVE_SCRAPING and AUTO_SCAN_ENABLED and DIRECT_SCAN_ENABLED:
+        readers = build_continuous_reader()
+        readers.start()
+    direct_task = None
 
     # Receptor de votos 👍/👎 de Telegram (solo con un bot real, fuera del modo simulación)
     feedback_poller = None
@@ -280,6 +326,8 @@ async def lifespan(app: FastAPI):
         feedback_poller.stop()
 
     # Cancelar tareas al apagar el servidor
+    if readers:
+        readers.stop()
     if direct_task:
         direct_task.cancel()
     scanner_task.cancel()
@@ -666,6 +714,60 @@ async def get_feed_status(
             for c in db.get_feed_status_changes(since)
         ],
     }
+
+
+def _local_search_result(row: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(row)
+    out["store_name"] = STORE_NAMES.get(row["store_id"]) or DIRECT_STORE_NAMES.get(row["store_id"], row["store_id"])
+    out["source"] = "radar"
+    return out
+
+
+@app.get("/api/search")
+async def search_catalog(
+    q: str = Query(..., min_length=2, max_length=60, description="Texto a buscar en los títulos"),
+    only_discounted: bool = Query(False, description="Solo productos con descuento"),
+    limit: int = Query(200, ge=1, le=500),
+):
+    """Búsqueda instantánea en todo el catálogo que el radar ya leyó (no solo en las ofertas publicadas)."""
+    loop = asyncio.get_running_loop()
+    rows = await loop.run_in_executor(None, lambda: db.search_products(q, limit=limit, only_discounted=only_discounted))
+    return {"query": q, "count": len(rows), "results": [_local_search_result(r) for r in rows]}
+
+
+class LiveSearchRequest(BaseModel):
+    q: str = Field(..., min_length=2, max_length=60)
+
+
+@app.post("/api/search/live", dependencies=[Depends(verify_same_origin)])
+async def start_live_search(req: LiveSearchRequest):
+    """Busca en vivo en el buscador propio de cada tienda compatible. Responde con el trabajo para seguir su avance."""
+    try:
+        job = live_search.start(req.q)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if job is None:
+        raise HTTPException(status_code=429, detail="Hay otras búsquedas en vivo en curso. Intenta en unos segundos.")
+    return job
+
+
+@app.get("/api/search/live/{job_id}")
+async def get_live_search(job_id: str):
+    job = live_search.snapshot(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Búsqueda no encontrada o expirada.")
+    return job
+
+
+@app.get("/api/readers")
+async def get_readers():
+    """Ritmo actual de cada lector por tienda (carril rápido y recorrido)."""
+    if CONTINUOUS_READER is None:
+        return {"active": False, "lanes": []}
+    lanes = CONTINUOUS_READER.scheduler.snapshot()
+    for lane in lanes:
+        lane["store_name"] = DIRECT_STORE_NAMES.get(lane["store_id"], lane["store_id"])
+    return {"active": True, "speed": CONTINUOUS_READER.scheduler.speed, "lanes": lanes}
 
 
 @app.post("/api/scan", dependencies=[Depends(verify_admin_key)])

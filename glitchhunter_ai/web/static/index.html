@@ -87,7 +87,7 @@
     <div class="feed-toolbar">
       <div class="search">
         <svg class="icon search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-        <input type="search" id="search-input" placeholder="Buscar: iPhone, notebook, PS5…" aria-label="Buscar ofertas" autocomplete="off" />
+        <input type="search" id="search-input" placeholder="Buscar: iPhone, notebook, PS5… (Enter busca en las tiendas)" aria-label="Buscar ofertas y productos" autocomplete="off" />
         <kbd class="search-kbd" aria-hidden="true">/</kbd>
       </div>
       <button id="btn-toggle-filters" class="filter-toggle" type="button" aria-expanded="false" aria-controls="filters-panel">
@@ -161,6 +161,23 @@
           </select>
         </label>
       </div>
+
+      <!-- Búsqueda profunda: todo el catálogo leído y, con Enter, el buscador de cada tienda -->
+      <section id="deep-search" class="deep-search" aria-labelledby="deep-search-title" hidden>
+        <div class="deep-head">
+          <div>
+            <h3 id="deep-search-title" class="deep-title">En todas las tiendas</h3>
+            <p id="deep-status" class="deep-status" aria-live="polite"></p>
+          </div>
+          <div class="deep-actions">
+            <label class="check-row deep-check"><input type="checkbox" id="deep-only-discount" checked /><span>Solo con descuento</span></label>
+            <button id="btn-deep-live" class="btn btn-primary" type="button">Buscar en vivo</button>
+          </div>
+        </div>
+        <div class="deep-progress" hidden><div id="deep-progress-bar" class="deep-progress-bar"></div></div>
+        <ul id="deep-results" class="deep-results"></ul>
+        <button id="btn-deep-more" class="btn btn-secondary deep-more" type="button" hidden>Ver más resultados</button>
+      </section>
 
       <div id="feed-list" class="feed-list" tabindex="-1" aria-label="Publicaciones del canal"></div>
 
