@@ -246,3 +246,25 @@ def test_search_endpoints(monkeypatch):
     assert client.post("/api/search/live", json={"q": "audifonos"}).status_code == 429
     assert client.get("/api/search/live/nope").status_code == 404
     assert client.get("/api/readers").json()["active"] in (True, False)
+
+
+def test_search_without_results_does_not_pause_store():
+    def page(text, status=200):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = text
+        return resp
+
+    client = MagicMock()
+    reader = DirectStoreReader(client=client, backoff=StoreBackoff(clock=_Clock()))
+    client.get.return_value = page("<html><p>Tu búsqueda no obtuvo resultados.</p></html>")
+    assert reader.search("gap", "freidora") == []
+    assert reader.search("falabella", "zzzz") == []
+    assert not reader.backoff.is_paused("gap") and not reader.backoff.is_paused("falabella")
+    # Una verificación anti-bot o un 403 sí pausan la tienda
+    client.get.return_value = page("<html>Please complete the captcha</html>")
+    reader.search("gap", "freidora")
+    assert reader.backoff.is_paused("gap")
+    client.get.return_value = page("", status=403)
+    reader.search("falabella", "tv")
+    assert reader.backoff.is_paused("falabella")
