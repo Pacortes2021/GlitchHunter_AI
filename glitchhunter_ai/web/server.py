@@ -68,6 +68,7 @@ from glitchhunter_ai.core.models import (
     ProductItem,
     SemanticClassificationResult,
 )
+from glitchhunter_ai.core.best_deals import BestDealsCurator
 from glitchhunter_ai.core.continuous_reader import ContinuousReader
 from glitchhunter_ai.core.forwarder import Forwarder
 from glitchhunter_ai.core.live_search import LiveSearch
@@ -120,6 +121,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 db = PriceDatabase()
 pipeline = GlitchHuntingPipeline(db=db)
+best_deals = BestDealsCurator(db)
 live_search = LiveSearch(pipeline, workers=DIRECT_FETCH_WORKERS)
 
 MAIN_EVENT_LOOP: Optional[asyncio.AbstractEventLoop] = None
@@ -316,6 +318,8 @@ async def lifespan(app: FastAPI):
     if USE_LIVE_SCRAPING and AUTO_SCAN_ENABLED and DIRECT_SCAN_ENABLED:
         readers = build_continuous_reader()
         readers.start()
+    # Agente "Lo mejor": cada hora guarda el top del día (las mejores ofertas quedan registradas)
+    best_deals.start()
     # Unir paneles: cada lectura de este radar también se envía al radar de destino
     forwarder = None
     if FORWARD_TO_URL:
@@ -337,6 +341,7 @@ async def lifespan(app: FastAPI):
         feedback_poller.stop()
     if forwarder:
         forwarder.stop()
+    best_deals.stop()
 
     # Cancelar tareas al apagar el servidor
     if readers:
@@ -770,6 +775,40 @@ async def get_live_search(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Búsqueda no encontrada o expirada.")
     return job
+
+
+def _best_card(post: Dict[str, Any], rank: int) -> Dict[str, Any]:
+    card = format_feed_post(post)
+    card["best_rank"] = rank
+    card["best_score"] = post.get("best_score")
+    card["best_reasons"] = post.get("best_reasons") or []
+    return card
+
+
+@app.get("/api/best")
+async def get_best(
+    days: float = Query(7, gt=0, le=90, description="Período a revisar (días hacia atrás)"),
+    limit: int = Query(20, ge=1, le=100),
+    per_store: int = Query(3, ge=1, le=20, description="Máximo de publicaciones por tienda"),
+    active: bool = Query(False, description="Solo las que siguen vigentes"),
+):
+    """Las mejores ofertas del período según el curador (descuento, ahorro, evidencia, historial, votos)."""
+    loop = asyncio.get_running_loop()
+    posts = await loop.run_in_executor(
+        None, lambda: best_deals.rank(days=days, limit=limit, per_store=per_store, only_active=active)
+    )
+    return [_best_card(p, i + 1) for i, p in enumerate(posts)]
+
+
+@app.get("/api/best/history")
+async def get_best_history(
+    days: int = Query(14, ge=1, le=120),
+    per_day: int = Query(5, ge=1, le=20),
+):
+    """El top que el curador guardó cada día (las mejores ofertas pasadas, aunque ya hayan expirado)."""
+    loop = asyncio.get_running_loop()
+    rows = await loop.run_in_executor(None, lambda: best_deals.history(days=days, per_day=per_day))
+    return [{"day": r["day"], "posts": [_best_card(p, i + 1) for i, p in enumerate(r["posts"])]} for r in rows]
 
 
 class IngestRequest(BaseModel):

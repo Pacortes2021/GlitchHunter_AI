@@ -37,6 +37,10 @@
       </div>
 
       <nav class="topbar-actions" aria-label="Acciones">
+        <button id="btn-best" class="icon-btn" type="button" aria-haspopup="dialog" aria-controls="drawer-best" title="Las mejores ofertas">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h8v5a4 4 0 0 1-8 0zM8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4M12 13v4M9 20h6M10 17h4"/></svg>
+          <span class="btn-label">Lo mejor</span>
+        </button>
         <button id="btn-watchlist" class="icon-btn" type="button" aria-haspopup="dialog" aria-controls="drawer-watchlist" title="Mi watchlist">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l2.6 5.3 5.9.9-4.25 4.1 1 5.8L12 16.9l-5.25 2.7 1-5.8L3.5 9.7l5.9-.9z"/></svg>
           <span class="btn-label">Watchlist</span>
@@ -222,6 +226,30 @@
         <ul id="watchlist-list" class="wl-list" aria-live="polite"></ul>
         <p id="watchlist-empty" class="muted small" hidden>Aún no tienes palabras en tu watchlist.</p>
         <p class="muted small">Las marcas ⭐ se aplican a las ofertas que lleguen después de agregar la palabra.</p>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===================== PANEL: LO MEJOR ===================== -->
+  <div id="drawer-best" class="drawer drawer-wide" role="dialog" aria-modal="true" aria-labelledby="best-title" hidden>
+    <div class="drawer-backdrop" data-close></div>
+    <section class="drawer-panel">
+      <header class="drawer-head">
+        <h2 id="best-title">🏆 Lo mejor</h2>
+        <button class="icon-btn" type="button" data-close aria-label="Cerrar lo mejor">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </header>
+      <div class="drawer-body">
+        <p class="muted small">El curador revisa todo lo que llegó al canal y elige lo más valioso: descuento, ahorro en pesos, errores de precio verificados, precios bajo lo habitual y tus votos. Sin repetir productos y con pocas ofertas por tienda.</p>
+        <div class="best-tabs chips" role="tablist" aria-label="Período">
+          <button type="button" class="chip" role="tab" data-best="active" aria-pressed="true">Vigentes</button>
+          <button type="button" class="chip" role="tab" data-best="7" aria-pressed="false">7 días</button>
+          <button type="button" class="chip" role="tab" data-best="30" aria-pressed="false">30 días</button>
+          <button type="button" class="chip" role="tab" data-best="history" aria-pressed="false">Por día</button>
+        </div>
+        <p id="best-status" class="muted small" aria-live="polite"></p>
+        <div id="best-list" class="best-list"></div>
       </div>
     </section>
   </div>
