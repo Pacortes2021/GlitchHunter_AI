@@ -519,3 +519,17 @@ button { cursor: pointer; }
   .deep-price strong { display: inline; }
   .deep-actions { width: 100%; }
 }
+
+/* ---------- Lo mejor ---------- */
+.drawer-wide .drawer-panel { width: min(640px, 100%); }
+.best-tabs { margin: 4px 0 10px; }
+.best-list { display: grid; gap: 14px; }
+.best-item { display: grid; gap: 6px; }
+.best-head { display: flex; align-items: flex-start; gap: 8px; }
+.best-rank {
+  flex: none; min-width: 34px; height: 26px; padding: 0 8px; border-radius: 999px; display: grid; place-items: center;
+  background: var(--accent); color: #fff; font-weight: 700; font-size: 13px; font-variant-numeric: tabular-nums;
+}
+.best-reasons { display: flex; flex-wrap: wrap; gap: 4px; }
+.best-reason { font-size: 12px; padding: 3px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-hover); font-weight: 600; }
+.best-list .section-title { text-transform: capitalize; }

@@ -1299,6 +1299,67 @@
       statusTimer = setInterval(refreshStatusPanel, POLL_MS);
     }
     if (id === 'drawer-watchlist') loadWatchlist();
+    if (id === 'drawer-best') loadBest(bestTab);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 🏆 Lo mejor: ranking del curador (vigentes, 7 / 30 días) y el top guardado de cada día
+  // ---------------------------------------------------------------------------
+  let bestTab = 'active';
+  let bestRequest = 0;
+
+  function bestItem(post) {
+    const wrap = document.createElement('div');
+    wrap.className = 'best-item';
+    const head = document.createElement('div');
+    head.className = 'best-head';
+    const reasons = Array.isArray(post.best_reasons) ? post.best_reasons : [];
+    head.innerHTML = `<span class="best-rank">#${escapeHtml(String(post.best_rank || ''))}</span>`
+      + `<span class="best-reasons">${reasons.map(r => `<span class="best-reason">${escapeHtml(r)}</span>`).join('')}</span>`;
+    wrap.appendChild(head);
+    wrap.appendChild(createPostElement(post, derive(post)));
+    return wrap;
+  }
+
+  function dayLabel(iso) {
+    const d = new Date(`${iso}T12:00:00Z`);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'long' });
+  }
+
+  async function loadBest(tab) {
+    bestTab = tab;
+    document.querySelectorAll('[data-best]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.best === tab)));
+    const list = $('best-list');
+    const status = $('best-status');
+    if (!list) return;
+    const req = ++bestRequest;
+    status.textContent = 'Revisando el canal…';
+    const url = tab === 'history' ? '/api/best/history?days=14&per_day=5'
+      : tab === 'active' ? '/api/best?days=3&limit=20&active=true'
+      : `/api/best?days=${encodeURIComponent(tab)}&limit=25`;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (req !== bestRequest) return;
+      list.replaceChildren();
+      if (tab === 'history') {
+        data.forEach(day => {
+          const h = document.createElement('h3');
+          h.className = 'section-title';
+          h.textContent = dayLabel(day.day);
+          list.appendChild(h);
+          day.posts.forEach(p => list.appendChild(bestItem(p)));
+        });
+        status.textContent = data.length ? 'El top que el curador guardó cada día, aunque ya hayan expirado.' : 'Aún no hay días guardados: el curador guarda el top cada hora.';
+      } else {
+        data.forEach(p => list.appendChild(bestItem(p)));
+        status.textContent = data.length ? `${data.length} ofertas elegidas.` : 'No hay ofertas destacadas en este período.';
+      }
+    } catch (err) {
+      if (req === bestRequest) status.textContent = 'No se pudo cargar el ranking. Intenta de nuevo en unos segundos.';
+    }
   }
 
   function closeDrawers() {
@@ -1612,6 +1673,8 @@
     // Paneles
     $('btn-watchlist').addEventListener('click', () => openDrawer('drawer-watchlist'));
     $('btn-status').addEventListener('click', () => openDrawer('drawer-status'));
+    $('btn-best').addEventListener('click', () => openDrawer('drawer-best'));
+    document.querySelectorAll('[data-best]').forEach(b => b.addEventListener('click', () => loadBest(b.dataset.best)));
     document.querySelectorAll('.drawer').forEach(d => {
       d.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeDrawers(); });
     });
