@@ -54,3 +54,49 @@ def test_service_items_are_never_published(tmp_path):
                            title="Garantía Extendida GEXT1 Inverter 18000 BTUs", category="otros",
                            current_price=10184, normal_price=46990, url="https://x.cl/gext1")
     assert pipeline.process_product(warranty, send_notifications=False) is None
+
+
+def _feed_db(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "feed.db")
+    db.init_db()
+    return db
+
+
+def test_deal_expires_when_store_drops_the_discount(tmp_path):
+    db = _feed_db(tmp_path)
+    tile = ProductItem(id="mk-tile", store_id="mk", store_name="MK", title="Porcelanato Mars", category="otros",
+                       current_price=13990, normal_price=59790, url="https://x.cl/tile")
+    db.upsert_product(tile)
+    fid = db.publish_feed_offer(kind="deal", product_id=tile.id, store_id="mk", best_price=13990,
+                                discount_pct=76.6, payload={"product_id": tile.id, "title": tile.title})
+    assert fid
+    # La lectura corregida ya no muestra precio tachado
+    db.upsert_product(tile.model_copy(update={"normal_price": 13990}))
+    db.refresh_feed_statuses()
+    post = db.get_feed()[0]
+    assert (post["status"], post["expired_reason"]) == ("expired", "no_discount")
+
+
+def test_withdrawn_posts_are_hidden_and_never_reactivated(tmp_path):
+    db = _feed_db(tmp_path)
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
+    warranty = ProductItem(id="electrolux-g", store_id="electrolux", store_name="Electrolux",
+                           title="Garantía Extendida GEXT2 Inverter 12.000 BTUs", category="otros",
+                           current_price=21048, normal_price=21048, url="https://x.cl/g")
+    shirt = ProductItem(id="ae-1", store_id="americaneagle", store_name="AE", title="Camisa AE", category="moda",
+                        current_price=12990, normal_price=44990, url="https://x.cl/ae")
+    real = ProductItem(id="mk-gessi", store_id="mk", store_name="MK", title="Mezclador Gessi", category="otros",
+                       current_price=49990, normal_price=450990, url="https://x.cl/gessi")
+    for p in (warranty, shirt, real):
+        db.upsert_product(p)
+    db.publish_feed_offer(kind="glitch", product_id=warranty.id, store_id="electrolux", best_price=21048, discount_pct=67,
+                          payload={"product": {"title": warranty.title}, "verdict": {"reason": "Caída vs su precio habitual"}})
+    db.publish_feed_offer(kind="glitch", product_id=shirt.id, store_id="americaneagle", best_price=12990, discount_pct=71,
+                          payload={"product": {"title": shirt.title}, "verdict": {"reason": "Descuento masivo"},
+                                   "bulk_price_count": 6})
+    db.publish_feed_offer(kind="glitch", product_id=real.id, store_id="mk", best_price=49990, discount_pct=89,
+                          payload={"product": {"title": real.title}, "verdict": {"is_missing_zero": True}})
+    assert pipeline.withdraw_false_offers() == {"servicios": 1, "liquidaciones": 1}
+    assert [p["product_id"] for p in db.get_feed()] == ["mk-gessi"]
+    db.refresh_feed_statuses()
+    assert [p["product_id"] for p in db.get_feed()] == ["mk-gessi"]     # siguen retiradas
