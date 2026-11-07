@@ -846,3 +846,26 @@ def test_magento_store_with_40_per_page_does_not_overrun_and_pause():
     reader._magento_cursor["potros"] = (0, 4)
     reader._magento_catalog_slice("potros", lane="deep")
     assert not reader.backoff.is_paused("potros") and reader._magento_cursor["potros"][0] == 1
+
+
+def test_timeout_is_not_a_block_and_keeps_magento_position():
+    import pytest
+    from glitchhunter_ai.scrapers.stealth_client import StealthHTTPClient
+
+    # El cliente no reintenta ni cae a otro cliente ante un tiempo agotado
+    client = StealthHTTPClient()
+    session = MagicMock()
+    session.get.side_effect = Exception("Failed to perform, curl: (28) Connection timed out after 12001 milliseconds")
+    client._session = session
+    with pytest.raises(Exception):
+        client.get("https://www.kotting.cl/sale.html?p=1")
+    assert session.get.call_count == 1
+
+    # El lector no pausa la tienda y no pierde su lugar en la sección
+    slow = MagicMock()
+    slow.get.side_effect = Exception("curl: (28) Connection timed out")
+    reader = DirectStoreReader(client=slow, backoff=StoreBackoff(clock=_FakeClock()))
+    reader._magento_cursor["kotting"] = (0, 5)
+    assert reader._magento_catalog_slice("kotting", lane="deep") == []
+    assert not reader.backoff.is_paused("kotting")
+    assert reader._magento_cursor["kotting"] == (0, 5)
