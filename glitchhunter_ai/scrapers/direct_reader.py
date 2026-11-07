@@ -210,6 +210,18 @@ MAGENTO_PAGES_PER_CYCLE = 2
 SHOPIFY_PAGE_SIZE = 250          # máximo de /products.json
 SHOPIFY_SPACING_SECONDS = 90.0   # una petición Shopify (de cualquier tienda) cada 90 s
 SHOPIFY_BACKOFF_KEY = "shopify"
+# /products.json es la API pública de Shopify. Se consulta con un cliente simple que se identifica como
+# lo que es: la imitación de navegador (huella TLS de Chrome) es justo lo que su protección bloquea
+# (403 "Verify your browser" desde cualquier IP), mientras que un cliente honesto recibe 200.
+SHOPIFY_USER_AGENT = "GlitchHunter/1.0 (radar personal de ofertas; +https://github.com/Pacortes2021/GlitchHunter_AI)"
+
+
+def _shopify_session() -> Any:
+    import requests
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": SHOPIFY_USER_AGENT, "Accept": "application/json"})
+    return session
 # Tiendas cuyo ListPrice está inflado en todo el catálogo (como el "normal" de ABC): Casa Royal
 # muestra 40%+ de descuento en ~18% de sus productos (un micrófono de $18.990 con "normal" $54.990);
 # Construplaza, Coleman e Il Gioco muestran "descuento" en casi el 100% del catálogo.
@@ -1235,6 +1247,8 @@ class DirectStoreReader:
 
     def __init__(self, client: Any = None, backoff: Optional[StoreBackoff] = None, timeout: float = 12.0):
         self.client = client or default_stealth_client
+        # Shopify: cliente simple e identificado (con un cliente inyectado, p. ej. en pruebas, se usa ese)
+        self.shopify_client = client if client is not None else _shopify_session()
         self.backoff = backoff or StoreBackoff()
         self.timeout = timeout
         self._catalog_cursor: Dict[str, int] = {}
@@ -1404,7 +1418,7 @@ class DirectStoreReader:
         if self.backoff.is_paused(SHOPIFY_BACKOFF_KEY) or self.backoff.is_paused(store_id):
             return None
         try:
-            resp = self.client.get(f"{SHOPIFY_STORES[store_id][1]}{path}", params=params or {}, timeout=self.timeout)
+            resp = self.shopify_client.get(f"{SHOPIFY_STORES[store_id][1]}{path}", params=params or {}, timeout=self.timeout)
         except Exception as exc:
             logger.debug("Error de red en Shopify (%s): %s", store_id, exc)
             return None
