@@ -6,7 +6,7 @@
 #   cl.glitchhunter.tunel  túnel SSH al servidor (puerto local 8090 -> servidor 127.0.0.1:8080)
 #   cl.glitchhunter.radar  el radar (python3 run.py server) en la carpeta del repositorio
 #
-# Uso (desde la carpeta del repositorio):
+# Uso (desde la carpeta del repositorio, fuera de Escritorio/Documentos/Descargas):
 #   bash deploy/mac/instalar_mac.sh ubuntu@IP_DEL_SERVIDOR
 #   bash deploy/mac/instalar_mac.sh --desinstalar
 #
@@ -40,6 +40,15 @@ PYTHON="${PYTHON:-$(command -v python3)}"
 LOCAL_PORT="${LOCAL_PORT:-8090}"
 
 [ -f "${REPO}/run.py" ] || { echo "No encuentro run.py en ${REPO}"; exit 1; }
+# macOS no deja que un servicio en segundo plano lea Escritorio, Documentos ni Descargas (privacidad):
+# el radar fallaría con "Operation not permitted". Debe vivir en otra carpeta, p. ej. ~/GlitchHunter_AI.
+case "${REPO}/" in
+  "$HOME/Desktop/"*|"$HOME/Documents/"*|"$HOME/Downloads/"*)
+    echo "El repositorio está en una carpeta protegida por macOS (${REPO})."
+    echo "Cópialo fuera y vuelve a correr el instalador desde ahí:"
+    echo "  cp -Rp \"${REPO}\" ~/GlitchHunter_AI && cd ~/GlitchHunter_AI && bash deploy/mac/instalar_mac.sh ${SERVER}"
+    exit 1 ;;
+esac
 [ -f "${SSH_KEY}" ] || { echo "No existe la llave ${SSH_KEY}"; exit 1; }
 env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "${SSH_KEY}" -o ConnectTimeout=10 "${SERVER}" true \
   || { echo "La llave no entra a ${SERVER} sin contraseña; el túnel no podría reconectarse solo."; exit 1; }
