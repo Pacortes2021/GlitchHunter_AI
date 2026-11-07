@@ -44,7 +44,7 @@ logger = logging.getLogger("GlitchHunter.Pipeline")
 # Productos que no son nuevos: su "precio normal" suele ser el de uno nuevo y el descuento es engañoso
 REFURBISHED_RE = re.compile(
     r"\b(?:reacondicionad[oa]s?|refurbished|renovad[oa]|usad[oa]|seminuev[oa]|open\s?box|"
-    r"segunda\s+selecci[oó]n|exhibici[oó]n|outlet)\b",
+    r"segunda\s+selecci[oó]n|exhibici[oó]n|outlet|caja\s+abierta|da[ñn]ad[oa]s?)\b",
     re.IGNORECASE,
 )
 # Servicios que se venden junto al producto (garantías, instalación, gift cards): su "precio" depende
@@ -755,7 +755,8 @@ class GlitchHuntingPipeline:
                     unpublished_only=True,
                     title_terms=terms,
                 )
-                rows = list(rows) + [r for r in priority if self._priority_match(str(r.get("title") or ""), terms)]
+                # Primero: son pocas, y las de 40%+ pueden ser miles y agotar el cupo de DEAL_PUBLISH_BATCH
+                rows = [r for r in priority if self._priority_match(str(r.get("title") or ""), terms)] + list(rows)
             checked = 0
             for row in rows:
                 current = float(row.get("current_price") or 0.0)

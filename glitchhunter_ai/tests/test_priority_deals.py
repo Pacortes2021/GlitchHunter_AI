@@ -41,3 +41,18 @@ def test_title_terms_filter_in_sql(tmp_path):
     db.upsert_product(_p("b", "Notebook Lenovo IdeaPad", 399990, 599990))
     rows = db.get_commercial_deals(min_discount=15, max_discount=101, title_terms=["macbook"])
     assert [r["product_id"] for r in rows] == ["a"]
+
+
+def test_priority_deals_are_not_starved_by_big_backlog(tmp_path, monkeypatch):
+    import glitchhunter_ai.config as config
+    monkeypatch.setattr(config, "DEAL_PUBLISH_BATCH", 5)
+    db = PriceDatabase(db_path=tmp_path / "backlog.db")
+    db.init_db()
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
+    for i in range(20):   # muchas ofertas de 50% que llenan el cupo
+        db.upsert_product(_p(f"lider-tv-{i}", f"Smart TV Samsung 55 modelo {i}", 300000, 600000))
+    db.upsert_product(_p("abc-iphone16e", "Apple iPhone 16e 128GB Blanco", 499990, 699990, store="abc"))
+    db.upsert_product(_p("spd-caja", "CAJA ABIERTA/DAÑADA Carcasa Snap iPhone 14 Plus", 7990, 9990, store="spdigital"))
+    pipeline.publish_new_deals()
+    ids = {p["product_id"] for p in db.get_feed()}
+    assert "abc-iphone16e" in ids and "spd-caja" not in ids
