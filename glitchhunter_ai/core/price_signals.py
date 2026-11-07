@@ -67,12 +67,21 @@ def is_odd_price(price: Optional[float], store_id: Optional[str] = None) -> bool
 BULK_MIN_PRODUCTS = 4
 BULK_MIN_DISCOUNT = 60.0
 BULK_MIN_DISTINCT_NORMALS = 3
+# Una liquidación con precio único ("todo a $14.990", 60-75% de descuento) también deja muchos productos
+# al mismo precio. Para contar como error de carga, el grupo debe tener algún descuento extremo o un
+# precio que no parezca fijado por la tienda (los precios de campaña terminan en 990, 900, 500 o 000).
+BULK_EXTREME_DISCOUNT = 80.0
+
+
+def _is_retail_price_point(price: int) -> bool:
+    return price % 1000 in (990, 900, 500, 0) or price % 100 == 90
 
 
 def detect_bulk_prices(products: Iterable[Any]) -> Dict[str, int]:
     """
     Productos que comparten precio exacto con otros de la misma tienda en un mismo escaneo
-    (≥4 productos distintos, ≥60% de descuento, ≥3 precios normales distintos).
+    (≥4 productos distintos, ≥60% de descuento, ≥3 precios normales distintos, y algún descuento ≥80%
+    o un precio que no sea de campaña).
     Retorna {product_id: cantidad de productos con ese mismo precio}.
     """
     groups: Dict[Tuple[str, int], Dict[str, Any]] = {}
@@ -87,8 +96,11 @@ def detect_bulk_prices(products: Iterable[Any]) -> Dict[str, int]:
         key = (str(p.store_id), int(round(best)))
         groups.setdefault(key, {})[str(p.id)] = int(round(normal))
     result: Dict[str, int] = {}
-    for members in groups.values():
-        if len(members) >= BULK_MIN_PRODUCTS and len(set(members.values())) >= BULK_MIN_DISTINCT_NORMALS:
+    for (_, price), members in groups.items():
+        if len(members) < BULK_MIN_PRODUCTS or len(set(members.values())) < BULK_MIN_DISTINCT_NORMALS:
+            continue
+        max_discount = 100.0 * (1.0 - price / max(members.values()))
+        if max_discount >= BULK_EXTREME_DISCOUNT or not _is_retail_price_point(price):
             for pid in members:
                 result[pid] = len(members)
     return result
