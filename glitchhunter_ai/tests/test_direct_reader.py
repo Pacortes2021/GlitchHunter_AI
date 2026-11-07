@@ -706,6 +706,7 @@ def test_magento_catalog_slice_walks_pages_then_next_section():
     # Al pasar el total (532 = 15 páginas) salta a la siguiente sección
     # (antes, el carril rápido relee la primera página de la primera sección)
     reader._magento_cursor["dbs"] = (0, 15)
+    reader._magento_page_size["dbs"] = 36     # tamaño real de página de DBS (el fixture trae pocos productos)
     client.get.reset_mock()
     reader.fetch_catalog_slice("dbs")
     assert [c.args[0] for c in client.get.call_args_list] == [
@@ -815,3 +816,33 @@ def test_feed_filters_return_older_posts(tmp_path):
     assert [p["product_id"] for p in db.get_feed(min_discount=80)] == ["nike-0"]
     assert [p["product_id"] for p in db.get_feed(stores=["nike"])] == ["nike-2", "nike-0"]
     assert db.get_feed(kind="glitch") == []
+
+
+def _magento_page(n_items, total):
+    rows = "".join(
+        f'<li class="product-item"><a class="product-item-link" href="https://www.potros.cl/p{i}">Prenda {i}</a>'
+        f'<span data-price-type="finalPrice" data-price-amount="9990"></span></li>' for i in range(n_items))
+    return f'<p class="toolbar-amount">Mostrando de <span class="toolbar-number">{total}</span></p><ol>{rows}</ol>'
+
+
+def test_magento_store_with_40_per_page_does_not_overrun_and_pause():
+    # Potros ignora product_list_limit=36 y entrega 40 por página: 109 productos = 3 páginas, no 4.
+    # Antes se pedía la página 4 (vacía) y la tienda quedaba 10 minutos en pausa por "página sin datos".
+    pages = {1: _magento_page(40, 109), 2: _magento_page(40, 109), 3: _magento_page(29, 109),
+             4: "<html><body>No hay productos</body></html>"}
+
+    def fake_get(url, timeout=None):
+        page = int(url.rsplit("p=", 1)[1])
+        return _html_response(pages[page] if "/sale.html" in url else _magento_page(40, 262))
+
+    client = MagicMock()
+    client.get.side_effect = fake_get
+    reader = DirectStoreReader(client=client, backoff=StoreBackoff(clock=_FakeClock()))
+    reader._magento_cursor["potros"] = (0, 2)
+    reader._magento_catalog_slice("potros", lane="deep")
+    assert reader._magento_cursor["potros"] == (1, 1)              # terminó /sale.html en la página 3
+    assert not reader.backoff.is_paused("potros")
+    # Si aun así se pide una página pasada del final, la sección termina sin pausar la tienda
+    reader._magento_cursor["potros"] = (0, 4)
+    reader._magento_catalog_slice("potros", lane="deep")
+    assert not reader.backoff.is_paused("potros") and reader._magento_cursor["potros"][0] == 1

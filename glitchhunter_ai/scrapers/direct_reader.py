@@ -1240,6 +1240,7 @@ class DirectStoreReader:
         self._catalog_cursor: Dict[str, int] = {}
         self._catalog_pages: Dict[str, int] = {}
         self._magento_cursor: Dict[str, tuple] = {}
+        self._magento_page_size: Dict[str, int] = {}   # productos por página que entrega cada tienda
         self._santaisabel_seen: set = set()       # IDs de la sección en curso (detecta la última página)
         self._shopify_lock = threading.Lock()
         self.shopify_stores: Optional[List[str]] = None   # None = todas; lo fija el lector continuo
@@ -1369,8 +1370,13 @@ class DirectStoreReader:
         for _ in range(MAGENTO_PAGES_PER_CYCLE):
             path = sections[section_idx % len(sections)]
             url = f"{base}{path}?product_list_limit={MAGENTO_PAGE_SIZE}&p={page}"
-            html = self._get_html(store_id, url)
+            # Pasado el final de una sección la tienda responde una página sin productos: eso es el fin
+            # de la sección, no un bloqueo (solo la primera página vacía cuenta como bloqueo).
+            html = self._get_html(store_id, url, allow_empty=page > 1)
             if html is None:
+                if page > 1 and not self.backoff.is_paused(store_id):
+                    section_idx, page = (section_idx + 1) % len(sections), 1
+                    continue
                 break
             try:
                 page_items, total = parse_magento_listing(store_id, html)
@@ -1379,7 +1385,13 @@ class DirectStoreReader:
                 break
             self.backoff.record_success(store_id)
             items.extend(page_items)
-            if not page_items or not total or page * MAGENTO_PAGE_SIZE >= total:
+            # Muchas tiendas ignoran product_list_limit y traen 40 o 32 por página: se usa el tamaño real
+            per_page = max(len(page_items), self._magento_page_size.get(store_id, 0))
+            if page_items:
+                self._magento_page_size[store_id] = per_page
+            last_page = (not page_items or (total and page * per_page >= total)
+                         or (not total and len(page_items) < per_page))
+            if last_page:
                 section_idx, page = (section_idx + 1) % len(sections), 1   # siguiente sección
             else:
                 page += 1
