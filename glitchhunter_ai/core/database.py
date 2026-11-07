@@ -1258,7 +1258,8 @@ class PriceDatabase:
         Los filtros (descuento mínimo, tipo, tiendas) permiten traer publicaciones antiguas que la página
         no cargó al inicio.
         """
-        where, params = ["id > ?"], [int(after_id)]
+        # Las retiradas (no eran rebajas reales) no se muestran en el canal
+        where, params = ["id > ?", "COALESCE(expired_reason, '') != 'withdrawn'"], [int(after_id)]
         if min_discount > 0:
             where.append("discount_pct >= ?")
             params.append(float(min_discount))
@@ -1286,13 +1287,30 @@ class PriceDatabase:
                 posts.append(post)
             return posts
 
+    def withdraw_feed_offers(self, feed_ids: List[int]) -> int:
+        """Retira publicaciones que nunca fueron una rebaja real: dejan de mostrarse y no se reactivan."""
+        ids = sorted({int(i) for i in feed_ids})
+        if not ids:
+            return 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                "UPDATE offer_feed SET status = 'expired', expired_reason = 'withdrawn', status_changed_at = ? WHERE id = ?;",
+                [(now_iso, i) for i in ids],
+            )
+            conn.commit()
+        return len(ids)
+
     def refresh_feed_statuses(self, not_seen_hours: float = 24.0) -> int:
         """
         Revisa la vigencia de las publicaciones del canal contra el último precio visto de cada producto:
         - 'price_up': ahora cuesta más que en la publicación (al menos 2% y $1.000);
         - 'out_of_stock': el último escaneo lo vio sin stock;
+        - 'no_discount': (ofertas) la tienda ya no muestra precio tachado sobre el precio actual;
         - 'not_seen': ningún escaneo lo ha visto en `not_seen_hours` (puede seguir o no: sin confirmar).
         Si vuelve a estar al precio publicado (o menos) y con stock, la publicación vuelve a 'active'.
+        Las publicaciones retiradas ('withdrawn': nunca fueron una rebaja real) no se revisan más.
         Retorna cuántas publicaciones cambiaron.
         """
         now = datetime.now(timezone.utc)
@@ -1302,10 +1320,11 @@ class PriceDatabase:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT f.id, f.best_price, f.status, f.expired_reason, f.price_now,
-                       p.current_price, p.card_price, p.in_stock, p.last_updated
+                SELECT f.id, f.kind, f.best_price, f.status, f.expired_reason, f.price_now,
+                       p.current_price, p.card_price, p.normal_price, p.in_stock, p.last_updated
                 FROM offer_feed f
-                JOIN products p ON p.id = f.product_id;
+                JOIN products p ON p.id = f.product_id
+                WHERE COALESCE(f.expired_reason, '') != 'withdrawn';
             """)
             updates = []
             for r in cursor.fetchall():
@@ -1317,6 +1336,8 @@ class PriceDatabase:
                     status, reason = "expired", "out_of_stock"
                 elif best_now > posted * 1.02 and best_now - posted >= 1000:
                     status, reason = "expired", "price_up"
+                elif r["kind"] == "deal" and float(r["normal_price"] or 0) > 0 and best_now >= float(r["normal_price"]) * 0.98:
+                    status, reason = "expired", "no_discount"
                 elif str(r["last_updated"] or "") < stale_cutoff:
                     status, reason = "expired", "not_seen"
                 else:

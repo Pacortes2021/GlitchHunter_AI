@@ -614,6 +614,35 @@ class GlitchHuntingPipeline:
                     pass
         return changed
 
+    def withdraw_false_offers(self) -> Dict[str, int]:
+        """
+        Revisa el canal con las reglas actuales y retira lo que nunca fue una rebaja real (servicios,
+        liquidaciones de precio único publicadas como error de carga). Mantenimiento: `run.py retirar-falsos`.
+        """
+        from glitchhunter_ai.core.price_signals import BULK_EXTREME_DISCOUNT, _is_retail_price_point
+
+        services, outlets = [], []
+        for post in self.db.get_feed(limit=1_000_000):
+            payload = post.get("payload") or {}
+            product = payload.get("product") or {}
+            title = str(product.get("title") or payload.get("title") or "")
+            if SERVICE_RE.search(title):
+                services.append(post["id"])
+                continue
+            verdict = payload.get("verdict") or {}
+            reason = str(verdict.get("reason") or "")
+            if (
+                post["kind"] == "glitch"
+                and payload.get("bulk_price_count")
+                and not verdict.get("is_missing_zero")
+                and "habitual" not in reason
+                and float(post.get("discount_pct") or 0) < BULK_EXTREME_DISCOUNT
+                and _is_retail_price_point(int(round(float(post.get("best_price") or 0))))
+            ):
+                outlets.append(post["id"])
+        self.db.withdraw_feed_offers(services + outlets)
+        return {"servicios": len(services), "liquidaciones": len(outlets)}
+
     def _publish_unverified_as_deal(self, product: ProductItem, discount_pct: float, savings_clp: float) -> None:
         """Publica como 'Oferta' un descuento ≥65% sin evidencia independiente (si pasa el filtro de calidad)."""
         row = {

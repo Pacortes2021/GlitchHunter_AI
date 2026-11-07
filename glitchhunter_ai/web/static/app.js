@@ -630,6 +630,8 @@
     }
     if (post.expired_reason === 'out_of_stock') return 'Agotada';
     if (post.expired_reason === 'not_seen') return 'Sin confirmar · no la vemos hace más de 24 h';
+    if (post.expired_reason === 'no_discount') return 'Expirada · la tienda ya no muestra descuento';
+    if (post.expired_reason === 'withdrawn') return 'Retirada · no era una rebaja real';
     return 'Ya no disponible';
   }
 

@@ -226,6 +226,7 @@ def main():
 
     # Comando test
     subparsers.add_parser("test", help="Ejecutar suite de tests unitarios")
+    subparsers.add_parser("retirar-falsos", help="Retirar del canal lo que no era una rebaja real (servicios, liquidaciones)")
 
     # Comando diagnose
     diagnose_parser = subparsers.add_parser("diagnose", help="Diagnosticar conectividad y extracción real en vivo de los retailers")
@@ -244,6 +245,10 @@ def main():
         console.print(f"[bold green]🌐 Iniciando Radar Web en http://{args.host}:{args.port}[/bold green]")
         console.print("[dim]Presiona Ctrl+C para detener el servidor.[/dim]\n")
         start_server(host=args.host, port=args.port)
+    elif args.command == "retirar-falsos":
+        from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
+        counts = GlitchHuntingPipeline().withdraw_false_offers()
+        console.print(f"[green]Retiradas del canal:[/] {counts['servicios']} servicio(s), {counts['liquidaciones']} liquidación(es).")
     elif args.command == "test":
         run_tests()
     elif args.command == "diagnose":
