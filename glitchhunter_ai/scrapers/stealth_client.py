@@ -39,6 +39,12 @@ DEFAULT_CHROME_HEADERS = {
 }
 
 
+def _is_timeout(exc: Exception) -> bool:
+    """Tiempo de espera agotado (curl 28 / Timeout): la tienda está lenta o nos está frenando."""
+    text = str(exc).lower()
+    return "timed out" in text or "curl: (28)" in text or "timeout" in type(exc).__name__.lower()
+
+
 class StealthHTTPClient:
     """Cliente HTTP sigiloso para scraping en retail con bypass TLS."""
 
@@ -86,6 +92,13 @@ class StealthHTTPClient:
             try:
                 return self._session.get(url, headers=merged_headers, timeout=req_timeout, impersonate=self.impersonate, **kwargs)
             except Exception as e:
+                # Una tienda lenta no se reintenta ni se consulta con otro cliente: reintentar duplica la
+                # carga sobre un sitio que ya va lento, y el cliente de respaldo (sin huella de navegador)
+                # recibe páginas sin productos que se confundían con un bloqueo y pausaban la tienda.
+                # El error sube al lector, que espacia sus visitas a esa tienda.
+                if _is_timeout(e):
+                    logger.debug("Tiempo agotado en get(%s): %s", url, e)
+                    raise
                 logger.warning("Fallo en sesión curl_cffi; reintentando petición directa get(%s): %s", url, e)
                 try:
                     return curl_requests.get(url, headers=merged_headers, timeout=req_timeout, impersonate=self.impersonate, **kwargs)
@@ -112,6 +125,13 @@ class StealthHTTPClient:
             try:
                 return self._session.post(url, data=data, json=json, headers=merged_headers, timeout=req_timeout, impersonate=self.impersonate, **kwargs)
             except Exception as e:
+                # Una tienda lenta no se reintenta ni se consulta con otro cliente: reintentar duplica la
+                # carga sobre un sitio que ya va lento, y el cliente de respaldo (sin huella de navegador)
+                # recibe páginas sin productos que se confundían con un bloqueo y pausaban la tienda.
+                # El error sube al lector, que espacia sus visitas a esa tienda.
+                if _is_timeout(e):
+                    logger.debug("Tiempo agotado en post(%s): %s", url, e)
+                    raise
                 logger.warning("Fallo en sesión curl_cffi; reintentando petición directa post(%s): %s", url, e)
                 try:
                     return curl_requests.post(url, data=data, json=json, headers=merged_headers, timeout=req_timeout, impersonate=self.impersonate, **kwargs)

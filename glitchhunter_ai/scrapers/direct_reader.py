@@ -1258,6 +1258,7 @@ class DirectStoreReader:
         self._catalog_pages: Dict[str, int] = {}
         self._magento_cursor: Dict[str, tuple] = {}
         self._magento_page_size: Dict[str, int] = {}   # productos por página que entrega cada tienda
+        self._empty_page: Dict[str, bool] = {}         # la última página pedida respondió sin productos
         self._santaisabel_seen: set = set()       # IDs de la sección en curso (detecta la última página)
         self._shopify_lock = threading.Lock()
         self.shopify_stores: Optional[List[str]] = None   # None = todas; lo fija el lector continuo
@@ -1391,7 +1392,8 @@ class DirectStoreReader:
             # de la sección, no un bloqueo (solo la primera página vacía cuenta como bloqueo).
             html = self._get_html(store_id, url, allow_empty=page > 1)
             if html is None:
-                if page > 1 and not self.backoff.is_paused(store_id):
+                # Solo una página realmente vacía cierra la sección; un error de red conserva la posición
+                if page > 1 and self._empty_page.get(store_id):
                     section_idx, page = (section_idx + 1) % len(sections), 1
                     continue
                 break
@@ -1649,6 +1651,7 @@ class DirectStoreReader:
         allow_empty: una página sin productos (búsqueda sin resultados) no cuenta como bloqueo,
         salvo que sea una verificación anti-bot.
         """
+        self._empty_page[store_id] = False
         if self.backoff.is_paused(store_id):
             logger.debug("Lectura directa de %s en pausa (%.0f s restantes).", store_id, self.backoff.remaining_seconds(store_id))
             return None
@@ -1673,6 +1676,7 @@ class DirectStoreReader:
             lower = html[:20000].lower()
             challenged = any(m in lower for m in _BOT_CHALLENGE_MARKERS)
             if allow_empty and not challenged:
+                self._empty_page[store_id] = True
                 return None
             self.backoff.record_block(store_id, "verificación anti-bot" if challenged else "página sin datos")
             return None
