@@ -47,6 +47,14 @@ REFURBISHED_RE = re.compile(
     r"segunda\s+selecci[oó]n|exhibici[oó]n|outlet)\b",
     re.IGNORECASE,
 )
+# Servicios que se venden junto al producto (garantías, instalación, gift cards): su "precio" depende
+# del producto al que se asocian y su historial salta sin que haya rebaja real (Electrolux: "Garantía
+# Extendida" de $10.184 marcada como caída del 78%). No son ofertas ni errores de precio.
+SERVICE_RE = re.compile(
+    r"\b(?:garant[ií]a\s+extendida|extensi[oó]n\s+de\s+garant[ií]a|servicio\s+de\s+(?:instalaci[oó]n|armado)|"
+    r"servicio\s+t[eé]cnico|gift\s?card|tarjeta\s+de\s+regalo)\b",
+    re.IGNORECASE,
+)
 console = Console()
 
 
@@ -164,6 +172,9 @@ class GlitchHuntingPipeline:
         # Reacondicionados / usados / open box: la tienda los compara contra el precio de uno nuevo
         if REFURBISHED_RE.search(product.title):
             logger.debug(f"♻️ [Reacondicionado Omitido] {product.title} ({product.store_name}).")
+            return None
+        if SERVICE_RE.search(product.title):
+            logger.debug(f"🧾 [Servicio Omitido] {product.title} ({product.store_name}).")
             return None
 
         # ⏱️ Confirmación en tiempo real: los precios del agregador llegan con ~40 min de retraso.

@@ -658,6 +658,12 @@ def parse_vtex_products(store_id: str, products: Any) -> List[ProductItem]:
             offer = (sku.get("sellers") or [])[0].get("commertialOffer") or {}
             current = float(offer.get("Price") or 0)
             normal = current if store_id in VTEX_INFLATED_LIST_PRICE else float(offer.get("ListPrice") or 0)
+            # Productos vendidos por unidad de medida (pisos por m², telas por metro): Price viene por
+            # unidad y ListPrice no, así que compararlos inventa descuentos del 70% (MK: porcelanato a
+            # $13.990,27 el m² con "normal" $59.790). PriceWithoutDiscount sí está en la misma unidad.
+            multiplier = float(sku.get("unitMultiplier") or 1)
+            if abs(multiplier - 1.0) > 1e-6:
+                normal = float(offer.get("PriceWithoutDiscount") or current)
         except (AttributeError, IndexError, TypeError, ValueError):
             continue
         title = " ".join(str(raw.get("productName") or "").split())
