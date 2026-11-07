@@ -209,3 +209,39 @@ Cuando el radar ya funcione en la nube, **apaga el del Mac**. Si quedan los dos 
 - **El servicio no arranca.** Revisa el error con `sudo journalctl -u glitchhunter -n 100`.
 - **Oracle detiene la máquina por "inactiva".** Oracle puede recuperar máquinas gratis que pasan 7 días casi sin uso. El radar usa CPU y red todo el día, así que no debería pasar. Si pasa, enciéndela desde la consola. Pasar la cuenta a *Pay As You Go* lo evita, y los recursos gratis siguen sin costo; si lo haces, crea un *Budget* con alerta en $1 para enterarte de cualquier cobro.
 - **Volver a empezar.** Vuelve a correr el instalador; no borra la base de datos ni la configuración.
+
+## 9. Cambiarse a otra máquina (p. ej. de una pagada con créditos a la Ampere gratis)
+
+Si al crear la máquina no había capacidad gratis y usaste los créditos de prueba, **antes de que termine la prueba (30 días)** pásate a una *VM.Standard.A1.Flex* (Ampere, gratis). Se lleva todo: historial, canal y configuración.
+
+1. Crea la máquina nueva como en el paso 3 (shape **Ampere → VM.Standard.A1.Flex**, misma red y misma llave). Anota su IP: `NUEVA`. La vieja es `VIEJA`.
+2. Instala el radar en la nueva, sin arrancarlo:
+
+   ```bash
+   ssh ubuntu@NUEVA 'curl -fsSL https://raw.githubusercontent.com/Pacortes2021/GlitchHunter_AI/main/deploy/install.sh | sudo NO_START=1 bash'
+   ```
+
+3. Detén la vieja y copia la base y la configuración a tu Mac:
+
+   ```bash
+   ssh ubuntu@VIEJA 'sudo systemctl disable --now glitchhunter && cd /tmp && sudo -u glitchhunter sqlite3 /var/lib/glitchhunter/glitchhunter.db ".backup /tmp/gh.db" && sudo gzip -f /tmp/gh.db && sudo cp /opt/glitchhunter/.env /tmp/gh.env && sudo chmod 644 /tmp/gh.db.gz /tmp/gh.env'
+   ```
+
+   ```bash
+   scp ubuntu@VIEJA:/tmp/gh.db.gz ubuntu@VIEJA:/tmp/gh.env /tmp/
+   ```
+
+4. Súbelas a la nueva y arranca:
+
+   ```bash
+   scp /tmp/gh.db.gz /tmp/gh.env ubuntu@NUEVA:/tmp/
+   ```
+
+   ```bash
+   ssh ubuntu@NUEVA 'cd /tmp && gunzip -f gh.db.gz && sudo mv gh.db /var/lib/glitchhunter/glitchhunter.db && sudo rm -f /var/lib/glitchhunter/glitchhunter.db-wal /var/lib/glitchhunter/glitchhunter.db-shm && sudo mv gh.env /opt/glitchhunter/.env && sudo chown glitchhunter:glitchhunter /var/lib/glitchhunter/glitchhunter.db /opt/glitchhunter/.env && sudo chmod 600 /opt/glitchhunter/.env && sudo systemctl start glitchhunter && sleep 20 && curl -fsS http://127.0.0.1:8080/api/status | head -c 80'
+   ```
+
+5. Si usas el PC de la casa con túnel, apúntalo a la nueva: `bash deploy/mac/instalar_mac.sh ubuntu@NUEVA`.
+6. Revisa el panel unos minutos y, cuando todo esté bien, **termina la máquina vieja** en la consola (*Instance → More actions → Terminate*, marcando borrar el disco) para que no consuma créditos.
+
+> Consultas a la base del servidor: hazlas como el usuario del servicio (`sudo -u glitchhunter sqlite3 …`). Con `sudo sqlite3` a secas, los archivos `-wal`/`-shm` pueden quedar de root y el radar no podrá escribir.
