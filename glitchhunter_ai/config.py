@@ -35,6 +35,13 @@ DEAL_PUBLISH_BATCH = int(os.getenv("DEAL_PUBLISH_BATCH", "3000"))              #
 DEAL_MAX_AGE_HOURS = float(os.getenv("DEAL_MAX_AGE_HOURS", "12"))            # Solo productos vistos recientemente
 # Una publicación pasa a "sin confirmar" si ningún escaneo ve el producto en estas horas
 FEED_NOT_SEEN_HOURS = float(os.getenv("FEED_NOT_SEEN_HOURS", "24"))
+# Productos que casi nunca bajan 40% (Apple): para ellos y para las palabras de la watchlist, el canal
+# publica desde un descuento menor. Un -20% en un iPhone nuevo es una oferta real; en una polera no.
+DEAL_PRIORITY_KEYWORDS = [k.strip().lower() for k in os.getenv(
+    "DEAL_PRIORITY_KEYWORDS",
+    "iphone,macbook,ipad,airpods,apple watch,imac,mac mini,mac studio,homepod,apple tv",
+).split(",") if k.strip()]
+DEAL_PRIORITY_MIN_DISCOUNT = float(os.getenv("DEAL_PRIORITY_MIN_DISCOUNT", "15"))
 DEAL_INCLUDE_NON_TECH = os.getenv("DEAL_INCLUDE_NON_TECH", "true").lower() in ("true", "1", "yes")  # Ropa, muebles, etc.
 # Tiendas "solo errores de precio" (opcional, vía .env): sus liquidaciones normales no se publican
 # como ofertas; solo entran al canal los errores de precio verificados. Por defecto todas publican ofertas.

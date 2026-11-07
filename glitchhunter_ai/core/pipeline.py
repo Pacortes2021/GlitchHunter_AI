@@ -55,6 +55,8 @@ SERVICE_RE = re.compile(
     r"servicio\s+t[eé]cnico|gift\s?card|tarjeta\s+de\s+regalo)\b",
     re.IGNORECASE,
 )
+# Títulos de accesorios que nombran al equipo ("Funda para iPhone 15", "compatible con MacBook")
+PRIORITY_ACCESSORY_RE = re.compile(r"\b(?:para|compatible|compatibles|for|con\s+cable\s+para)\b")
 console = Console()
 
 
@@ -696,6 +698,30 @@ class GlitchHuntingPipeline:
         normal = float(row.get("normal_price") or 0.0)
         return normal - best_price >= DEAL_MIN_SAVINGS_CLP
 
+    def _priority_terms(self) -> List[str]:
+        """Términos con umbral de publicación menor: los de configuración (Apple) y la watchlist."""
+        from glitchhunter_ai.config import DEAL_PRIORITY_KEYWORDS
+        terms = list(DEAL_PRIORITY_KEYWORDS)
+        try:
+            terms += [str(k).strip().lower() for k in self.db.get_watchlist_keywords()]
+        except Exception:
+            pass
+        return [t for t in dict.fromkeys(terms) if len(t) >= 3]
+
+    @staticmethod
+    def _priority_match(title: str, terms: List[str]) -> Optional[str]:
+        """
+        Término que nombra al producto mismo (no a un accesorio "para iPhone" / "compatible con MacBook").
+        Retorna el término o None.
+        """
+        low = title.lower()
+        if PRIORITY_ACCESSORY_RE.search(low):
+            return None
+        for term in terms:
+            if re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z])", low):
+                return term
+        return None
+
     def publish_new_deals(self, min_discount: float = 40.0, max_discount: float = 101.0) -> int:
         """
         Publica en el canal las ofertas (40% o más) que aún no se habían publicado, o que ahora están
@@ -703,7 +729,9 @@ class GlitchHuntingPipeline:
         de 65% o más que no llegaron como error de precio (por ejemplo, ahorros bajo $30.000).
         Solo pasan las que superan el filtro de calidad (ver _is_publishable_deal).
         """
-        from glitchhunter_ai.config import DEAL_MAX_AGE_HOURS, DEAL_MIN_SAVINGS_CLP, DEAL_PUBLISH_BATCH
+        from glitchhunter_ai.config import (
+            DEAL_MAX_AGE_HOURS, DEAL_MIN_SAVINGS_CLP, DEAL_PRIORITY_MIN_DISCOUNT, DEAL_PUBLISH_BATCH,
+        )
 
         published = 0
         try:
@@ -715,6 +743,19 @@ class GlitchHuntingPipeline:
                 min_savings=DEAL_MIN_SAVINGS_CLP,
                 unpublished_only=True,
             )
+            # Segunda pasada: Apple y la watchlist desde un descuento menor (DEAL_PRIORITY_MIN_DISCOUNT)
+            terms = self._priority_terms()
+            if terms and DEAL_PRIORITY_MIN_DISCOUNT < min_discount:
+                priority = self.db.get_commercial_deals(
+                    min_discount=DEAL_PRIORITY_MIN_DISCOUNT,
+                    max_discount=min_discount,
+                    limit=5000,
+                    max_age_hours=DEAL_MAX_AGE_HOURS,
+                    min_savings=DEAL_MIN_SAVINGS_CLP,
+                    unpublished_only=True,
+                    title_terms=terms,
+                )
+                rows = list(rows) + [r for r in priority if self._priority_match(str(r.get("title") or ""), terms)]
             checked = 0
             for row in rows:
                 current = float(row.get("current_price") or 0.0)

@@ -1410,6 +1410,7 @@ class PriceDatabase:
         max_age_hours: Optional[float] = None,
         min_savings: float = 0.0,
         unpublished_only: bool = False,
+        title_terms: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Retorna ofertas comerciales moderadas (ej: 40% a 64% de descuento)
@@ -1451,6 +1452,10 @@ class PriceDatabase:
             if min_savings > 0:
                 query += " AND (p.normal_price - (CASE WHEN p.card_price > 0 AND p.card_price < p.current_price THEN p.card_price ELSE p.current_price END)) >= ?"
                 params.append(float(min_savings))
+            if title_terms:
+                # Solo productos cuyo título contiene alguno de los términos (Apple, watchlist)
+                query += " AND (" + " OR ".join("LOWER(p.title) LIKE ?" for _ in title_terms) + ")"
+                params.extend(f"%{t.lower()}%" for t in title_terms)
             if unpublished_only:
                 # Para el canal: solo productos sin publicación a este precio o a uno menor
                 query += """ AND NOT EXISTS (SELECT 1 FROM offer_feed f
