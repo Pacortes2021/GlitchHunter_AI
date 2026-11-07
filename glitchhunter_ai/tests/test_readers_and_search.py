@@ -356,3 +356,13 @@ def test_shopify_alias_covers_all_shopify_stores(monkeypatch):
     monkeypatch.setattr(config, "RADAR_SKIP_STORES", set())
     assert config.store_enabled(first) and config.store_enabled("ripley")
     assert not config.store_enabled("pcfactory")
+
+
+def test_shopify_uses_plain_identified_client():
+    from glitchhunter_ai.scrapers.direct_reader import SHOPIFY_USER_AGENT
+
+    reader = DirectStoreReader()
+    assert reader.shopify_client is not reader.client                 # no la imitación de navegador
+    assert reader.shopify_client.headers["User-Agent"] == SHOPIFY_USER_AGENT
+    injected = MagicMock()
+    assert DirectStoreReader(client=injected).shopify_client is injected
