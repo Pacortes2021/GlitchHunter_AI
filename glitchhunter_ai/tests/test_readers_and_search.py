@@ -366,3 +366,10 @@ def test_shopify_uses_plain_identified_client():
     assert reader.shopify_client.headers["User-Agent"] == SHOPIFY_USER_AGENT
     injected = MagicMock()
     assert DirectStoreReader(client=injected).shopify_client is injected
+
+
+def test_shopify_sale_collection_ignores_product_lines_named_black():
+    cols = [{"handle": "black-hole", "title": "Black Hole", "products_count": 40},
+            {"handle": "black-friday", "title": "Black Friday", "products_count": 12}]
+    assert pick_shopify_sale_collection(cols) == "black-friday"
+    assert pick_shopify_sale_collection(cols[:1]) is None

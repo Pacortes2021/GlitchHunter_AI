@@ -244,7 +244,10 @@ DIRECT_STORES = (
 _SALE_SECTION_RE = re.compile(r"sale|oferta|outlet|promo|special|oportunidad|liquidac|descuento|rebaja", re.IGNORECASE)
 # Colecciones Shopify de ofertas: primero los nombres exactos, luego cualquier coincidencia
 _SHOPIFY_SALE_EXACT = ("sale", "ofertas", "outlet", "descuentos", "liquidacion", "rebajas", "promociones", "oferta")
-_SHOPIFY_SALE_RE = re.compile(r"sale|oferta|outlet|descuento|liquidac|rebaja|promo|cyber|black", re.IGNORECASE)
+# "black" solo como evento (Black Friday / Black Days): Patagonia tiene la línea de bolsos "Black Hole"
+_SHOPIFY_SALE_RE = re.compile(
+    r"sale|oferta|outlet|descuento|liquidac|rebaja|promo|cyber|black[-_ ]?(?:friday|days?|week)", re.IGNORECASE
+)
 
 
 def supports_live_search(store_id: str) -> bool:
