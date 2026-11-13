@@ -95,10 +95,11 @@ def generate_direct_add_to_cart_url(store_id: str, product_url: str, product_id:
         if "solotodo" in sid or "solotodo.cl" in domain:
             return url
 
-        # 8. Tiendas genéricas Shopify (detectadas por /products/ o tiendas como SP Digital / Digitek)
+        # 8. SP Digital (legacy sniper fallback) vs tiendas Shopify reales (/products/ sin variant_id directo)
         if "/products/" in path:
-            # URL de compra directa en Shopify
-            return f"{parsed.scheme}://{domain}/cart/add?url={urllib.parse.quote(url)}"
+            if sid == "spdigital" or "spdigital.cl" in domain:
+                return f"{parsed.scheme}://{domain}/cart/add?url={urllib.parse.quote(url)}"
+            return url
 
     except Exception:
         pass

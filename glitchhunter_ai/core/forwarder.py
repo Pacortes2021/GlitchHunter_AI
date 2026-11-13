@@ -10,18 +10,29 @@ en una cola acotada y se reintentan; nunca frenan a los lectores.
 
 import json
 import logging
+import os
 import threading
 import time
 import urllib.error
 import urllib.request
 from collections import deque
-from typing import Any, Callable, Deque, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Deque, List, Optional, Tuple, Union
 
 logger = logging.getLogger("GlitchHunter.Forwarder")
 
 INGEST_PATH = "/api/ingest"
 MAX_QUEUE = 500          # lecturas en espera; si se llena se descarta la más antigua
 MAX_BACKOFF = 60.0       # espera máxima entre reintentos cuando el servidor no responde
+
+
+def _unlink_file(path: Optional[Path]) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 class Forwarder:
@@ -32,19 +43,79 @@ class Forwarder:
         timeout: float = 30.0,
         post: Optional[Callable[[str, bytes, dict, float], int]] = None,
         sleep: Callable[[float], None] = time.sleep,
+        queue_dir: Optional[Union[str, Path]] = None,
+        max_queue: int = MAX_QUEUE,
     ):
         self.url = base_url.rstrip("/") + INGEST_PATH
         self.api_key = api_key
         self.timeout = timeout
         self._post = post or _urllib_post
         self._sleep = sleep
-        self._queue: Deque[Tuple[str, List[dict]]] = deque()
+        self.queue_dir: Optional[Path] = Path(queue_dir) if queue_dir else None
+        self._max_queue = max(1, int(max_queue))
+        self._seq = 0
+        self._queue: Deque[Tuple[str, List[dict], Optional[Path]]] = deque()
         self._cond = threading.Condition()
         self._stop = False
         self._thread: Optional[threading.Thread] = None
         self.sent = 0
         self.dropped = 0
         self._failing_since: Optional[float] = None
+        if self.queue_dir is not None:
+            self._load_queue()
+
+    def _load_queue(self) -> None:
+        """Restaura lecturas pendientes guardadas en disco ante reinicios o desconexiones."""
+        if self.queue_dir is None:
+            return
+        try:
+            self.queue_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning("⚠️ [Reenvío] No se pudo crear cola persistente en %s: %s", self.queue_dir, exc)
+            return
+        for tmp in self.queue_dir.glob("*.tmp"):
+            _unlink_file(tmp)
+        loaded: List[Tuple[str, List[dict], Path]] = []
+        for path in sorted(self.queue_dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                store_id = data.get("store_id") if isinstance(data, dict) else None
+                products = data.get("products") if isinstance(data, dict) else None
+                if not isinstance(store_id, str) or not store_id or not isinstance(products, list):
+                    raise ValueError("formato inválido")
+                loaded.append((store_id, products, path))
+            except Exception as exc:
+                logger.warning("⚠️ [Reenvío] Se descartó lote corrupto en %s (%s).", path.name, exc)
+                _unlink_file(path)
+        if len(loaded) > self._max_queue:
+            excess = len(loaded) - self._max_queue
+            for _, _, old_path in loaded[:excess]:
+                _unlink_file(old_path)
+            self.dropped += excess
+            loaded = loaded[excess:]
+        self._queue.extend(loaded)
+        if loaded:
+            logger.info("📦 [Reenvío] %d lectura(s) pendiente(s) recuperada(s) desde disco.", len(loaded))
+
+    def _persist_batch(self, store_id: str, payload: List[dict]) -> Optional[Path]:
+        """Guarda un lote en disco de forma atómica (.tmp -> replace)."""
+        if self.queue_dir is None:
+            return None
+        try:
+            self.queue_dir.mkdir(parents=True, exist_ok=True)
+            self._seq += 1
+            filename = f"{time.time_ns():020d}_{self._seq:06d}.json"
+            target = self.queue_dir / filename
+            tmp = self.queue_dir / f".{filename}.tmp"
+            tmp.write_text(
+                json.dumps({"store_id": store_id, "products": payload}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.replace(tmp, target)
+            return target
+        except OSError as exc:
+            logger.warning("⚠️ [Reenvío] No se pudo guardar lote en disco (%s); sigue en memoria.", exc)
+            return None
 
     def submit(self, store_id: str, products: List[Any]) -> None:
         """Encola una lectura (no bloquea). Acepta ProductItem o dicts."""
@@ -52,10 +123,12 @@ class Forwarder:
             return
         payload = [p.model_dump(mode="json") if hasattr(p, "model_dump") else dict(p) for p in products]
         with self._cond:
-            if len(self._queue) >= MAX_QUEUE:
-                self._queue.popleft()
+            while len(self._queue) >= self._max_queue:
+                _, _, old_path = self._queue.popleft()
+                _unlink_file(old_path)
                 self.dropped += 1
-            self._queue.append((store_id, payload))
+            batch_path = self._persist_batch(store_id, payload)
+            self._queue.append((store_id, payload, batch_path))
             self._cond.notify()
 
     def pending(self) -> int:
@@ -67,7 +140,7 @@ class Forwarder:
         with self._cond:
             if not self._queue:
                 return True
-            store_id, products = self._queue[0]
+            store_id, products, _ = self._queue[0]
         body = json.dumps({"store_id": store_id, "products": products}).encode("utf-8")
         headers = {"Content-Type": "application/json", "X-API-Key": self.api_key}
         try:
@@ -79,7 +152,8 @@ class Forwarder:
         if 200 <= code < 300:
             with self._cond:
                 if self._queue and self._queue[0][1] is products:
-                    self._queue.popleft()
+                    _, _, batch_path = self._queue.popleft()
+                    _unlink_file(batch_path)
             self.sent += 1
             if self._failing_since is not None:
                 logger.info("🔗 [Reenvío] Conexión con el servidor recuperada (%d lectura(s) en espera).", self.pending())
@@ -89,7 +163,8 @@ class Forwarder:
             # El servidor rechaza esta lectura (clave inválida, formato): reintentarla no sirve
             with self._cond:
                 if self._queue and self._queue[0][1] is products:
-                    self._queue.popleft()
+                    _, _, batch_path = self._queue.popleft()
+                    _unlink_file(batch_path)
             self.dropped += 1
             logger.warning("⚠️ [Reenvío] El servidor rechazó la lectura de %s (HTTP %s).", store_id, code)
             return True
@@ -97,6 +172,15 @@ class Forwarder:
             self._failing_since = time.monotonic()
             logger.warning("⚠️ [Reenvío] El servidor no responde (%s); las lecturas quedan en espera.", err or f"HTTP {code}")
         return False
+
+    def flush(self, timeout: float = 3.0) -> int:
+        """Espera brevemente a vaciar la cola al cerrar si el hilo sigue conectado y enviando."""
+        if self._thread is None or not self._thread.is_alive():
+            return self.pending()
+        deadline = time.monotonic() + max(0.0, timeout)
+        while self.pending() > 0 and self._failing_since is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return self.pending()
 
     def _loop(self) -> None:
         backoff = 2.0

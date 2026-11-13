@@ -14,7 +14,14 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, List, Optional
 
 from glitchhunter_ai.core.scheduler import DEEP, HOT, StoreScheduler, build_scheduler, parse_interval_overrides
-from glitchhunter_ai.scrapers.direct_reader import CATALOG_STORES, DIRECT_STORES, HOT_LANE_STORES, SHOPIFY_STORES
+from glitchhunter_ai.core.store_health import global_store_health
+from glitchhunter_ai.scrapers.direct_reader import (
+    CATALOG_STORES,
+    DIRECT_STORES,
+    HOT_LANE_STORES,
+    SHOPIFY_STORES,
+    STORE_NAMES,
+)
 
 logger = logging.getLogger("GlitchHunter.Readers")
 
@@ -39,6 +46,7 @@ class ContinuousReader:
         speed_fn: Optional[Callable[[], float]] = None,
         on_published: Optional[Callable[[int], Any]] = None,
         store_filter: Optional[Callable[[str], bool]] = None,
+        watchlist_provider: Optional[Callable[[], List[str]]] = None,
     ):
         self.pipeline = pipeline
         self.reader = pipeline.direct_reader
@@ -47,6 +55,7 @@ class ContinuousReader:
         self.speed_fn = speed_fn or (lambda: 1.0)
         self.on_published = on_published
         self.publish_every = publish_every
+        self._watchlist_provider = watchlist_provider
         # Reparto entre radares (RADAR_ONLY_STORES / RADAR_SKIP_STORES): este radar solo lee las suyas
         if store_filter is None:
             from glitchhunter_ai.config import store_enabled as store_filter
@@ -75,7 +84,12 @@ class ContinuousReader:
         items: List = []
         if store_id not in CATALOG_STORES:
             # Tiendas sin recorrido de catálogo: watchlist y categorías prioritarias
-            for kw in self.pipeline.db.get_watchlist_keywords():
+            keywords = (
+                self._watchlist_provider()
+                if self._watchlist_provider is not None
+                else self.pipeline.db.get_watchlist_keywords()
+            )
+            for kw in keywords:
                 items.extend(self.reader.search(store_id, kw))
             for cat in self.categories:
                 items.extend(self.reader.fetch_category(store_id, cat))
@@ -93,13 +107,17 @@ class ContinuousReader:
 
     def run_lane(self, store_id: str, lane: str) -> None:
         count, fresh, ok = 0, 0, True
+        target_store = store_id
+        t_start = time.perf_counter()
         try:
             if store_id == SHOPIFY_KEY:
                 result = self.reader.fetch_shopify_next()
                 if result:
                     shop, _, items = result
+                    target_store = shop
                     count = len(items)
-                    _, fresh = self._process(shop, items)
+                    if items:
+                        _, fresh = self._process(shop, items)
                 return
             items = self._fetch(store_id, lane)
             count = len(items)
@@ -110,6 +128,21 @@ class ContinuousReader:
             logger.warning("⚠️ [Lector %s/%s] falló: %s", store_id, lane, exc)
         finally:
             self.scheduler.done(store_id, lane, count, fresh, ok=ok)
+            if target_store != SHOPIFY_KEY:
+                is_paused = bool(getattr(self.reader, "backoff", None) and self.reader.backoff.is_paused(target_store))
+                if count > 0 or not is_paused:
+                    latency_ms = (time.perf_counter() - t_start) * 1000.0
+                    global_store_health.record_scan(
+                        store_id=target_store,
+                        store_name=STORE_NAMES.get(target_store, target_store.title()),
+                        latency_ms=latency_ms,
+                        items_count=count,
+                        error=not ok,
+                    )
+                    if global_store_health.should_alert_empty_store(target_store):
+                        notifier = getattr(self.pipeline, "_notify_store_health_alert", None)
+                        if callable(notifier):
+                            notifier(target_store, STORE_NAMES.get(target_store, target_store.title()))
 
     # --- bucle -------------------------------------------------------------------
     def _loop(self) -> None:
@@ -121,7 +154,11 @@ class ContinuousReader:
                 for store_id, lane in self.scheduler.due():
                     self.pool.submit(self.run_lane, store_id, lane)
                 now = time.monotonic()
-                if now - last_publish >= self.publish_every and (publishing is None or publishing.done()):
+                if (
+                    not getattr(self.pipeline, "forward_only", False)
+                    and now - last_publish >= self.publish_every
+                    and (publishing is None or publishing.done())
+                ):
                     last_publish = now
                     publishing = self.pool.submit(self._publish)
                 if now - last_stats >= 60:

@@ -53,6 +53,7 @@ htmlcov/
 # Datos de ejecución locales (BD SQLite, logs de alertas)
 glitchhunter_ai/data/*.db
 glitchhunter_ai/data/*.jsonl
+glitchhunter_ai/data/forward_queue/
 *.db-wal
 *.db-shm
 *.db-journal

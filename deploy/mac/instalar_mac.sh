@@ -38,8 +38,13 @@ SERVER="${1:?Uso: bash deploy/mac/instalar_mac.sh ubuntu@IP_DEL_SERVIDOR}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 PYTHON="${PYTHON:-$(command -v python3)}"
 LOCAL_PORT="${LOCAL_PORT:-8090}"
+MODE="${GLITCHHUNTER_MODE:-collector}"
 
 [ -f "${REPO}/run.py" ] || { echo "No encuentro run.py en ${REPO}"; exit 1; }
+case "${MODE}" in
+  collector|server) ;;
+  *) echo "GLITCHHUNTER_MODE inválido (${MODE}); usa 'collector' o 'server'."; exit 1 ;;
+esac
 # macOS no deja que un servicio en segundo plano lea Escritorio, Documentos ni Descargas (privacidad):
 # el radar fallaría con "Operation not permitted". Debe vivir en otra carpeta, p. ej. ~/GlitchHunter_AI.
 case "${REPO}/" in
@@ -92,7 +97,7 @@ cat > "${AGENTS}/cl.glitchhunter.radar.plist" <<PLIST
 <dict>
   <key>Label</key><string>cl.glitchhunter.radar</string>
   <key>ProgramArguments</key>
-  <array><string>${PYTHON}</string><string>run.py</string><string>server</string></array>
+  <array><string>${PYTHON}</string><string>run.py</string><string>${MODE}</string></array>
   <key>WorkingDirectory</key><string>${REPO}</string>
   <key>EnvironmentVariables</key>
   <dict>
@@ -111,12 +116,16 @@ PLIST
 launchctl bootstrap "gui/${UID_N}" "${AGENTS}/cl.glitchhunter.tunel.plist"
 launchctl bootstrap "gui/${UID_N}" "${AGENTS}/cl.glitchhunter.radar.plist"
 
-echo "Esperando a que respondan el radar y el túnel…"
+echo "Esperando a que respondan el recolector (${MODE}) y el túnel…"
 for _ in $(seq 1 45); do
-  if curl -fsS -m 3 "http://127.0.0.1:8080/api/status" >/dev/null 2>&1 \
-     && curl -fsS -m 3 "http://127.0.0.1:${LOCAL_PORT}/api/status" >/dev/null 2>&1; then
-    echo "Radar del PC y túnel funcionando ✅"
-    echo "  Panel del servidor: http://localhost:${LOCAL_PORT}   Panel del PC: http://localhost:8080"
+  if curl -fsS -m 3 "http://127.0.0.1:${LOCAL_PORT}/api/status" >/dev/null 2>&1; then
+    if [ "${MODE}" = "server" ]; then
+      curl -fsS -m 3 "http://127.0.0.1:8080/api/status" >/dev/null 2>&1 || { sleep 2; continue; }
+    else
+      launchctl print "gui/${UID_N}/cl.glitchhunter.radar" 2>/dev/null | grep -q "state = running" || { sleep 2; continue; }
+    fi
+    echo "Recolector del Mac (${MODE}) y túnel funcionando ✅"
+    echo "  Panel único del servidor: http://localhost:${LOCAL_PORT}"
     echo "  Registros: ${LOGS}/glitchhunter-radar.log y glitchhunter-tunel.log"
     exit 0
   fi

@@ -13,191 +13,89 @@
   // ---------------------------------------------------------------------------
   // Configuración
   // ---------------------------------------------------------------------------
-  const STORES = {
-    falabella: { name: 'Falabella', color: '#3f8f3f' },
-    ripley: { name: 'Ripley', color: '#7e22ce' },
-    paris: { name: 'Paris', color: '#0284c7' },
-    lider: { name: 'Líder', color: '#2563eb' },
-    mercadolibre: { name: 'Mercado Libre', color: '#ca8a04' },
-    pcfactory: { name: 'PC Factory', color: '#dc2626' },
-    sodimac: { name: 'Sodimac', color: '#f97316' },
-    abc: { name: 'ABC', color: '#e11d48' },
-    jumbo: { name: 'Jumbo', color: '#16a34a' },
-    hp: { name: 'HP', color: '#0096d6' },
-    winpy: { name: 'Winpy', color: '#f59e0b' },
-    spdigital: { name: 'SP Digital', color: '#1e3a8a' },
-    santaisabel: { name: 'Santa Isabel', color: '#dc2626' },
-    farmaciamapuche: { name: 'Farmacia Mapuche', color: '#15803d' },
-    rosen: { name: 'Rosen', color: '#1d4ed8' },
-    cannonhome: { name: 'Cannon Home', color: '#0e7490' },
-    santarita: { name: 'Santa Rita', color: '#7f1d1d' },
-    petplanet: { name: 'Pet Planet', color: '#ea580c' },
-    toyng: { name: 'Toyng', color: '#7c3aed' },
-    jansport: { name: 'JanSport', color: '#0f766e' },
-    lindt: { name: 'Lindt', color: '#b45309' },
-    chilemat: { name: 'Chilemat', color: '#1d4ed8' },
-    palmers: { name: 'Palmers', color: '#be185d' },
-    blushbar: { name: 'Blush-Bar', color: '#4d7c0f' },
-    mk: { name: 'MK', color: '#7c2d12' },
-    fernapet: { name: 'Fernapet', color: '#6d28d9' },
-    perryellis: { name: 'Perry Ellis', color: '#0369a1' },
-    hit: { name: 'Hit', color: '#a16207' },
-    coliseum: { name: 'Coliseum', color: '#9f1239' },
-    todomoda: { name: 'Todo Moda', color: '#0f766e' },
-    kliper: { name: 'Kliper', color: '#b45309' },
-    stevemadden: { name: 'Steve Madden', color: '#1d4ed8' },
-    tiendacopec: { name: 'Tienda Copec', color: '#be185d' },
-    raindoor: { name: 'Raindoor', color: '#4d7c0f' },
-    ansaldo: { name: 'Ansaldo', color: '#7c2d12' },
-    adagio: { name: 'Adagio Teas', color: '#6d28d9' },
-    a3d: { name: 'A3D', color: '#0369a1' },
-    zola: { name: 'Zola', color: '#a16207' },
-    hushpuppieskids: { name: 'Hush Puppies Kids', color: '#9f1239' },
-    portomenaje: { name: 'Porto Menaje', color: '#0f766e' },
-    hollyconcept: { name: 'Holly Concept', color: '#b45309' },
-    melissa: { name: 'Melissa', color: '#1d4ed8' },
-    bamers: { name: 'Bamers', color: '#be185d' },
-    doce34: { name: 'Doce34', color: '#4d7c0f' },
-    vantek: { name: 'Vantek', color: '#7c2d12' },
-    yeppo: { name: 'Yeppo', color: '#6d28d9' },
-    mashini: { name: 'Mashini', color: '#0369a1' },
-    zooyork: { name: 'Zoo York', color: '#a16207' },
-    blikstore: { name: 'Blik Store', color: '#9f1239' },
-    fashionspark: { name: "Fashion's Park", color: '#0f766e' },
-    juanvaldez: { name: 'Juan Valdez', color: '#78350f' },
-    promusic: { name: 'ProMusic', color: '#334155' },
-    sony: { name: 'Sony Store', color: '#111827' },
-    motorola: { name: 'Motorola', color: '#4f46e5' },
-    electrolux: { name: 'Electrolux', color: '#1e3a8a' },
-    fensa: { name: 'Fensa', color: '#0e7490' },
-    oster: { name: 'Oster', color: '#b91c1c' },
-    casaroyal: { name: 'Casa Royal', color: '#9333ea' },
-    nike: { name: 'Nike', color: '#111111' },
-    levis: { name: "Levi's", color: '#c41230' },
-    reebok: { name: 'Reebok', color: '#e41d1b' },
-    columbia: { name: 'Columbia', color: '#1f4e79' },
-    caterpillar: { name: 'Caterpillar', color: '#ca8a04' },
-    patagonia: { name: 'Patagonia', color: '#334155' },
-    underarmour: { name: 'Under Armour', color: '#1f2937' },
-    crocs: { name: 'Crocs', color: '#65a30d' },
-    vans: { name: 'Vans', color: '#991b1b' },
-    doite: { name: 'Doite', color: '#0369a1' },
-    havaianas: { name: 'Havaianas', color: '#facc15' },
-    oxford: { name: 'Oxford', color: '#0f766e' },
-    aufbau: { name: 'Aufbau', color: '#475569' },
-    lippi: { name: 'Lippi', color: '#c2410c' },
-    kitchencenter: { name: 'Kitchen Center', color: '#b45309' },
-    thenorthface: { name: 'The North Face', color: '#b91c1c' },
-    converse: { name: 'Converse', color: '#1f2937' },
-    lacoste: { name: 'Lacoste', color: '#15803d' },
-    marmot: { name: 'Marmot', color: '#dc2626' },
-    sparta: { name: 'Sparta', color: '#ea580c' },
-    dbs: { name: 'DBS', color: '#db2777' },
-    mimbral: { name: 'Mimbral', color: '#0f766e' },
-    audiomusica: { name: 'Audiomúsica', color: '#b45309' },
-    dimeiggs: { name: 'Dimeiggs', color: '#7c3aed' },
-    drsimi: { name: 'Dr. Simi', color: '#be123c' },
-    mademsa: { name: 'Mademsa', color: '#1d4ed8' },
-    dimarsa: { name: 'Dimarsa', color: '#4d7c0f' },
-    marsella: { name: 'Ferretería Marsella', color: '#a21caf' },
-    construplaza: { name: 'Construplaza', color: '#0e7490' },
-    tiendasalfa: { name: 'Tiendas Alfa', color: '#c2410c' },
-    tramontina: { name: 'Tramontina', color: '#475569' },
-    dimarine: { name: 'Dimarine', color: '#0f766e' },
-    lavinoteca: { name: 'La Vinoteca', color: '#b45309' },
-    maxservice: { name: 'Maxservice', color: '#7c3aed' },
-    ventus: { name: 'Ventus', color: '#be123c' },
-    karcher: { name: 'Kärcher', color: '#1d4ed8' },
-    esika: { name: 'Ésika', color: '#4d7c0f' },
-    lbel: { name: 'L\'Bel', color: '#a21caf' },
-    clubsoftys: { name: 'Club Softys', color: '#0e7490' },
-    coleman: { name: 'Coleman', color: '#c2410c' },
-    marleycoffee: { name: 'Marley Coffee', color: '#475569' },
-    bbqgrill: { name: 'BBQ Grill', color: '#0f766e' },
-    blanik: { name: 'Blanik', color: '#b45309' },
-    cotidian: { name: 'Cotidian', color: '#7c3aed' },
-    colloky: { name: 'Colloky', color: '#be123c' },
-    ficcus: { name: 'Ficcus', color: '#1d4ed8' },
-    zapatos: { name: 'Zapatos.cl', color: '#4d7c0f' },
-    hm: { name: 'H&M', color: '#a21caf' },
-    dolly: { name: 'Dolly', color: '#0e7490' },
-    ferouch: { name: 'Ferouch', color: '#c2410c' },
-    calvinklein: { name: 'Calvin Klein', color: '#475569' },
-    theline: { name: 'The Line', color: '#0f766e' },
-    tommy: { name: 'Tommy Hilfiger', color: '#b45309' },
-    treck: { name: 'Treck', color: '#7c3aed' },
-    velez: { name: 'Vélez', color: '#be123c' },
-    privilege: { name: 'Privilege', color: '#1d4ed8' },
-    newman: { name: 'Newman', color: '#4d7c0f' },
-    swarovski: { name: 'Swarovski', color: '#a21caf' },
-    womensecret: { name: 'Women\'secret', color: '#0e7490' },
-    totto: { name: 'Totto', color: '#c2410c' },
-    oneill: { name: 'O\'Neill', color: '#475569' },
-    americaneagle: { name: 'American Eagle', color: '#0f766e' },
-    asics: { name: 'Asics', color: '#b45309' },
-    trial: { name: 'Trial', color: '#7c3aed' },
-    umbrale: { name: 'Umbrale', color: '#be123c' },
-    mountainhardwear: { name: 'Mountain Hardwear', color: '#1d4ed8' },
-    ilgioco: { name: 'Il Gioco', color: '#4d7c0f' },
-    sharkninja: { name: 'SharkNinja', color: '#a21caf' },
-    dermotienda: { name: 'Dermotienda', color: '#0e7490' },
-    herramientastotal: { name: 'Herramientas Total', color: '#c2410c' },
-    delonghi: { name: 'De\'Longhi', color: '#475569' },
-    antartica: { name: 'Antártica', color: '#0f766e' },
-    weplay: { name: 'Weplay', color: '#b45309' },
-    sdn: { name: 'SDN Neumáticos', color: '#7c3aed' },
-    novasalud: { name: 'Novasalud', color: '#be123c' },
-    ebest: { name: 'eBest', color: '#1d4ed8' },
-    bathandbodyworks: { name: 'Bath & Body Works', color: '#4d7c0f' },
-    schilling: { name: 'Schilling', color: '#a21caf' },
-    flex: { name: 'Flex', color: '#0e7490' },
-    headchile: { name: 'Head', color: '#c2410c' },
-    epson: { name: 'Tienda Epson', color: '#475569' },
-    umbro: { name: 'Umbro', color: '#0f766e' },
-    kotting: { name: 'Kotting', color: '#b45309' },
-    roly: { name: 'Roly', color: '#7c3aed' },
-    surprice: { name: 'Surprice', color: '#be123c' },
-    ash: { name: 'Ash', color: '#1d4ed8' },
-    bananarepublic: { name: 'Banana Republic', color: '#4d7c0f' },
-    brooksbrothers: { name: 'Brooks Brothers', color: '#a21caf' },
-    calubags: { name: 'Calu Bags', color: '#0e7490' },
-    dcshoes: { name: 'DC Shoes', color: '#c2410c' },
-    globe: { name: 'Globe', color: '#475569' },
-    guess: { name: 'Guess', color: '#0f766e' },
-    jayson: { name: 'Jayson', color: '#b45309' },
-    kannu: { name: 'Kannu', color: '#7c3aed' },
-    kipling: { name: 'Kipling', color: '#be123c' },
-    magriffe: { name: 'Magriffe', color: '#1d4ed8' },
-    mammut: { name: 'Mammut', color: '#4d7c0f' },
-    mauiandsons: { name: 'Maui and Sons', color: '#a21caf' },
-    mcgregor: { name: 'McGregor', color: '#0e7490' },
-    potros: { name: 'Potros', color: '#c2410c' },
-    rapsodia: { name: 'Rapsodia', color: '#475569' },
-    ripcurl: { name: 'Rip Curl', color: '#0f766e' },
-    rusty: { name: 'Rusty', color: '#b45309' },
-    stoked: { name: 'Stoked', color: '#be123c' },
-    gap: { name: 'Gap', color: '#1d4ed8' },
-    ugg: { name: 'UGG', color: '#4d7c0f' },
-    victoriassecret: { name: 'Victoria\'s Secret', color: '#a21caf' },
-    volcom: { name: 'Volcom', color: '#0e7490' },
-    wa2: { name: 'Wa2', color: '#c2410c' },
-    solotodo: { name: 'SoloTodo', color: '#0d9488' }
+  const CORE_STORE_COLORS = {
+    falabella: '#3f8f3f',
+    ripley: '#7e22ce',
+    paris: '#0284c7',
+    lider: '#2563eb',
+    mercadolibre: '#ca8a04',
+    pcfactory: '#dc2626',
+    sodimac: '#f97316',
+    abc: '#e11d48',
+    jumbo: '#16a34a',
+    hp: '#0096d6',
+    winpy: '#f59e0b',
+    spdigital: '#1e3a8a',
+    santaisabel: '#dc2626',
+    nike: '#111111',
+    sony: '#111827',
+    solotodo: '#0d9488'
   };
+  const STORE_PALETTE = ['#0f766e', '#1d4ed8', '#7c3aed', '#be185d', '#b45309', '#4d7c0f', '#0369a1', '#9f1239', '#0e7490', '#c2410c'];
   const DEFAULT_STORE_COLOR = '#64748b';
+
+  // Directorio vivo: pre-poblado con retailers principales y enriquecido dinámicamente vía /api/status.
+  const STORES = {
+    falabella: { name: 'Falabella', color: CORE_STORE_COLORS.falabella },
+    ripley: { name: 'Ripley', color: CORE_STORE_COLORS.ripley },
+    paris: { name: 'Paris', color: CORE_STORE_COLORS.paris },
+    lider: { name: 'Líder', color: CORE_STORE_COLORS.lider },
+    mercadolibre: { name: 'Mercado Libre', color: CORE_STORE_COLORS.mercadolibre },
+    pcfactory: { name: 'PC Factory', color: CORE_STORE_COLORS.pcfactory },
+    sodimac: { name: 'Sodimac', color: CORE_STORE_COLORS.sodimac },
+    abc: { name: 'ABC', color: CORE_STORE_COLORS.abc },
+    jumbo: { name: 'Jumbo', color: CORE_STORE_COLORS.jumbo },
+    hp: { name: 'HP', color: CORE_STORE_COLORS.hp },
+    winpy: { name: 'Winpy', color: CORE_STORE_COLORS.winpy },
+    spdigital: { name: 'SP Digital', color: CORE_STORE_COLORS.spdigital },
+    santaisabel: { name: 'Santa Isabel', color: CORE_STORE_COLORS.santaisabel },
+    solotodo: { name: 'SoloTodo', color: CORE_STORE_COLORS.solotodo }
+  };
+
+  function storeColor(id) {
+    if (!id) return DEFAULT_STORE_COLOR;
+    if (STORES[id] && STORES[id].color) return STORES[id].color;
+    if (CORE_STORE_COLORS[id]) return CORE_STORE_COLORS[id];
+    let h = 0;
+    for (let i = 0; i < id.length; i += 1) h = ((h << 5) - h + id.charCodeAt(i)) | 0;
+    return STORE_PALETTE[Math.abs(h) % STORE_PALETTE.length];
+  }
+
+  async function loadStoreDirectory() {
+    try {
+      const res = await fetch('/api/status');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!Array.isArray(data.stores)) return;
+      for (const s of data.stores) {
+        if (!s || !s.id) continue;
+        STORES[s.id] = {
+          name: s.name || s.id,
+          color: (STORES[s.id] && STORES[s.id].color) || storeColor(s.id)
+        };
+      }
+      if (state.loaded) renderFilterChips();
+    } catch { /* fallback al directorio base */ }
+  }
+
   const INITIAL_LIMIT = 500;
   const MATCHING_LIMIT = 1000;   // publicaciones que se traen al aplicar un filtro
+  const PAGE_STEP = 50;          // ofertas visibles por página en el feed
   const POLL_MS = 30000;
+  const WS_PING_MS = 25000;
   const NEW_HIGHLIGHT_MS = 8000;
   const MAX_CATEGORY_CHIPS = 10;
 
   const DEFAULT_FILTERS = Object.freeze({
     kind: 'all',        // 'all' | 'glitch' | 'deal'
     minDiscount: 0,     // 0 | 50 | 65 | 80
+    maxPrice: 0,        // 0 = sin tope | 50000 | 200000 | 500000
     stores: [],         // ids de tienda seleccionados (vacío = todas)
     category: '',       // categoría normalizada ('' = todas)
     search: '',
+    verifiedOnly: false,
     watchlistOnly: false,
-    hideExpired: false, // ocultar ofertas que subieron de precio, se agotaron o no se confirman
+    hideExpired: true,  // por defecto ocultar ofertas que subieron de precio o se agotaron
     sortBy: 'recent'    // 'recent' | 'discount' | 'savings'
   });
   const STATUS_POLL_MS = 60000;
@@ -227,13 +125,15 @@
   };
 
   function loadFilters() {
-    const saved = storage.getJSON('glitchhunter_filters_v2', {});
+    const saved = storage.getJSON('glitchhunter_filters_v3', {});
     const f = { ...DEFAULT_FILTERS, stores: [] };
     if (saved && typeof saved === 'object') {
       if (['all', 'glitch', 'deal'].includes(saved.kind)) f.kind = saved.kind;
       if ([0, 50, 65, 80].includes(saved.minDiscount)) f.minDiscount = saved.minDiscount;
+      if ([0, 50000, 200000, 500000].includes(saved.maxPrice)) f.maxPrice = saved.maxPrice;
       if (Array.isArray(saved.stores)) f.stores = saved.stores.filter(s => typeof s === 'string').slice(0, 20);
       if (typeof saved.category === 'string') f.category = saved.category.slice(0, 60);
+      if (typeof saved.verifiedOnly === 'boolean') f.verifiedOnly = saved.verifiedOnly;
       if (typeof saved.watchlistOnly === 'boolean') f.watchlistOnly = saved.watchlistOnly;
       if (typeof saved.hideExpired === 'boolean') f.hideExpired = saved.hideExpired;
       if (['recent', 'discount', 'savings'].includes(saved.sortBy)) f.sortBy = saved.sortBy;
@@ -243,12 +143,13 @@
 
   function saveFilters() {
     const { search, ...rest } = state.filters;
-    storage.setJSON('glitchhunter_filters_v2', rest);
+    storage.setJSON('glitchhunter_filters_v3', rest);
   }
 
   // ---------------------------------------------------------------------------
   // Estado
   // ---------------------------------------------------------------------------
+  const historyCache = new Map();
   const state = {
     posts: new Map(),     // feed_id -> { post, el, derived }
     byProduct: new Map(), // product.id -> feed_id de su publicación más reciente
@@ -256,12 +157,15 @@
     loaded: false,
     filters: loadFilters(),
     appliedSort: 'recent',
+    pageLimit: PAGE_STEP,
     soundEnabled: storage.get('glitchhunter_sound') !== 'false',
     wsConnected: false,
     unseenNew: 0,
     votes: storage.getJSON('glitchhunter_votes', {}) || {},
     statusSince: null,    // marca de tiempo del servidor para pedir solo cambios de vigencia nuevos
-    watchlist: []
+    watchlist: [],
+    watchlistEntries: [], // [{ keyword, max_price }]
+    adminMode: false
   };
 
   // ---------------------------------------------------------------------------
@@ -280,11 +184,15 @@
   function sanitizeUrl(rawUrl) {
     if (!rawUrl) return '#';
     const trimmed = String(rawUrl).trim();
-    // Solo HTTP, HTTPS o rutas relativas seguras
-    if (/^https?:\/\/[^\s"'<>]+$/i.test(trimmed) || /^\/[^\s"'<>]*$/.test(trimmed)) {
+    // Solo HTTP, HTTPS o rutas relativas simples (bloquea javascript: y //protocol-relative)
+    if (/^https?:\/\/[^\s"'<>]+$/i.test(trimmed) || /^\/(?!\/)[^\s"'<>]*$/.test(trimmed)) {
       return trimmed.replace(/"/g, '%22').replace(/'/g, '%27');
     }
     return '#';
+  }
+
+  function sanitizeAttrUrl(rawUrl) {
+    return escapeHtml(sanitizeUrl(rawUrl));
   }
 
   const clpFormatter = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 });
@@ -487,6 +395,54 @@
     };
   }
 
+  function hasVerifiedBacking(post, d) {
+    const verdict = post.verdict || {};
+    return Boolean(
+      verdict.verified_drop
+      || toNum(verdict.baseline_30d) > 0
+      || (toNum(post.market_median_price) > 0 && toNum(post.market_stores_count) >= 2)
+      || (d && d.isGlitch && verdict.evidence_label)
+    );
+  }
+
+  function buildProofTags(post, verdict, d) {
+    const tags = [];
+    tags.push(d.isGlitch
+      ? '<span class="tag tag-glitch">⚡ Posible error de precio</span>'
+      : '<span class="tag tag-deal">🏷️ Oferta</span>');
+    if (verdict.is_missing_zero) {
+      tags.push('<span class="tag tag-zero" title="El precio parece estar ~10 veces más bajo por un cero omitido">~10× bajo lo normal</span>');
+    }
+    const tier = d.isGlitch ? post.risk_tier : null;
+    if (tier === 'irrisorio') {
+      tags.push('<span class="tag tag-risk-high" title="Con descuentos de 95% o más, las tiendas casi siempre anulan la compra">⚠️ Muy probable anulación</span>');
+    } else if (tier === 'plausible') {
+      tags.push('<span class="tag tag-risk-ok" title="Rango donde suele haber más posibilidades de que respeten la compra">✅ Error plausible</span>');
+    }
+    if (toNum(post.bulk_price_count) >= 4) {
+      tags.push(`<span class="tag tag-bulk" title="Varios productos distintos de esta tienda aparecieron al mismo precio: típico error masivo">📦 Mismo precio en ${toNum(post.bulk_price_count)} productos</span>`);
+    }
+    if (d.hasCardPrice) tags.push('<span class="tag tag-card">💳 Precio tarjeta</span>');
+    if (post.__isTest) tags.unshift('<span class="tag tag-test" title="Simulación: no se guarda y desaparece al recargar">🧪 PRUEBA</span>');
+    if (post.is_watchlist_match) tags.push('<span class="tag tag-watch">⭐ Tu watchlist</span>');
+
+    const b30 = toNum(verdict.baseline_30d);
+    const mkt = toNum(post.market_median_price);
+    const mktStores = toNum(post.market_stores_count);
+    if (b30 > 0 && d.best > 0 && d.best < b30 * 0.92) {
+      tags.push(`<span class="tag tag-verified" title="Respaldo histórico real en el radar">✓ Bajó vs su precio 30d (${escapeHtml(formatCLP(b30))})</span>`);
+    } else if (mkt > 0 && mktStores >= 2) {
+      tags.push(`<span class="tag tag-verified" title="Comparado con otras tiendas del mercado">✓ Más barato vs ${mktStores} tiendas</span>`);
+    } else if (verdict.evidence_label) {
+      tags.push(`<span class="tag tag-verified">${escapeHtml(verdict.evidence_label)}</span>`);
+    } else if (verdict.verified_drop) {
+      tags.push('<span class="tag tag-verified">✓ Baja respaldada</span>');
+    } else {
+      tags.push('<span class="tag tag-neutral" title="Aún no tenemos suficiente historial o tiendas comparables para confirmar si el precio antes realmente era mayor">Sin historial suficiente</span>');
+    }
+    return tags;
+  }
+
   // ---------------------------------------------------------------------------
   // Tarjeta de publicación (se crea UNA vez por feed_id)
   // ---------------------------------------------------------------------------
@@ -495,38 +451,21 @@
     const verdict = post.verdict || {};
     // El id de voto es siempre alert_id tal como lo entrega el servidor (nunca se construye aquí)
     const dealId = post.alert_id !== undefined && post.alert_id !== null && post.alert_id !== '' ? String(post.alert_id) : '';
-    const store = STORES[d.storeId];
-    const storeColor = store ? store.color : DEFAULT_STORE_COLOR; // solo colores propios, nunca del servidor
+    const productId = product.id !== undefined && product.id !== null ? String(product.id) : '';
+    const storeColorVal = storeColor(d.storeId);
 
     const safeTitle = escapeHtml(product.title || 'Producto sin título');
     const safeStore = escapeHtml(d.storeName);
-    const safeUrl = sanitizeUrl(post.alert_url || product.url);
-    const rawCart = sanitizeUrl(post.add_to_cart_url || product.add_to_cart_url);
-    const safeCartUrl = rawCart !== '#' && rawCart !== safeUrl ? rawCart : '';
+    const cleanUrl = sanitizeUrl(post.alert_url || product.url);
+    const cleanCart = sanitizeUrl(post.add_to_cart_url || product.add_to_cart_url);
+    const safeUrl = sanitizeAttrUrl(cleanUrl);
+    const safeCartUrl = cleanCart !== '#' && cleanCart !== cleanUrl ? sanitizeAttrUrl(cleanCart) : '';
     const rawImage = product.image_url ? String(product.image_url).trim() : '';
-    const safeImage = /^https?:\/\//i.test(rawImage) ? sanitizeUrl(rawImage) : '';
+    const safeImage = /^https?:\/\//i.test(rawImage) ? sanitizeAttrUrl(rawImage) : '';
     const safeCategory = escapeHtml(categoryLabel(d.category));
 
-    const tags = [];
-    tags.push(d.isGlitch
-      ? '<span class="tag tag-glitch">⚡ Error de precio</span>'
-      : '<span class="tag tag-deal">🏷️ Oferta</span>');
-    if (verdict.is_missing_zero) tags.push('<span class="tag tag-zero" title="El precio parece tener un cero de menos">Falta un cero</span>');
-    // Nivel de riesgo según los casos chilenos documentados (ver core/price_signals.py),
-    // solo en errores de precio: una oferta comercial no es un "error plausible"
+    const tags = buildProofTags(post, verdict, d);
     const riskTier = d.isGlitch ? post.risk_tier : null;
-    if (riskTier === 'irrisorio') {
-      tags.push('<span class="tag tag-risk-high" title="Con descuentos de 95% o más, las tiendas casi siempre anulan la compra y los tribunales suelen darles la razón">⚠️ Precio irrisorio · probable anulación</span>');
-    } else if (riskTier === 'plausible') {
-      tags.push('<span class="tag tag-risk-ok" title="En este rango están la mayoría de los errores que se respetaron o compensaron">✅ Error plausible</span>');
-    }
-    if (toNum(post.bulk_price_count) >= 4) tags.push(`<span class="tag tag-bulk" title="Varios productos distintos de esta tienda aparecieron al mismo precio: típico de un error al cargar el catálogo">📦 Mismo precio en ${toNum(post.bulk_price_count)} productos</span>`);
-    if (post.odd_price) tags.push('<span class="tag tag-odd" title="Los precios del retail terminan en …90 o …00; una cifra rara suele venir de un descuento mal calculado">🔢 Cifra inusual</span>');
-    if (d.hasCardPrice) tags.push('<span class="tag tag-card">💳 Precio tarjeta</span>');
-    if (post.__isTest) tags.unshift('<span class="tag tag-test" title="Simulación: no se guarda y desaparece al recargar">🧪 PRUEBA</span>');
-    if (post.is_watchlist_match) tags.push('<span class="tag tag-watch">⭐ Tu watchlist</span>');
-    if (post.verification_level === 'COMPRABLE') tags.push('<span class="tag tag-verified" title="Confirmado con stock y enlace de compra directa">✓ Comprable</span>');
-    else if (post.verification_level === 'VERIFICADO') tags.push('<span class="tag tag-verified" title="Confirmado en la tienda con stock y precio">✓ Verificado</span>');
 
     let marketHtml = '';
     if (toNum(post.market_median_price) > 0) {
@@ -536,6 +475,10 @@
         ? ` · ${Number(mPct) > 0 ? `${Math.round(Number(mPct))}% más barato` : `${Math.abs(Math.round(Number(mPct)))}% más caro`}`
         : '';
       marketHtml = `<div class="market">🌐 Otras tiendas: <strong>${formatCLP(post.market_median_price)}</strong>${stores ? ` (${stores} tiendas)` : ''}${escapeHtml(mPctTxt)}</div>`;
+    }
+    const min90 = toNum(verdict.min_90d);
+    if (min90 > 0) {
+      marketHtml += `<div class="market">📉 Mínimo visto (90d): <strong>${formatCLP(min90)}</strong></div>`;
     }
 
     // Consejos prácticos (texto fijo, sin datos del servidor)
@@ -560,13 +503,13 @@
     el.setAttribute('aria-label', `${d.isGlitch ? 'Error de precio' : 'Oferta'}: ${product.title || ''}, ${d.discount}% de descuento en ${d.storeName}`);
     el.innerHTML = `
       <a class="post-media" href="${safeUrl}" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true">
-        ${safeImage
+        ${safeImage && safeImage !== '#'
           ? `<img src="${safeImage}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" />`
           : '<span class="img-fallback">🛍️</span>'}
       </a>
       <div class="post-body">
         <div class="post-meta">
-          <span class="store-name"><span class="chip-dot" style="background:${storeColor}"></span>${safeStore}</span>
+          <span class="store-name"><span class="chip-dot" style="background:${storeColorVal}"></span>${safeStore}</span>
           <span aria-hidden="true">·</span>
           <time class="rel-time" datetime="${escapeHtml(d.createdAt || '')}" title="${escapeHtml(formatAbsolute(d.createdAt))}">${escapeHtml(formatRelative(d.createdAt))}</time>
           ${safeCategory ? `<span aria-hidden="true">·</span><span>${safeCategory}</span>` : ''}
@@ -597,12 +540,14 @@
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/><path d="M2 3h3l2.6 12.2a1 1 0 0 0 1 .8h9.7a1 1 0 0 0 1-.8L21 7H6"/></svg>
           Al carro
         </a>` : ''}
+        ${productId && !post.__isTest ? `<button type="button" class="btn-history" data-product-id="${escapeHtml(productId)}" data-best-price="${d.best}" aria-expanded="false">📈 Historial 30d</button>` : ''}
         ${dealId && !post.__isTest ? `<div class="votes" role="group" aria-label="¿Es una oferta real?">
           <span class="votes-label">¿Es real?</span>
           <button type="button" class="vote-btn up${voted === 'up' ? ' voted' : ''}" data-vote="up" data-deal-id="${escapeHtml(dealId)}" aria-label="Sí, es una oferta real" ${voted ? 'disabled' : ''}>👍 <span class="vote-count">${up}</span></button>
           <button type="button" class="vote-btn down${voted === 'down' ? ' voted' : ''}" data-vote="down" data-deal-id="${escapeHtml(dealId)}" aria-label="No, es un falso positivo" ${voted ? 'disabled' : ''}>👎 <span class="vote-count">${down}</span></button>
         </div>` : ''}
-      </div>`;
+      </div>
+      <div class="history-box" hidden></div>`;
 
     renderStatus(el, post);
 
@@ -687,6 +632,8 @@
     if (f.kind === 'glitch' && !d.isGlitch) return false;
     if (f.kind === 'deal' && d.isGlitch) return false;
     if (f.minDiscount && d.discount < f.minDiscount) return false;
+    if (f.maxPrice && d.best > f.maxPrice) return false;
+    if (f.verifiedOnly && !hasVerifiedBacking(entry.post, d)) return false;
     if (f.stores.length && !f.stores.includes(d.storeId)) return false;
     if (f.category && d.category !== f.category) return false;
     if (f.watchlistOnly && !entry.post.is_watchlist_match) return false;
@@ -703,10 +650,12 @@
     let n = 0;
     if (f.kind !== 'all') n++;
     if (f.minDiscount) n++;
+    if (f.maxPrice) n++;
     if (f.stores.length) n++;
     if (f.category) n++;
+    if (f.verifiedOnly) n++;
     if (f.watchlistOnly) n++;
-    if (f.hideExpired) n++;
+    if (!f.hideExpired) n++;
     return n;
   }
 
@@ -729,15 +678,30 @@
     state.appliedSort = state.filters.sortBy;
   }
 
-  function applyFilters() {
-    if (state.appliedSort !== state.filters.sortBy) reorderNodes();
-    let visible = 0;
-    state.posts.forEach(entry => {
-      const show = matches(entry);
+  function applyFilters({ resetPage = false } = {}) {
+    if (resetPage) state.pageLimit = PAGE_STEP;
+    const ordered = sortedEntries();
+    if (state.appliedSort !== state.filters.sortBy) {
+      const list = $('feed-list');
+      if (list) ordered.forEach(e => list.appendChild(e.el));
+      state.appliedSort = state.filters.sortBy;
+    }
+    let matchedTotal = 0;
+    let shown = 0;
+    ordered.forEach(entry => {
+      const ok = matches(entry);
+      if (ok) matchedTotal++;
+      const show = ok && matchedTotal <= state.pageLimit;
       entry.el.hidden = !show;
-      if (show) visible++;
+      if (show) shown++;
     });
-    updateSummary(visible);
+    const moreBtn = $('btn-feed-more');
+    if (moreBtn) {
+      const rem = matchedTotal - shown;
+      moreBtn.hidden = rem <= 0;
+      if (rem > 0) moreBtn.textContent = `Mostrar ${Math.min(PAGE_STEP, rem)} ofertas más (${shown} de ${matchedTotal})`;
+    }
+    updateSummary(matchedTotal);
     syncFilterControls();
     saveFilters();
   }
@@ -800,7 +764,7 @@
           const selected = state.filters.stores.includes(id);
           if (!count && !selected) return '';
           const name = (STORES[id] && STORES[id].name) || id;
-          const color = (STORES[id] && STORES[id].color) || DEFAULT_STORE_COLOR;
+          const color = storeColor(id);
           return `<button type="button" class="chip" data-store="${escapeHtml(id)}" aria-pressed="${selected}">
               <span class="chip-dot" style="background:${color}"></span>${escapeHtml(name)} <span class="chip-count">${count}</span></button>`;
         }).join('');
@@ -823,8 +787,11 @@
     const f = state.filters;
     document.querySelectorAll('.seg-btn[data-kind]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.kind === f.kind)));
     document.querySelectorAll('.seg-btn[data-min]').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.min) === f.minDiscount)));
+    document.querySelectorAll('.seg-btn[data-max-price]').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.maxPrice) === f.maxPrice)));
     document.querySelectorAll('#store-chips .chip').forEach(b => b.setAttribute('aria-pressed', String(f.stores.includes(b.dataset.store))));
     document.querySelectorAll('#category-chips .chip').forEach(b => b.setAttribute('aria-pressed', String(f.category === b.dataset.category)));
+    const vf = $('filter-verified');
+    if (vf) vf.checked = f.verifiedOnly;
     const wl = $('filter-watchlist');
     if (wl) wl.checked = f.watchlistOnly;
     const hx = $('filter-hide-expired');
@@ -843,7 +810,7 @@
     const input = $('search-input');
     if (input) input.value = '';
     deepSetQuery('');
-    applyFilters();
+    applyFilters({ resetPage: true });
   }
 
   // ---------------------------------------------------------------------------
@@ -1056,10 +1023,11 @@
   }
 
   // ---------------------------------------------------------------------------
-  // WebSocket en vivo con reconexión
+  // WebSocket en vivo con heartbeat y reconexión
   // ---------------------------------------------------------------------------
   let socket = null;
   let reconnectTimer = null;
+  let wsPingTimer = null;
 
   function setLiveStatus(connected) {
     state.wsConnected = connected;
@@ -1072,6 +1040,10 @@
     pill.title = connected ? 'Conectado: las ofertas llegan al instante' : 'Sin conexión en vivo: se revisa cada 30 s';
   }
 
+  function stopWsPing() {
+    if (wsPingTimer) { clearInterval(wsPingTimer); wsPingTimer = null; }
+  }
+
   function initWebSocket() {
     if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) return;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -1080,22 +1052,40 @@
       socket.onopen = () => {
         setLiveStatus(true);
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        stopWsPing();
+        wsPingTimer = setInterval(() => {
+          if (socket && socket.readyState === WebSocket.OPEN && document.visibilityState !== 'hidden') {
+            try { socket.send('ping'); } catch { /* noop */ }
+          }
+        }, WS_PING_MS);
         fetchNewPosts({ quiet: true }); // ponerse al día tras una reconexión
       };
       socket.onmessage = (event) => {
+        if (event.data === 'pong') return;
         try {
           const data = JSON.parse(event.data);
-          if (data && (data.type === 'feed_updated' || data.type === 'new_glitch' || (data.alert_id && data.product))) {
+          if (data && (data.type === 'feed_new' || data.type === 'feed_updated' || data.type === 'new_glitch' || (data.alert_id && data.product))) {
             fetchNewPosts();
           } else if (data && data.type === 'feed_status') {
             fetchStatusChanges();
+          } else if (data && data.type === 'deal_corrected' && data.product_id) {
+            const feedId = state.byProduct.get(String(data.product_id));
+            const entry = feedId ? state.posts.get(feedId) : null;
+            if (entry) {
+              entry.post.status = 'expired';
+              entry.post.expired_reason = 'price_up';
+              if (data.new_price) entry.post.price_now = data.new_price;
+              renderStatus(entry.el, entry.post);
+              applyFilters();
+            }
           }
         } catch { /* pings u otros mensajes */ }
       };
       socket.onclose = () => {
         setLiveStatus(false);
+        stopWsPing();
         socket = null;
-        if (!reconnectTimer) {
+        if (!reconnectTimer && document.visibilityState !== 'hidden') {
           reconnectTimer = setTimeout(() => { reconnectTimer = null; initWebSocket(); }, 4000);
         }
       };
@@ -1106,20 +1096,52 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Watchlist
+  // Watchlist (con tope opcional de precio y re-filtrado en vivo)
   // ---------------------------------------------------------------------------
+  function normalizeWatchlistEntries(data) {
+    if (Array.isArray(data && data.entries)) {
+      return data.entries.map(e => ({
+        keyword: String(e.keyword || '').toLowerCase(),
+        max_price: e.max_price ? Number(e.max_price) : null
+      })).filter(e => e.keyword);
+    }
+    return (Array.isArray(data && data.keywords) ? data.keywords : []).map(k => ({
+      keyword: String(k).toLowerCase(),
+      max_price: null
+    }));
+  }
+
+  function refreshFeedWatchlistMatches() {
+    state.posts.forEach(entry => {
+      const title = String((entry.post.product && entry.post.product.title) || '').toLowerCase();
+      const matched = state.watchlistEntries.some(w =>
+        title.includes(w.keyword) && (!w.max_price || entry.derived.best <= w.max_price)
+      );
+      if (Boolean(entry.post.is_watchlist_match) !== matched) {
+        entry.post.is_watchlist_match = matched;
+        const tagsWrap = entry.el.querySelector('.tags');
+        if (tagsWrap) {
+          const old = tagsWrap.querySelector('.tag-watch');
+          if (matched && !old) tagsWrap.insertAdjacentHTML('beforeend', '<span class="tag tag-watch">⭐ Tu watchlist</span>');
+          else if (!matched && old) old.remove();
+        }
+      }
+    });
+    if (state.filters.watchlistOnly) applyFilters({ resetPage: true });
+  }
+
   function renderWatchlist() {
     const list = $('watchlist-list');
     const empty = $('watchlist-empty');
     const count = $('watchlist-count');
-    if (count) { count.textContent = String(state.watchlist.length); count.hidden = state.watchlist.length === 0; }
+    if (count) { count.textContent = String(state.watchlistEntries.length); count.hidden = state.watchlistEntries.length === 0; }
     if (!list) return;
-    list.innerHTML = state.watchlist.map(kw => `
-      <li class="wl-item"><span>${escapeHtml(kw)}</span>
-        <button type="button" class="wl-remove" data-keyword="${escapeHtml(kw)}" aria-label="Quitar ${escapeHtml(kw)} de la watchlist">
+    list.innerHTML = state.watchlistEntries.map(e => `
+      <li class="wl-item"><span>${escapeHtml(e.keyword)}${e.max_price ? `<span class="wl-cap"> · ≤ ${escapeHtml(formatCLP(e.max_price))}</span>` : ''}</span>
+        <button type="button" class="wl-remove" data-keyword="${escapeHtml(e.keyword)}" aria-label="Quitar ${escapeHtml(e.keyword)} de la watchlist">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
         </button></li>`).join('');
-    if (empty) empty.hidden = state.watchlist.length > 0;
+    if (empty) empty.hidden = state.watchlistEntries.length > 0;
   }
 
   async function loadWatchlist() {
@@ -1127,8 +1149,10 @@
       const res = await fetch('/api/watchlist');
       if (!res.ok) return;
       const data = await res.json();
-      state.watchlist = Array.isArray(data.keywords) ? data.keywords.map(String) : [];
+      state.watchlistEntries = normalizeWatchlistEntries(data);
+      state.watchlist = state.watchlistEntries.map(e => e.keyword);
       renderWatchlist();
+      refreshFeedWatchlistMatches();
     } catch { /* offline */ }
   }
 
@@ -1148,25 +1172,30 @@
     return fallback;
   }
 
-  async function addWatchlist(keyword) {
+  async function addWatchlist(keyword, maxPriceRaw = '') {
     const kw = keyword.trim().toLowerCase();
     if (!kw) return;
     if (kw.length < 2 || kw.length > 60) {
       showToast('La palabra debe tener entre 2 y 60 caracteres.', 'Watchlist');
       return;
     }
-    if (state.watchlist.includes(kw)) { showToast(`"${kw}" ya está en tu watchlist.`, 'Watchlist'); return; }
+    const maxPrice = Number(maxPriceRaw);
+    const hasCap = isFinite(maxPrice) && maxPrice > 0;
+    if (state.watchlist.includes(kw) && !hasCap) { showToast(`"${kw}" ya está en tu watchlist.`, 'Watchlist'); return; }
     try {
+      const payload = hasCap ? { keyword: kw, max_price: maxPrice } : { keyword: kw };
       const res = await authenticatedFetch('/api/watchlist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keyword: kw })
+        body: JSON.stringify(payload)
       });
       if (res.ok) {
         const data = await res.json();
-        state.watchlist = Array.isArray(data.keywords) ? data.keywords.map(String) : state.watchlist;
+        state.watchlistEntries = normalizeWatchlistEntries(data);
+        state.watchlist = state.watchlistEntries.map(e => e.keyword);
         renderWatchlist();
-        showToast(`Te avisaremos de ofertas de "${kw}".`, '⭐ Agregado a la watchlist');
+        refreshFeedWatchlistMatches();
+        showToast(hasCap ? `Te avisaremos de "${kw}" hasta ${formatCLP(maxPrice)}.` : `Te avisaremos de ofertas de "${kw}".`, '⭐ Guardado en watchlist');
       } else if (res.status === 422) {
         showToast(await friendlyValidationError(res), 'Palabra no válida');
       } else if (res.status === 401) {
@@ -1184,8 +1213,10 @@
       const res = await authenticatedFetch(`/api/watchlist?keyword=${encodeURIComponent(keyword)}`, { method: 'DELETE' });
       if (res.ok) {
         const data = await res.json();
-        state.watchlist = Array.isArray(data.keywords) ? data.keywords.map(String) : state.watchlist.filter(k => k !== keyword);
+        state.watchlistEntries = normalizeWatchlistEntries(data);
+        state.watchlist = state.watchlistEntries.map(e => e.keyword);
         renderWatchlist();
+        refreshFeedWatchlistMatches();
         showToast(`"${keyword}" se quitó de tu watchlist.`, 'Watchlist');
       } else if (res.status === 401) {
         showToast('Se necesita la clave de API para cambiar la watchlist.', 'No autorizado');
@@ -1442,14 +1473,15 @@
   function deepItemHtml(r) {
     const store = (STORES[r.store_id] && STORES[r.store_id].name) || r.store_name || r.store_id;
     const off = Math.round(Number(r.discount_pct) || 0);
-    const img = r.image_url && sanitizeUrl(r.image_url) !== '#'
-      ? `<img class="deep-img" src="${sanitizeUrl(r.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`
+    const imgUrl = sanitizeUrl(r.image_url);
+    const img = r.image_url && imgUrl !== '#'
+      ? `<img class="deep-img" src="${sanitizeAttrUrl(imgUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`
       : '<span class="deep-img-empty" aria-hidden="true"></span>';
     const normal = Number(r.normal_price) > Number(r.best_price) ? `<s>${formatCLP(r.normal_price)}</s>` : '';
     return `<li class="deep-item">
       ${img}
       <div class="deep-main">
-        <a class="deep-name" href="${sanitizeUrl(r.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.title)}</a>
+        <a class="deep-name" href="${sanitizeAttrUrl(r.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.title)}</a>
         <div class="deep-meta"><span class="deep-store">${escapeHtml(store)}</span>${r.source === 'live' ? '<span class="deep-live">en vivo</span>' : ''}</div>
       </div>
       <div class="deep-price"><strong>${formatCLP(r.best_price)}</strong>${normal}${off > 0 ? `<span class="deep-off${off >= 65 ? ' is-big' : ''}">-${off}%</span>` : ''}</div>
@@ -1506,14 +1538,20 @@
   async function deepPoll() {
     clearTimeout(deep.pollTimer);
     if (!deep.jobId) return;
+    const activeJob = deep.jobId;
+    const activeQuery = deep.liveQuery;
     try {
-      const res = await fetch(`/api/search/live/${encodeURIComponent(deep.jobId)}`);
+      const res = await fetch(`/api/search/live/${encodeURIComponent(activeJob)}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      deepApplyJob(await res.json());
+      const data = await res.json();
+      if (deep.query !== activeQuery || deep.liveQuery !== activeQuery) return;
+      deepApplyJob(data);
     } catch (e) {
-      deep.jobId = null;
-      deepSetStatus('Se perdió la búsqueda en vivo. Intenta de nuevo.');
-      deepProgress(0, 0);
+      if (deep.query === activeQuery) {
+        deep.jobId = null;
+        deepSetStatus('Se perdió la búsqueda en vivo. Intenta de nuevo.');
+        deepProgress(0, 0);
+      }
     }
   }
 
@@ -1539,16 +1577,19 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ q })
       });
+      if (deep.query !== q || deep.liveQuery !== q) return;
       if (res.status === 429) { deep.liveInfo = null; deep.liveQuery = ''; deepRender(); deepSetStatus('Hay otras búsquedas en vivo en curso. Intenta en unos segundos.'); return; }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const job = await res.json();
-      if (deep.liveQuery !== q) return;
+      if (deep.query !== q || deep.liveQuery !== q) return;
       deep.jobId = job.id;
       deepApplyJob(job);
     } catch (e) {
-      deep.liveInfo = null; deep.liveQuery = '';
-      deepRender();
-      deepSetStatus('No se pudo iniciar la búsqueda en vivo.');
+      if (deep.query === q) {
+        deep.liveInfo = null; deep.liveQuery = '';
+        deepRender();
+        deepSetStatus('No se pudo iniciar la búsqueda en vivo.');
+      }
     }
   }
 
@@ -1557,7 +1598,13 @@
     if (q === deep.query) return;
     deep.query = q;
     deep.shown = DEEP_PAGE;
-    if (deep.liveQuery !== q) { clearTimeout(deep.pollTimer); deep.jobId = null; deep.liveInfo = null; }
+    if (deep.liveQuery !== q) {
+      clearTimeout(deep.pollTimer);
+      deep.jobId = null;
+      deep.liveQuery = '';
+      deep.liveInfo = null;
+      deep.live = new Map();
+    }
     deepLoadLocal();
   }
 
@@ -1583,6 +1630,179 @@
     if (search.value) deepSetQuery(search.value);
   }
 
+  function buildSparklineSvg(points, currentPrice) {
+    if (!Array.isArray(points) || points.length < 2) return '';
+    const prices = points.map(p => Number(p.price)).filter(n => isFinite(n) && n > 0);
+    if (prices.length < 2) return '';
+    const min = Math.min(...prices, currentPrice || prices[0]);
+    const max = Math.max(...prices, currentPrice || prices[0]);
+    const span = Math.max(1, max - min);
+    const w = 320;
+    const h = 64;
+    const pad = 6;
+    const coords = prices.map((p, idx) => {
+      const x = pad + (idx / Math.max(1, prices.length - 1)) * (w - pad * 2);
+      const y = h - pad - ((p - min) / span) * (h - pad * 2);
+      return [Number(x.toFixed(1)), Number(y.toFixed(1))];
+    });
+    const linePts = coords.map(c => `${c[0]},${c[1]}`).join(' ');
+    const areaPts = `${coords[0][0]},${h} ${linePts} ${coords[coords.length - 1][0]},${h}`;
+    const last = coords[coords.length - 1];
+    return `
+      <svg class="sparkline-svg" viewBox="0 0 ${w} ${h}" role="img" aria-label="Evolución de precio últimos 30 días">
+        <polygon class="sparkline-area" points="${areaPts}"></polygon>
+        <polyline class="sparkline-line" points="${linePts}"></polyline>
+        <circle class="sparkline-dot" cx="${last[0]}" cy="${last[1]}" r="3.5"></circle>
+      </svg>
+      <div class="sparkline-labels">
+        <span>Mínimo: ${escapeHtml(formatCLP(min))}</span>
+        <span>Máximo: ${escapeHtml(formatCLP(max))}</span>
+      </div>`;
+  }
+
+  function buildHistoryHtml(data, bestPrice) {
+    const points = Array.isArray(data && data.points) ? data.points : [];
+    const med30 = toNum(data && data.median_30d);
+    const min90 = toNum(data && data.min_90d);
+    const daysSpan = Math.round(toNum(data && data.days_span));
+    const headParts = [];
+    if (med30 > 0) headParts.push(`<span>Habitual 30d: <strong>${escapeHtml(formatCLP(med30))}</strong></span>`);
+    if (min90 > 0) headParts.push(`<span>Mínimo 90d: <strong>${escapeHtml(formatCLP(min90))}</strong></span>`);
+    headParts.push(`<span>${points.length} registro(s)${daysSpan > 0 ? ` en ${daysSpan}d` : ''}</span>`);
+    const chart = buildSparklineSvg(points, bestPrice);
+    if (!chart) {
+      return `<div class="history-head">${headParts.join('')}</div><div class="muted">Todavía estamos juntando muestras de este producto para graficar la tendencia.</div>`;
+    }
+    return `<div class="history-head">${headParts.join('')}</div>${chart}`;
+  }
+
+  async function toggleHistoryChart(btn) {
+    const card = btn.closest('.post');
+    const box = card && card.querySelector('.history-box');
+    const pid = btn.dataset.productId;
+    if (!card || !box || !pid) return;
+    const opening = box.hidden;
+    box.hidden = !opening;
+    btn.setAttribute('aria-expanded', String(opening));
+    if (!opening || box.dataset.loaded === '1') return;
+    box.innerHTML = '<span class="muted">Cargando historial de precios…</span>';
+    try {
+      let data = historyCache.get(pid);
+      if (!data) {
+        const res = await fetch(`/api/products/${encodeURIComponent(pid)}/history?days=30`);
+        if (!res.ok) throw new Error('no history');
+        data = await res.json();
+        historyCache.set(pid, data);
+      }
+      box.innerHTML = buildHistoryHtml(data, toNum(btn.dataset.bestPrice));
+      box.dataset.loaded = '1';
+    } catch {
+      box.innerHTML = '<span class="muted">No hay historial previo registrado para este producto aún.</span>';
+      box.dataset.loaded = '1';
+    }
+  }
+
+  function syncVoteButtonsForDeal(dealId, vote, upvotes, downvotes) {
+    document.querySelectorAll(`.votes .vote-btn[data-deal-id="${CSS.escape(dealId)}"]`).forEach(btn => {
+      const bar = btn.closest('.votes');
+      if (!bar) return;
+      bar.querySelectorAll('.vote-btn').forEach(b => {
+        b.disabled = true;
+        b.classList.toggle('voted', b.dataset.vote === vote);
+      });
+      const upC = bar.querySelector('.vote-btn.up .vote-count');
+      const downC = bar.querySelector('.vote-btn.down .vote-count');
+      if (upC) upC.textContent = String(toNum(upvotes));
+      if (downC) downC.textContent = String(toNum(downvotes));
+    });
+  }
+
+  async function submitVote(dealId, vote, reason = null) {
+    const body = reason ? { vote, reason } : { vote };
+    const res = await authenticatedFetch(`/api/deals/${encodeURIComponent(dealId)}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) throw new Error('vote failed');
+    const data = await res.json();
+    syncVoteButtonsForDeal(dealId, vote, data.upvotes, data.downvotes);
+    state.votes[dealId] = vote;
+    storage.setJSON('glitchhunter_votes', state.votes);
+    return data;
+  }
+
+  function openRejectReasons(btn) {
+    const card = btn.closest('.post');
+    const dealId = btn.dataset.dealId;
+    if (!card || !dealId) return;
+    let bar = card.querySelector('.reject-reasons');
+    if (bar) { bar.remove(); return; }
+    bar = document.createElement('div');
+    bar.className = 'reject-reasons';
+    const reasons = [
+      ['Precio inflado', 'Precio inflado'],
+      ['Es accesorio', 'Es accesorio'],
+      ['Sin stock', 'Sin stock'],
+      ['No es oferta', 'No es oferta'],
+      ['Confirmar 👎', '']
+    ];
+    bar.innerHTML = '<span>¿Qué falló?</span>' + reasons.map(([label, val]) =>
+      `<button type="button" class="reason-chip" data-deal-id="${escapeHtml(dealId)}" data-reason="${escapeHtml(val)}">${escapeHtml(label)}</button>`
+    ).join('');
+    card.appendChild(bar);
+  }
+
+  async function handleCardInteraction(e) {
+    const histBtn = e.target.closest('.btn-history');
+    if (histBtn) { toggleHistoryChart(histBtn); return; }
+
+    const reasonBtn = e.target.closest('.reason-chip');
+    if (reasonBtn) {
+      const dealId = reasonBtn.dataset.dealId;
+      const reason = reasonBtn.dataset.reason || null;
+      const bar = reasonBtn.closest('.reject-reasons');
+      if (bar) bar.querySelectorAll('.reason-chip').forEach(b => { b.disabled = true; });
+      try {
+        await submitVote(dealId, 'down', reason);
+        if (bar) bar.remove();
+        showToast(reason ? `Gracias: reportado como "${reason}".` : '¡Gracias! Reportaste un falso positivo.', '👎 Voto registrado');
+      } catch {
+        if (bar) bar.querySelectorAll('.reason-chip').forEach(b => { b.disabled = false; });
+        showToast('No se pudo registrar tu voto.', 'Error');
+      }
+      return;
+    }
+
+    const voteBtn = e.target.closest('.vote-btn');
+    if (!voteBtn || voteBtn.disabled) return;
+    const dealId = voteBtn.dataset.dealId;
+    if (!dealId) return;
+    if (voteBtn.dataset.vote === 'down') {
+      openRejectReasons(voteBtn);
+      return;
+    }
+    const bar = voteBtn.closest('.votes');
+    const buttons = bar ? bar.querySelectorAll('.vote-btn') : [voteBtn];
+    buttons.forEach(b => { b.disabled = true; });
+    try {
+      await submitVote(dealId, 'up');
+      showToast('¡Gracias! Marcaste la oferta como real.', '👍 Voto registrado');
+    } catch {
+      buttons.forEach(b => { b.disabled = false; });
+      showToast('No se pudo registrar tu voto.', 'Error');
+    }
+  }
+
+  function applyAdminMode() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('admin') === '1') storage.set('glitchhunter_admin', 'true');
+    state.adminMode = params.get('admin') === '1' || storage.get('glitchhunter_admin') === 'true';
+    document.querySelectorAll('.admin-only').forEach(el => { el.hidden = !state.adminMode; });
+    const lbl = $('admin-toggle-label');
+    if (lbl) lbl.textContent = state.adminMode ? 'Ocultar herramientas técnicas' : 'Mostrar herramientas técnicas';
+  }
+
   function setupEvents() {
     // Búsqueda (con pequeño retardo)
     const search = $('search-input');
@@ -1592,11 +1812,24 @@
         clearTimeout(searchTimer);
         searchTimer = setTimeout(() => {
           state.filters.search = search.value;
-          applyFilters();
+          applyFilters({ resetPage: true });
         }, 120);
       });
       setupDeepSearch(search);
     }
+
+    // Navegación principal simplificada
+    const navFeed = $('btn-nav-feed');
+    if (navFeed) navFeed.addEventListener('click', () => { closeDrawers(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
+    const navCompare = $('btn-compare');
+    if (navCompare) navCompare.addEventListener('click', () => {
+      closeDrawers();
+      if (search) {
+        search.focus();
+        search.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        showToast('Escribe un producto (ej: iPhone, RTX, notebook) y presiona Enter para comparar entre tiendas.', '🔍 Comparar tiendas', 3500);
+      }
+    });
 
     // Atajo "/" para buscar
     document.addEventListener('keydown', (e) => {
@@ -1612,14 +1845,16 @@
       }
     });
 
-    // Filtros: segmentados, chips, watchlist
+    // Filtros: segmentados, chips, precio, respaldo, watchlist
     $('filters-panel').addEventListener('click', (e) => {
       const kindBtn = e.target.closest('.seg-btn[data-kind]');
       const minBtn = e.target.closest('.seg-btn[data-min]');
+      const maxPriceBtn = e.target.closest('.seg-btn[data-max-price]');
       const storeChip = e.target.closest('.chip[data-store]');
       const catChip = e.target.closest('.chip[data-category]');
       if (kindBtn) state.filters.kind = kindBtn.dataset.kind;
       else if (minBtn) state.filters.minDiscount = Number(minBtn.dataset.min) || 0;
+      else if (maxPriceBtn) state.filters.maxPrice = Number(maxPriceBtn.dataset.maxPrice) || 0;
       else if (storeChip) {
         const id = storeChip.dataset.store;
         state.filters.stores = state.filters.stores.includes(id)
@@ -1629,24 +1864,34 @@
         const c = catChip.dataset.category;
         state.filters.category = state.filters.category === c ? '' : c;
       } else return;
-      applyFilters();
-      if (!catChip) loadMatching();
+      applyFilters({ resetPage: true });
+      if (!catChip && !maxPriceBtn) loadMatching();
     });
 
+    const vfCheck = $('filter-verified');
+    if (vfCheck) vfCheck.addEventListener('change', (e) => {
+      state.filters.verifiedOnly = e.target.checked;
+      applyFilters({ resetPage: true });
+    });
     $('filter-watchlist').addEventListener('change', (e) => {
       state.filters.watchlistOnly = e.target.checked;
-      applyFilters();
+      applyFilters({ resetPage: true });
     });
     $('filter-hide-expired').addEventListener('change', (e) => {
       state.filters.hideExpired = e.target.checked;
-      applyFilters();
+      applyFilters({ resetPage: true });
     });
     $('btn-clear-filters').addEventListener('click', clearFilters);
     $('btn-empty-clear').addEventListener('click', clearFilters);
+    const feedMoreBtn = $('btn-feed-more');
+    if (feedMoreBtn) feedMoreBtn.addEventListener('click', () => {
+      state.pageLimit += PAGE_STEP;
+      applyFilters();
+    });
 
     $('sort-select').addEventListener('change', (e) => {
       state.filters.sortBy = e.target.value;
-      applyFilters();
+      applyFilters({ resetPage: true });
     });
 
     // Mostrar/ocultar filtros en móvil
@@ -1673,6 +1918,8 @@
     // Paneles
     $('btn-watchlist').addEventListener('click', () => openDrawer('drawer-watchlist'));
     $('btn-status').addEventListener('click', () => openDrawer('drawer-status'));
+    const menuStatus = $('btn-menu-status');
+    if (menuStatus) menuStatus.addEventListener('click', () => openDrawer('drawer-status'));
     $('btn-best').addEventListener('click', () => openDrawer('drawer-best'));
     document.querySelectorAll('[data-best]').forEach(b => b.addEventListener('click', () => loadBest(b.dataset.best)));
     document.querySelectorAll('.drawer').forEach(d => {
@@ -1682,16 +1929,25 @@
     $('watchlist-form').addEventListener('submit', (e) => {
       e.preventDefault();
       const input = $('watchlist-input');
+      const priceInput = $('watchlist-max-price');
       const value = input.value;
+      const cap = priceInput ? priceInput.value : '';
       input.value = '';
-      addWatchlist(value);
+      if (priceInput) priceInput.value = '';
+      addWatchlist(value, cap);
     });
     $('watchlist-list').addEventListener('click', (e) => {
       const btn = e.target.closest('.wl-remove');
       if (btn) removeWatchlist(btn.dataset.keyword);
     });
 
-    // Menú Herramientas
+    // Menú Herramientas / Modo técnico
+    const toggleAdminBtn = $('btn-toggle-admin');
+    if (toggleAdminBtn) toggleAdminBtn.addEventListener('click', () => {
+      storage.set('glitchhunter_admin', state.adminMode ? 'false' : 'true');
+      applyAdminMode();
+      closeMenu();
+    });
     $('btn-tools').addEventListener('click', (e) => {
       e.stopPropagation();
       const menu = $('tools-menu');
@@ -1780,37 +2036,17 @@
       updateThemeButton();
     });
 
-    // Votos 👍/👎 (delegación)
-    $('feed-list').addEventListener('click', async (e) => {
-      const btn = e.target.closest('.vote-btn');
-      if (!btn || btn.disabled) return;
-      const dealId = btn.dataset.dealId;
-      const vote = btn.dataset.vote === 'down' ? 'down' : 'up';
-      if (!dealId) return;
-      const bar = btn.closest('.votes');
-      const buttons = bar ? bar.querySelectorAll('.vote-btn') : [btn];
-      buttons.forEach(b => { b.disabled = true; });
-      try {
-        const res = await authenticatedFetch(`/api/deals/${encodeURIComponent(dealId)}/feedback`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ vote })
-        });
-        if (!res.ok) throw new Error('vote failed');
-        const data = await res.json();
-        if (bar) {
-          const upC = bar.querySelector('.vote-btn.up .vote-count');
-          const downC = bar.querySelector('.vote-btn.down .vote-count');
-          if (upC) upC.textContent = String(toNum(data.upvotes));
-          if (downC) downC.textContent = String(toNum(data.downvotes));
-        }
-        btn.classList.add('voted');
-        state.votes[dealId] = vote;
-        storage.setJSON('glitchhunter_votes', state.votes);
-        showToast(vote === 'up' ? '¡Gracias! Marcaste la oferta como real.' : '¡Gracias! Reportaste un falso positivo.', vote === 'up' ? '👍 Voto registrado' : '👎 Voto registrado');
-      } catch {
-        buttons.forEach(b => { b.disabled = false; });
-        showToast('No se pudo registrar tu voto.', 'Error');
+    // Votos 👍/👎 + Gráfico 30d en canal principal y en "Lo mejor"
+    $('feed-list').addEventListener('click', handleCardInteraction);
+    const bestListEl = $('best-list');
+    if (bestListEl) bestListEl.addEventListener('click', handleCardInteraction);
+
+    // Pausar polling cuando la pestaña está oculta y sincronizar al volver
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        initWebSocket();
+        fetchNewPosts({ quiet: true });
+        fetchStatusChanges();
       }
     });
 
@@ -1820,30 +2056,39 @@
 
   /** Solo actualiza el texto "hace N min" (la hora original queda fija). */
   function refreshRelativeTimes() {
+    if (document.visibilityState === 'hidden') return;
     document.querySelectorAll('#feed-list time.rel-time').forEach(t => {
       const iso = t.getAttribute('datetime');
       const txt = formatRelative(iso);
       if (t.textContent !== txt) t.textContent = txt;
     });
-    updateSummary([...state.posts.values()].filter(e => !e.el.hidden).length);
+    updateSummary([...state.posts.values()].filter(matches).length);
   }
 
   // ---------------------------------------------------------------------------
   // Inicio
   // ---------------------------------------------------------------------------
   function init() {
+    applyAdminMode();
     updateApiKeyUI();
     updateSoundButton();
     updateThemeButton();
     syncFilterControls();
     setupEvents();
+    loadStoreDirectory();
     // La vigencia inicial ya viene en /api/feed; esta primera consulta solo fija el punto de partida
     loadFeed().then(() => { fetchStatusChanges(); initWebSocket(); });
     loadWatchlist();
-    // Respaldo cada 30 s por si falla el WebSocket: solo pide publicaciones NUEVAS (after_id).
-    setInterval(() => fetchNewPosts(), POLL_MS);
+    // Respaldo cada 30 s solo si WS cayó y la pestaña está visible.
+    setInterval(() => {
+      if (document.visibilityState === 'hidden' || state.wsConnected) return;
+      fetchNewPosts();
+    }, POLL_MS);
     setInterval(refreshRelativeTimes, 60000);
-    setInterval(fetchStatusChanges, STATUS_POLL_MS);
+    setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      fetchStatusChanges();
+    }, STATUS_POLL_MS);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

@@ -291,8 +291,9 @@ class MathAnomalyDetector:
         # Detección de posible contradicción si baseline histórico indica que el descuento es falso (CyberDay bait)
         baseline_contradiction = False
         if has_baseline and discount_baseline is not None:
-            if meets_normal_threshold and discount_baseline < 20.0 and not is_missing_zero:
+            if (meets_normal_threshold or is_missing_zero) and discount_baseline < 20.0:
                 baseline_contradiction = True
+                is_missing_zero = False
 
         # 5. Descuento y ahorro representativos del dictamen
         # Si la caída solo se ve contra nuestro historial (la tienda no muestra precio tachado, o el

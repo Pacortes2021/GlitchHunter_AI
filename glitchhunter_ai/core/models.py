@@ -52,6 +52,8 @@ class ProductItem(BaseModel):
     in_stock: bool = Field(default=True, description="Indica si el producto tiene stock disponible")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Fecha y hora de captura")
     source: Optional[str] = Field(default=None, description="Origen del dato: 'direct' (tienda), 'solotodo' o 'knasta' (agregador)")
+    knasta_state: Optional[str] = Field(default=None, description="Estado reportado por Knasta (OPPORTUNITY, BELOW_HABITUAL, etc.)")
+    knasta_has_habitual: bool = Field(default=False, description="True si Knasta reportó habitual_price numérico > 0")
 
     @property
     def best_price(self) -> float:
@@ -127,6 +129,16 @@ class GlitchVerdict(BaseModel):
     market_match_method: Optional[str] = Field(default=None, description="Método de emparejamiento ('solotodo' o 'model_code')")
     market_matched_model: Optional[str] = Field(default=None, description="Código de modelo exacto emparejado")
     user_trust_modifier: Optional[float] = Field(default=None, description="Modificador de confianza (-15 a +5) por feedback histórico")
+    evidence_source: Optional[str] = Field(default=None, description="Fuente de prueba independiente (historial_30d, mercado, knasta_habitual, carga_masiva, missing_zero_tech, solo_precio_lista)")
+    evidence_label: Optional[str] = Field(default=None, description="Explicación legible de la evidencia para usuario final")
+    baseline_30d: Optional[float] = Field(default=None, description="Mediana de precio real últimos 30 días")
+    baseline_90d: Optional[float] = Field(default=None, description="Mediana de precio real últimos 90 días")
+    min_90d: Optional[float] = Field(default=None, description="Precio mínimo observado en últimos 90 días")
+    history_days: float = Field(default=0.0, description="Días de cobertura histórica en BD")
+    modified_z_score: Optional[float] = Field(default=None, description="Modified Z-Score robusto (MAD)")
+    inflation_warning: bool = Field(default=False, description="True si existe señal de precio normal inflado en tienda o pre-evento")
+    risk_tier_label: Optional[str] = Field(default=None, description="'irrisorio' (>=95%) o 'plausible' (60-95%)")
+    verified_drop: bool = Field(default=False, description="True si la baja está respaldada por evidencia independiente de la tienda")
     reason: str = Field(..., description="Explicación detallada del veredicto para el usuario / log")
 
 

@@ -35,7 +35,7 @@ MODEL_PATTERNS = [
     # 6. Smartphones Samsung / Apple
     re.compile(r"\b(SM-[A-Za-z]\d{3}[A-Za-z0-9]*)\b", re.IGNORECASE),
     # iPhone solo junto a su capacidad (ej: "iPhone 15 Pro 256GB"): sin ella, 128GB y 1TB tendrían la misma mediana
-    re.compile(r"\b(iPhone\s*1[1-6](?:\s*(?:Pro(?:\s*Max)?|Plus|Mini))?)\b(?:(?!\d+\s*(?:GB|TB)).){0,40}?(\d{2,4}\s*(?:GB|TB))", re.IGNORECASE),
+    re.compile(r"\b(iPhone\s*1[1-9](?:\s*(?:Pro(?:\s*Max)?|Plus|Mini|Air|e))?)\b(?:(?!\d+\s*(?:GB|TB)).){0,40}?(\d{2,4}\s*(?:GB|TB))", re.IGNORECASE),
 
     # 7. Consolas: "PlayStation 5" / "Xbox Series X" son nombres de línea, no de modelo (aparecen en
     #    controles, juegos y ediciones distintas), por lo que no se usan para comparar precios.
@@ -43,8 +43,12 @@ MODEL_PATTERNS = [
     # 8. Códigos de parte explícitos entre corchetes: [A0DH7LA], [QN65S90C], etc.
     re.compile(r"\[([A-Za-z0-9\-]{4,15})\]"),
 
-    # 9. Monitores y Laptops específicas (ej: AW3423DWF, 14-FB0004LA)
-    re.compile(r"\b([A-Za-z]{1,4}\d{2,4}[A-Za-z0-9\-]{2,10})\b", re.IGNORECASE),
+    # 9. Monitores y Laptops específicas (ej: AW3423DWF, 14-FB0004LA), evitando códigos de unidad/estándar
+    re.compile(
+        r"\b(?!(?:DDR|PCI|USB|LED|OLED|QLED|UHD|FHD|RGB|FPS|DPI|SPF|ISO|SKU|MOD|VER|REV|ATX)\d)"
+        r"([A-Za-z]{1,4}\d{2,4}(?!\s*(?:ML|MG|GR|KG|CM|MM|OZ|LB|HZ|GB|TB|MB)\b)[A-Za-z0-9\-]{2,10})\b",
+        re.IGNORECASE,
+    ),
 ]
 
 IGNORED_TAG_KEYWORDS = {

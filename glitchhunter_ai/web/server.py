@@ -325,7 +325,7 @@ async def lifespan(app: FastAPI):
     if FORWARD_TO_URL:
         if not FORWARD_API_KEY:
             logger.warning("⚠️ [Reenvío] FORWARD_TO_URL sin FORWARD_API_KEY: el servidor de destino rechazará las lecturas.")
-        forwarder = Forwarder(FORWARD_TO_URL, FORWARD_API_KEY).start()
+        forwarder = Forwarder(FORWARD_TO_URL, FORWARD_API_KEY, queue_dir=DATA_DIR / "forward_queue").start()
         pipeline.forwarder = forwarder
     direct_task = None
 
@@ -488,7 +488,41 @@ async def websocket_glitches_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
-def format_glitch_record(row: Dict[str, Any]) -> Dict[str, Any]:
+def _match_watchlist_entries(
+    title: str,
+    best_price: Optional[float] = None,
+    entries: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    """Evalúa coincidencia contra entradas de watchlist en memoria (evita consultas N+1)."""
+    if not title:
+        return False
+    wl = entries if entries is not None else db.get_watchlist_entries()
+    t_lower = title.lower()
+    for entry in wl:
+        kw = str(entry.get("keyword") or "").lower()
+        if kw and kw in t_lower:
+            cap = entry.get("max_price")
+            if cap is None or best_price is None or best_price <= float(cap):
+                return True
+    return False
+
+
+def _attach_feedback_votes(cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Hidrata `upvotes` y `downvotes` en lote para tarjetas de feed / lo mejor."""
+    if not cards:
+        return cards
+    votes = db.get_feedback_counts([c.get("alert_id") for c in cards if c.get("alert_id")])
+    for c in cards:
+        v = votes.get(c.get("alert_id"), {})
+        c["upvotes"] = int(v.get("up", c.get("upvotes") or 0))
+        c["downvotes"] = int(v.get("down", c.get("downvotes") or 0))
+    return cards
+
+
+def format_glitch_record(
+    row: Dict[str, Any],
+    watchlist_entries: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """Convierte un registro de glitch de la BD al formato anidado esperado por app.js."""
     store_id = row.get("store_id") or "retail"
     store_name = next((s["name"] for s in STORES if s["id"] == store_id), store_id.title())
@@ -502,14 +536,36 @@ def format_glitch_record(row: Dict[str, Any]) -> Dict[str, Any]:
     prod_url = row.get("url") or ""
     prod_id = row.get("product_id") or ""
     title = row.get("title") or "Producto"
+    card_raw = row.get("card_price")
+    best_p = float(card_raw) if card_raw is not None and 0 < float(card_raw) < current_price else current_price
 
     sniper_url = generate_direct_add_to_cart_url(store_id, prod_url, prod_id)
-    is_watchlist = bool(db.is_in_watchlist(title))
+    is_watchlist = _match_watchlist_entries(title, best_price=best_p, entries=watchlist_entries)
     real_latency = global_store_health.get_store_latency(store_id)
     verif_level = row.get("verification_level") or "VERIFICADO"
     if verif_level == "COMPRABLE":
         # Registros antiguos marcados COMPRABLE solo por el patrón del enlace Sniper (sin validar)
         verif_level = "VERIFICADO"
+
+    mkt_median = float(row["market_median_price"]) if row.get("market_median_price") is not None and float(row["market_median_price"]) > 0 else None
+    mkt_cnt = int(row.get("market_stores_count") or 0)
+    verdict_data: Dict[str, Any] = {
+        "is_glitch": True,
+        "severity": row.get("severity") or "MODERADO",
+        "confidence_score": float(row.get("confidence_score") or 90.0),
+        "discount_percentage": discount_pct,
+        "absolute_savings_clp": savings_clp,
+        "is_missing_zero": missing_zero,
+        "is_fake_inflation": False,
+        "verification_level": verif_level,
+        "reason": row.get("reason") or f"Descuento de {discount_pct:.1f}%",
+        "verified_drop": bool(row.get("verified_drop")) if "verified_drop" in row else bool(mkt_median and mkt_cnt >= 2),
+        "evidence_source": row.get("evidence_source") or ("market" if mkt_median and mkt_cnt >= 2 else None),
+        "evidence_label": row.get("evidence_label") or (f"Más barato que {mkt_cnt} tiendas" if mkt_median and mkt_cnt >= 2 else None),
+    }
+    for extra_key in ("baseline_30d", "baseline_90d", "min_90d", "history_days", "modified_z_score", "inflation_warning", "risk_tier_label"):
+        if row.get(extra_key) is not None:
+            verdict_data[extra_key] = row[extra_key]
 
     return {
         "alert_id": row.get("id") or f"ALT-{store_id.upper()}-{uuid.uuid4().hex[:6].upper()}",
@@ -521,9 +577,9 @@ def format_glitch_record(row: Dict[str, Any]) -> Dict[str, Any]:
         "alert_url": prod_url,
         "add_to_cart_url": sniper_url,
         "is_watchlist_match": is_watchlist,
-        "market_median_price": float(row["market_median_price"]) if row.get("market_median_price") is not None and float(row["market_median_price"]) > 0 else None,
+        "market_median_price": mkt_median,
         "market_discount_pct": float(row["market_discount_pct"]) if row.get("market_discount_pct") is not None else None,
-        "market_stores_count": int(row.get("market_stores_count") or 0),
+        "market_stores_count": mkt_cnt,
         "market_match_method": row.get("market_match_method"),
         "market_matched_model": row.get("market_matched_model"),
         "upvotes": int(row.get("upvotes") or 0),
@@ -543,17 +599,7 @@ def format_glitch_record(row: Dict[str, Any]) -> Dict[str, Any]:
             "image_url": row.get("image_url") or "",
             "in_stock": True,
         },
-        "verdict": {
-            "is_glitch": True,
-            "severity": row.get("severity") or "MODERADO",
-            "confidence_score": float(row.get("confidence_score") or 90.0),
-            "discount_percentage": discount_pct,
-            "absolute_savings_clp": savings_clp,
-            "is_missing_zero": missing_zero,
-            "is_fake_inflation": False,
-            "verification_level": verif_level,
-            "reason": row.get("reason") or f"Descuento de {discount_pct:.1f}%",
-        },
+        "verdict": verdict_data,
     }
 
 
@@ -567,19 +613,25 @@ async def get_glitches(
     Retorna la lista de alertas de glitches registradas en la base de datos.
     Soporta filtros por tienda y severidad.
     """
-    raw_glitches = db.get_recent_glitches(limit=limit)
-    formatted = [format_glitch_record(g) for g in raw_glitches]
+    def _load() -> List[Dict[str, Any]]:
+        raw_glitches = db.get_recent_glitches(limit=limit)
+        wl_entries = db.get_watchlist_entries()
+        formatted = [format_glitch_record(g, watchlist_entries=wl_entries) for g in raw_glitches]
+        if store_id:
+            formatted = [g for g in formatted if g["product"]["store_id"].lower() == store_id.lower()]
+        if severity:
+            sev_upper = severity.upper()
+            formatted = [g for g in formatted if (g["verdict"]["severity"] or "").upper() == sev_upper]
+        return formatted
 
-    if store_id:
-        formatted = [g for g in formatted if g["product"]["store_id"].lower() == store_id.lower()]
-    if severity:
-        sev_upper = severity.upper()
-        formatted = [g for g in formatted if (g["verdict"]["severity"] or "").upper() == sev_upper]
-
-    return formatted
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _load)
 
 
-def format_commercial_deal_record(row: Dict[str, Any]) -> Dict[str, Any]:
+def format_commercial_deal_record(
+    row: Dict[str, Any],
+    watchlist_entries: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """Convierte un registro de oferta comercial (40% - 64%) al formato anidado esperado."""
     store_id = row.get("store_id") or "retail"
     store_name = next((s["name"] for s in STORES if s["id"] == store_id), store_id.title())
@@ -590,9 +642,28 @@ def format_commercial_deal_record(row: Dict[str, Any]) -> Dict[str, Any]:
     prod_url = row.get("url") or ""
     prod_id = row.get("product_id") or ""
     title = row.get("title") or "Producto en Oferta"
+    card_raw = row.get("card_price")
+    best_p = float(card_raw) if card_raw is not None and 0 < float(card_raw) < current_price else current_price
 
     sniper_url = generate_direct_add_to_cart_url(store_id, prod_url, prod_id)
-    is_watchlist = bool(db.is_in_watchlist(title))
+    is_watchlist = _match_watchlist_entries(title, best_price=best_p, entries=watchlist_entries)
+
+    verdict_data: Dict[str, Any] = {
+        "is_glitch": False,
+        "severity": "MODERADO",
+        "confidence_score": 80.0,
+        "discount_percentage": discount_pct,
+        "absolute_savings_clp": savings_clp,
+        "is_missing_zero": False,
+        "is_fake_inflation": False,
+        "verified_drop": bool(row.get("verified_drop")) if "verified_drop" in row else False,
+        "evidence_source": row.get("evidence_source"),
+        "evidence_label": row.get("evidence_label"),
+        "reason": f"Descuento comercial destacado de {discount_pct:.1f}%",
+    }
+    for extra_key in ("baseline_30d", "baseline_90d", "min_90d", "history_days"):
+        if row.get(extra_key) is not None:
+            verdict_data[extra_key] = row[extra_key]
 
     return {
         "alert_id": f"DEAL-{store_id.upper()}-{int(hashlib.sha1(prod_id.encode()).hexdigest(), 16) % 100000000}",
@@ -617,16 +688,7 @@ def format_commercial_deal_record(row: Dict[str, Any]) -> Dict[str, Any]:
             "image_url": row.get("image_url") or "",
             "in_stock": True,
         },
-        "verdict": {
-            "is_glitch": False,
-            "severity": "MODERADO",
-            "confidence_score": 80.0,
-            "discount_percentage": discount_pct,
-            "absolute_savings_clp": savings_clp,
-            "is_missing_zero": False,
-            "is_fake_inflation": False,
-            "reason": f"Descuento comercial destacado de {discount_pct:.1f}%",
-        },
+        "verdict": verdict_data,
     }
 
 
@@ -643,29 +705,44 @@ async def get_deals(
     """
     if min_discount > max_discount:
         raise HTTPException(status_code=422, detail="min_discount no puede ser mayor que max_discount.")
-    raw_deals = db.get_commercial_deals(
-        min_discount=min_discount,
-        max_discount=max_discount,
-        limit=limit,
-        store_id=store_id,
-        max_age_hours=24,
-    )
-    return [format_commercial_deal_record(d) for d in raw_deals]
+
+    def _load() -> List[Dict[str, Any]]:
+        raw_deals = db.get_commercial_deals(
+            min_discount=min_discount,
+            max_discount=max_discount,
+            limit=limit,
+            store_id=store_id,
+            max_age_hours=24,
+        )
+        wl_entries = db.get_watchlist_entries()
+        return [format_commercial_deal_record(d, watchlist_entries=wl_entries) for d in raw_deals]
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _load)
 
 
 STORE_NAMES: Dict[str, str] = {s["id"]: s["name"] for s in STORES}
 
 
-def format_feed_post(post: Dict[str, Any]) -> Dict[str, Any]:
+def format_feed_post(
+    post: Dict[str, Any],
+    watchlist_entries: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """Publicación del canal con el formato de tarjeta que espera app.js (precios y hora fijos)."""
     payload = dict(post["payload"])
     if post["kind"] == "deal":
         payload["timestamp"] = post["received_at"]
-        card = format_commercial_deal_record(payload)
+        card = format_commercial_deal_record(payload, watchlist_entries=watchlist_entries)
         # El voto se registra por producto: así el modificador de confianza por categoría aprende
         card["alert_id"] = post["product_id"]
     else:
         card = payload
+        if watchlist_entries is not None:
+            p = card.get("product") or {}
+            title = str(p.get("title") or "")
+            card["is_watchlist_match"] = _match_watchlist_entries(
+                title, best_price=post.get("best_price"), entries=watchlist_entries
+            )
     # Un solo nombre por tienda: cada scraper usa el suyo ("Líder" / "Líder Chile", "Paris" / "Paris.cl")
     product = card.get("product") or {}
     product["store_name"] = STORE_NAMES.get(product.get("store_id") or post["store_id"], product.get("store_name"))
@@ -676,6 +753,15 @@ def format_feed_post(post: Dict[str, Any]) -> Dict[str, Any]:
     card["feed_kind"] = post["kind"]
     # Señales históricas: nivel de riesgo de anulación y cifra de precio inusual
     verdict = card.get("verdict") or {}
+    if "verified_drop" not in verdict:
+        mkt_cnt = int(card.get("market_stores_count") or 0)
+        verdict["verified_drop"] = bool(
+            (card.get("market_median_price") and mkt_cnt >= 2)
+            or (verdict.get("baseline_30d") and post.get("best_price") and post["best_price"] < float(verdict["baseline_30d"]) * 0.70)
+        )
+    if not verdict.get("evidence_label") and card.get("market_median_price") and int(card.get("market_stores_count") or 0) >= 2:
+        verdict["evidence_label"] = f"Más barato que {int(card['market_stores_count'])} tiendas"
+    card["verdict"] = verdict
     discount = verdict.get("discount_percentage", post.get("discount_pct"))
     card["risk_tier"] = risk_tier(discount)
     card["odd_price"] = is_odd_price(post.get("best_price"), post.get("store_id"))
@@ -701,14 +787,15 @@ async def get_feed(
     Ordenado de la más reciente a la más antigua. Los filtros traen también publicaciones antiguas.
     """
     store_list = [s.strip().lower() for s in (stores or "").split(",") if s.strip()][:50]
-    posts = db.get_feed(after_id=after_id, limit=limit, min_discount=min_discount, kind=kind, stores=store_list)
-    cards = [format_feed_post(p) for p in posts]
-    votes = db.get_feedback_counts([c.get("alert_id") for c in cards])
-    for c in cards:
-        v = votes.get(c.get("alert_id"), {})
-        c["upvotes"] = v.get("up", 0)
-        c["downvotes"] = v.get("down", 0)
-    return cards
+
+    def _load() -> List[Dict[str, Any]]:
+        posts = db.get_feed(after_id=after_id, limit=limit, min_discount=min_discount, kind=kind, stores=store_list)
+        wl_entries = db.get_watchlist_entries()
+        cards = [format_feed_post(p, watchlist_entries=wl_entries) for p in posts]
+        return _attach_feedback_votes(cards)
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _load)
 
 
 @app.get("/api/feed/status")
@@ -719,6 +806,8 @@ async def get_feed_status(
     Cambios de vigencia de las publicaciones (expirada / vigente otra vez), para actualizar las
     tarjetas ya mostradas sin volver a descargar ni dibujar el canal. Usa `now` como próximo `since`.
     """
+    loop = asyncio.get_running_loop()
+    rows = await loop.run_in_executor(None, db.get_feed_status_changes, since)
     return {
         "now": datetime.now(timezone.utc).isoformat(),
         "changes": [
@@ -729,7 +818,7 @@ async def get_feed_status(
                 "status_changed_at": c["status_changed_at"],
                 "price_now": c["price_now"],
             }
-            for c in db.get_feed_status_changes(since)
+            for c in rows
         ],
     }
 
@@ -777,8 +866,12 @@ async def get_live_search(job_id: str):
     return job
 
 
-def _best_card(post: Dict[str, Any], rank: int) -> Dict[str, Any]:
-    card = format_feed_post(post)
+def _best_card(
+    post: Dict[str, Any],
+    rank: int,
+    watchlist_entries: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    card = format_feed_post(post, watchlist_entries=watchlist_entries)
     card["best_rank"] = rank
     card["best_score"] = post.get("best_score")
     card["best_reasons"] = post.get("best_reasons") or []
@@ -793,11 +886,14 @@ async def get_best(
     active: bool = Query(False, description="Solo las que siguen vigentes"),
 ):
     """Las mejores ofertas del período según el curador (descuento, ahorro, evidencia, historial, votos)."""
+    def _load() -> List[Dict[str, Any]]:
+        posts = best_deals.rank(days=days, limit=limit, per_store=per_store, only_active=active)
+        wl_entries = db.get_watchlist_entries()
+        cards = [_best_card(p, i + 1, watchlist_entries=wl_entries) for i, p in enumerate(posts)]
+        return _attach_feedback_votes(cards)
+
     loop = asyncio.get_running_loop()
-    posts = await loop.run_in_executor(
-        None, lambda: best_deals.rank(days=days, limit=limit, per_store=per_store, only_active=active)
-    )
-    return [_best_card(p, i + 1) for i, p in enumerate(posts)]
+    return await loop.run_in_executor(None, _load)
 
 
 @app.get("/api/best/history")
@@ -806,9 +902,45 @@ async def get_best_history(
     per_day: int = Query(5, ge=1, le=20),
 ):
     """El top que el curador guardó cada día (las mejores ofertas pasadas, aunque ya hayan expirado)."""
+    def _load() -> List[Dict[str, Any]]:
+        rows = best_deals.history(days=days, per_day=per_day)
+        wl_entries = db.get_watchlist_entries()
+        all_cards: List[Dict[str, Any]] = []
+        result = []
+        for r in rows:
+            day_cards = [_best_card(p, i + 1, watchlist_entries=wl_entries) for i, p in enumerate(r["posts"])]
+            all_cards.extend(day_cards)
+            result.append({"day": r["day"], "posts": day_cards})
+        _attach_feedback_votes(all_cards)
+        return result
+
     loop = asyncio.get_running_loop()
-    rows = await loop.run_in_executor(None, lambda: best_deals.history(days=days, per_day=per_day))
-    return [{"day": r["day"], "posts": [_best_card(p, i + 1) for i, p in enumerate(r["posts"])]} for r in rows]
+    return await loop.run_in_executor(None, _load)
+
+
+@app.get("/api/products/{product_id}/history")
+async def get_product_price_history(
+    product_id: str,
+    days: int = Query(90, ge=1, le=365, description="Días de historial a resumir"),
+):
+    """Resumen estadístico y serie temporal de precios de un producto para gráficos 30d/90d."""
+    def _load() -> Optional[Dict[str, Any]]:
+        product = db.get_product(product_id)
+        summary = db.get_price_history_summary(product_id, days=days)
+        if not product and not summary.get("points"):
+            return None
+        return {
+            "product_id": product_id,
+            "product": product,
+            "days": days,
+            **summary,
+        }
+
+    loop = asyncio.get_running_loop()
+    payload = await loop.run_in_executor(None, _load)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Producto o historial no encontrado.")
+    return payload
 
 
 class IngestRequest(BaseModel):
@@ -947,7 +1079,8 @@ async def inject_test_glitch():
     )
 
     # El broadcast WebSocket lo realiza pipeline.on_glitch_callback
-    alert = pipeline.process_product(product, send_notifications=False)
+    loop = asyncio.get_running_loop()
+    alert = await loop.run_in_executor(None, lambda: pipeline.process_product(product, send_notifications=False))
     if alert:
         return alert.model_dump(mode="json")
 
@@ -957,7 +1090,8 @@ async def inject_test_glitch():
 @app.get("/api/stats")
 async def get_stats():
     """Retorna métricas acumuladas del sistema: productos, glitches y ahorro total en CLP."""
-    return db.get_stats()
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, db.get_stats)
 
 
 @app.get("/api/status")
@@ -999,13 +1133,18 @@ async def submit_deal_feedback(deal_id: str, payload: DealFeedbackRequest):
     Registra el voto de la comunidad sobre un glitch u oferta comercial.
     No requiere clave administrativa (permite recopilar feedback libre de los usuarios).
     """
-    if not db.offer_exists(deal_id):
+    loop = asyncio.get_running_loop()
+    exists = await loop.run_in_executor(None, db.offer_exists, deal_id)
+    if not exists:
         raise HTTPException(status_code=404, detail="Oferta no encontrada.")
     try:
-        res = db.record_deal_feedback(
-            deal_id=deal_id,
-            vote=payload.vote,
-            reason=payload.reason,
+        res = await loop.run_in_executor(
+            None,
+            lambda: db.record_deal_feedback(
+                deal_id=deal_id,
+                vote=payload.vote,
+                reason=payload.reason,
+            ),
         )
         return {
             "status": "success",
@@ -1027,7 +1166,8 @@ async def get_feedback_statistics():
     Retorna métricas globales de satisfacción y precisión del radar según feedback de usuarios.
     """
     try:
-        return db.get_feedback_stats()
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, db.get_feedback_stats)
     except Exception as exc:
         logger.error(f"Error al obtener estadísticas de feedback: {exc}")
         raise HTTPException(status_code=500, detail="Error interno al obtener estadísticas de feedback")
@@ -1035,6 +1175,7 @@ async def get_feedback_statistics():
 
 class WatchlistRequest(BaseModel):
     keyword: str
+    max_price: Optional[float] = Field(None, gt=0, description="Precio máximo opcional en CLP")
 
     @field_validator("keyword")
     @classmethod
@@ -1045,40 +1186,55 @@ class WatchlistRequest(BaseModel):
         return v
 
 
+def _watchlist_response(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    entries = db.get_watchlist_entries()
+    out: Dict[str, Any] = {
+        "keywords": [e["keyword"] for e in entries],
+        "entries": entries,
+    }
+    if extra:
+        out.update(extra)
+    return out
+
+
 @app.get("/api/watchlist")
 async def get_watchlist():
     """Retorna las palabras clave prioritarias configuradas en la watchlist."""
-    return {"keywords": db.get_watchlist_keywords()}
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _watchlist_response)
 
 
 @app.post("/api/watchlist", dependencies=[Depends(verify_admin_key)])
 async def add_watchlist(payload: WatchlistRequest):
-    """Agrega una nueva palabra clave a la watchlist del usuario."""
-    success = db.add_watchlist_keyword(payload.keyword)
-    return {
-        "success": success,
-        "keywords": db.get_watchlist_keywords(),
-    }
+    """Agrega una nueva palabra clave a la watchlist del usuario (con precio máximo opcional)."""
+    def _op() -> Dict[str, Any]:
+        success = db.add_watchlist_keyword(payload.keyword, max_price=payload.max_price)
+        return _watchlist_response({"success": success})
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _op)
 
 
 @app.delete("/api/watchlist", dependencies=[Depends(verify_admin_key)])
 async def delete_watchlist_by_query(keyword: str = Query(..., min_length=1, max_length=200)):
     """Elimina una palabra clave (por query param: admite '/' y otros caracteres especiales)."""
-    removed = db.remove_watchlist_keyword(keyword)
-    return {
-        "success": removed,
-        "keywords": db.get_watchlist_keywords(),
-    }
+    def _op() -> Dict[str, Any]:
+        removed = db.remove_watchlist_keyword(keyword)
+        return _watchlist_response({"success": removed})
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _op)
 
 
 @app.delete("/api/watchlist/{keyword:path}", dependencies=[Depends(verify_admin_key)])
 async def delete_watchlist(keyword: str):
     """Elimina una palabra clave de la watchlist."""
-    removed = db.remove_watchlist_keyword(keyword)
-    return {
-        "success": removed,
-        "keywords": db.get_watchlist_keywords(),
-    }
+    def _op() -> Dict[str, Any]:
+        removed = db.remove_watchlist_keyword(keyword)
+        return _watchlist_response({"success": removed})
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _op)
 
 
 @app.post("/api/watchlist/scan", dependencies=[Depends(verify_admin_key)])

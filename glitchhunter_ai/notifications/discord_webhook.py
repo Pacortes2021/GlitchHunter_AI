@@ -40,7 +40,9 @@ class DiscordAlertDispatcher:
         if enabled is not None:
             self.enabled = enabled
         else:
-            self.enabled = os.getenv("DISCORD_ENABLED", "false").lower() in ("true", "1", "yes")
+            from glitchhunter_ai.config import DISCORD_ENABLED
+            raw_env = os.getenv("DISCORD_ENABLED")
+            self.enabled = (raw_env.lower() in ("true", "1", "yes")) if raw_env is not None else bool(DISCORD_ENABLED)
         self.simulation_mode = simulation_mode
         self.timeout = timeout
 

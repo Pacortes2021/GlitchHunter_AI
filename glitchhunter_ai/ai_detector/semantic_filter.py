@@ -135,9 +135,9 @@ class SemanticGlitchFilter:
 
     # Conectores de bundle genuino (donde el equipo principal es el producto y el accesorio un regalo)
     BUNDLE_REGEX = re.compile(
-        r'\b(?:con\s+(?:funda|carcasa|lamina|regalo|auriculares|cargador)|'
-        r'incluye\s+(?:funda|carcasa|lamina|mica|cable|cargador)|'
-        r'\+\s*(?:funda|carcasa|mica|cable|cargador|regalo|juego|control)|'
+        r'\b(?:con\s+(?:funda|carcasa|lamina|regalo|auriculares|audifonos|audífonos|cargador|soporte|mochila|mouse)|'
+        r'incluye\s+(?:funda|carcasa|lamina|mica|cable|cargador|soporte|mouse)|'
+        r'\+\s*(?:funda|carcasa|mica|cable|cargador|regalo|juego|control|soporte)|'
         r'pack\s+celular|combo\s+consola|bundle)\b',
         re.IGNORECASE
     )
@@ -178,13 +178,13 @@ class SemanticGlitchFilter:
     # Especificaciones técnicas de hardware que respaldan dispositivo físico principal
     HARDWARE_SPECS_REGEX = re.compile(
         r'\b(?:(?:64|128|256|512)\s*(?:gb|gigas)|'
-        r'(?:1|2)\s*tb|'
-        r'(?:4|6|8|12|16|18|24|32|36|48|64)\s*gb\s*ram|'
-        r'm[1-4](?:\s*(?:pro|max|ultra))?|'
-        r'core\s*i[3579]|ryzen\s*[3579]|'
-        r'rtx\s*(?:30|40)[5-9]0|'
+        r'(?:1|2|4)\s*tb|'
+        r'(?:4|6|8|12|16|18|24|32|36|48|64|128)\s*gb\s*ram|'
+        r'm[1-5](?:\s*(?:pro|max|ultra))?|'
+        r'core\s*(?:ultra\s*)?i?[3579]|ryzen\s*[3579]|'
+        r'rtx\s*(?:30|40|50)[5-9]0|'
         r'5g|dual\s*sim|esim|'
-        r'(?:13\.3|14|14\.2|15\.6|16|16\.2|17\.3)\s*(?:"|\'\'|pulgadas|pul)|'
+        r'(?:13\.3|14|14\.2|15\.6|16|16\.2|17\.3|32|40|42|43|48|50|55|65|70|75|77|83|85|98)\s*(?:"|\'\'|pulgadas|pul)|'
         r'titanio\s*(?:natural|negro|blanco|azul)?|'
         r'space\s*(?:black|gray)|gris\s*espacial|medianoche|starlight)\b',
         re.IGNORECASE
@@ -513,31 +513,31 @@ class SemanticGlitchFilter:
             except Exception:
                 pass
 
-        # Intento con Anthropic API si está la llave en el entorno
+        prompt = (
+            f"Analiza este producto de retail en Chile:\n"
+            f"Título: {title}\n"
+            f"Categoría: {category or 'No especificada'}\n\n"
+            f"Determina si es un ACCESORIO (funda, carcasa, mica, cable, soporte, repuesto) "
+            f"o un DISPOSITIVO PRINCIPAL (smartphone, notebook, consola, tablet, smart tv).\n"
+            f"Importante: Si dice 'funda para iPhone 15', el producto es la funda (accesorio), "
+            f"el iPhone es solo el modelo compatible.\n\n"
+            f"Responde estrictamente en formato JSON con las siguientes llaves:\n"
+            f'{{"is_accessory": bool, "is_main_device": bool, "detected_item_type": str, '
+            f'"explanation": str, "confidence": float}}'
+        )
+
+        # 1. Intento con Anthropic API si está la llave en el entorno
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         if anthropic_key:
             try:
                 import anthropic
                 client = anthropic.Anthropic(api_key=anthropic_key)
-                prompt = (
-                    f"Analiza este producto de retail tecnológico en Chile:\n"
-                    f"Título: {title}\n"
-                    f"Categoría: {category or 'No especificada'}\n\n"
-                    f"Determina si es un ACCESORIO (funda, carcasa, mica, cable, soporte, repuesto) "
-                    f"o un DISPOSITIVO PRINCIPAL (smartphone, notebook, consola, tablet).\n"
-                    f"Importante: Si dice 'funda para iPhone 15', el producto es la funda (accesorio), "
-                    f"el iPhone es solo el modelo compatible.\n\n"
-                    f"Responde estrictamente en formato JSON con las siguientes llaves:\n"
-                    f'{{"is_accessory": bool, "is_main_device": bool, "detected_item_type": str, '
-                    f'"explanation": str, "confidence": float}}'
-                )
                 msg = client.messages.create(
-                    model="claude-3-haiku-20240307",
+                    model="claude-3-5-haiku-latest",
                     max_tokens=256,
                     messages=[{"role": "user", "content": prompt}]
                 )
                 raw_text = msg.content[0].text
-                # Extraer JSON de la respuesta
                 json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
                 if json_match:
                     data = json.loads(json_match.group(0))
@@ -545,7 +545,103 @@ class SemanticGlitchFilter:
             except Exception:
                 pass
 
+        # 2. Intento con Gemini API REST si está GEMINI_API_KEY en el entorno
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        if gemini_key:
+            try:
+                import requests
+                gemini_model = os.getenv("GEMINI_FILTER_MODEL", "gemini-2.5-flash")
+                resp = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent",
+                    params={"key": gemini_key},
+                    json={"contents": [{"parts": [{"text": prompt}]}]},
+                    timeout=5.0,
+                )
+                if resp.status_code == 200:
+                    cands = (resp.json().get("candidates") or [])
+                    parts = ((cands[0].get("content") or {}).get("parts") or []) if cands else []
+                    raw_text = "".join(str(p.get("text") or "") for p in parts)
+                    json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+                    if json_match:
+                        data = json.loads(json_match.group(0))
+                        return SemanticClassificationResult(**data)
+            except Exception:
+                pass
+
         return None
+
+    _llm_verdict_cache: Dict[tuple, Dict[str, Any]] = {}
+
+    def verify_glitch_with_llm(self, product: Any, evidence_text: str) -> Optional[Dict[str, Any]]:
+        """
+        Segunda opinión opcional vía LLM (solo si hay GEMINI_API_KEY o ANTHROPIC_API_KEY).
+        Solo se llama en candidatos finales de glitch antes de push al celular, con caché por (id, precio).
+        Retorna {'approved': bool, 'reason': str} o None si no hay LLM configurado / falla.
+        """
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        if not gemini_key and not anthropic_key:
+            return None
+
+        best_price = float(getattr(product, "best_price", None) or getattr(product, "current_price", 0) or 0)
+        cache_key = (str(getattr(product, "id", "")), round(best_price))
+        if cache_key in self._llm_verdict_cache:
+            return self._llm_verdict_cache[cache_key]
+
+        prompt = (
+            "Eres analista experto de errores de precio en retail chileno (Chollometro/Knasta).\n"
+            f"Producto: {getattr(product, 'title', '')}\n"
+            f"Tienda: {getattr(product, 'store_name', '')} | Categoría: {getattr(product, 'category', '')}\n"
+            f"Precio actual: ${best_price:,.0f} CLP | Normal publicado: ${float(getattr(product, 'normal_price', 0) or 0):,.0f} CLP\n"
+            f"Evidencia disponible: {evidence_text}\n\n"
+            "Evalúa si parece un ERROR DE PRECIO / OFERTA GENUINA relevante para alertar, o un FALSO POSITIVO "
+            "(precio inflado de ropa/hogar/porcelanato/perfume, accesorio barato confundido con dispositivo, servicio/garantía).\n"
+            'Responde SOLO JSON válido: {"approved": true/false, "reason": "explicación breve"}'
+        )
+
+        parsed = None
+        if gemini_key:
+            try:
+                import requests
+                gemini_model = os.getenv("GEMINI_FILTER_MODEL", "gemini-2.5-flash")
+                resp = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent",
+                    params={"key": gemini_key},
+                    json={"contents": [{"parts": [{"text": prompt}]}]},
+                    timeout=5.0,
+                )
+                if resp.status_code == 200:
+                    cands = resp.json().get("candidates") or []
+                    parts = ((cands[0].get("content") or {}).get("parts") or []) if cands else []
+                    raw_text = "".join(str(p.get("text") or "") for p in parts)
+                    m = re.search(r"\{.*\}", raw_text, re.DOTALL)
+                    if m:
+                        data = json.loads(m.group(0))
+                        parsed = {"approved": bool(data.get("approved", True)), "reason": str(data.get("reason") or "")[:160]}
+            except Exception:
+                parsed = None
+
+        if parsed is None and anthropic_key:
+            try:
+                import anthropic
+                client = anthropic.Anthropic(api_key=anthropic_key)
+                msg = client.messages.create(
+                    model="claude-3-5-haiku-latest",
+                    max_tokens=160,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                m = re.search(r"\{.*\}", msg.content[0].text, re.DOTALL)
+                if m:
+                    data = json.loads(m.group(0))
+                    parsed = {"approved": bool(data.get("approved", True)), "reason": str(data.get("reason") or "")[:160]}
+            except Exception:
+                parsed = None
+
+        if parsed is not None:
+            if len(self._llm_verdict_cache) >= 512:
+                self._llm_verdict_cache.pop(next(iter(self._llm_verdict_cache)))
+            self._llm_verdict_cache[cache_key] = parsed
+        return parsed
 
 
 # ------------------------------------------------------------------------------

@@ -615,7 +615,9 @@ def parse_jumbo_listing(html: str, category_hint: str = "tecnologia", store_id: 
         except ValueError:
             continue
         slug = str(raw.get("slug") or "").strip()
-        sku = (raw.get("items") or [{}])[0] or {}
+        raw_skus = [s for s in (raw.get("items") or []) if isinstance(s, dict)]
+        in_stock_skus = [s for s in raw_skus if bool(s.get("stock", True)) and float(s.get("price") or 0) > 0]
+        sku = (in_stock_skus[0] if in_stock_skus else next((s for s in raw_skus if float(s.get("price") or 0) > 0), raw_skus[0] if raw_skus else {})) or {}
         url = f"{STORE_BASE[store_id]}/{slug}/p"
         pid = canonical_product_id(store_id, url)
         if not pid or pid in seen:
@@ -659,7 +661,7 @@ def parse_santaisabel_product(html: str, url: str) -> Optional[ProductItem]:
 
 def parse_vtex_products(store_id: str, products: Any) -> List[ProductItem]:
     """
-    Productos de la API de catálogo VTEX: el primer SKU con su primer vendedor
+    Productos de la API de catálogo VTEX: elige la oferta más barata con stock disponible
     (commertialOffer.Price = actual, ListPrice = normal, AvailableQuantity = stock).
     """
     if not isinstance(products, list):
@@ -669,14 +671,36 @@ def parse_vtex_products(store_id: str, products: Any) -> List[ProductItem]:
     now = datetime.now(timezone.utc)
     for raw in products:
         try:
-            sku = (raw.get("items") or [])[0]
-            offer = (sku.get("sellers") or [])[0].get("commertialOffer") or {}
+            best_offer = None
+            best_sku = None
+            best_in_stock_offer = None
+            best_in_stock_sku = None
+            for sku in (raw.get("items") or []):
+                if not isinstance(sku, dict):
+                    continue
+                for seller in (sku.get("sellers") or []):
+                    off = (seller or {}).get("commertialOffer") or {}
+                    try:
+                        p_val = float(off.get("Price") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if p_val <= 0:
+                        continue
+                    qty_val = int(off.get("AvailableQuantity") or 0)
+                    if qty_val > 0 and (best_in_stock_offer is None or p_val < float(best_in_stock_offer.get("Price") or 0)):
+                        best_in_stock_offer = off
+                        best_in_stock_sku = sku
+                    if best_offer is None or p_val < float(best_offer.get("Price") or 0):
+                        best_offer = off
+                        best_sku = sku
+            offer = best_in_stock_offer or best_offer or {}
+            chosen_sku = best_in_stock_sku or best_sku or {}
             current = float(offer.get("Price") or 0)
             normal = current if store_id in VTEX_INFLATED_LIST_PRICE else float(offer.get("ListPrice") or 0)
             # Productos vendidos por unidad de medida (pisos por m², telas por metro): Price viene por
             # unidad y ListPrice no, así que compararlos inventa descuentos del 70% (MK: porcelanato a
             # $13.990,27 el m² con "normal" $59.790). PriceWithoutDiscount sí está en la misma unidad.
-            multiplier = float(sku.get("unitMultiplier") or 1)
+            multiplier = float(chosen_sku.get("unitMultiplier") or 1)
             if abs(multiplier - 1.0) > 1e-6:
                 normal = float(offer.get("PriceWithoutDiscount") or current)
         except (AttributeError, IndexError, TypeError, ValueError):
@@ -686,7 +710,7 @@ def parse_vtex_products(store_id: str, products: Any) -> List[ProductItem]:
         pid = canonical_product_id(store_id, url)
         if not pid or not title or current <= 0:
             continue
-        images = sku.get("images") or []
+        images = chosen_sku.get("images") or []
         items.append(ProductItem(
             id=pid, store_id=store_id, store_name=name, title=title,
             category=_infer_category(title, hint), current_price=current, normal_price=max(normal, current),
@@ -710,8 +734,15 @@ def parse_shopify_products(store_id: str, products: Any) -> List[ProductItem]:
         variants = [v for v in (raw.get("variants") or []) if isinstance(v, dict)]
         # /products/{handle}.json no trae "available": sin el campo, el stock no se da por agotado
         available = [v for v in variants if v.get("available", True)]
+        positive = []
+        for v in (available or variants):
+            try:
+                if float(v.get("price") or 0) > 0:
+                    positive.append(v)
+            except (TypeError, ValueError):
+                continue
         try:
-            variant = min(available or variants, key=lambda v: float(v.get("price") or 0))
+            variant = min(positive, key=lambda v: float(v.get("price") or 0))
             current = float(variant.get("price") or 0)
             normal = 0.0 if store_id in SHOPIFY_INFLATED_COMPARE_PRICE else float(variant.get("compare_at_price") or 0)
         except (TypeError, ValueError):
@@ -982,7 +1013,16 @@ def parse_spdigital_product(html: str, url: str) -> Optional[ProductItem]:
     h1 = soup.select_one("h1")
     if not pid or h1 is None:
         return None
-    texts = [t for t in h1.find_all_next(string=_CLP_RE)][:3]
+    # Evitar capturar cuotas ("12 cuotas de $12.990") antes de los precios reales del producto
+    _INSTALLMENT_RE = re.compile(r"(?:cuota|inter[eé]s|meses|cae\b|pie\b)", re.IGNORECASE)
+    texts = []
+    for t in h1.find_all_next(string=_CLP_RE):
+        parent_txt = t.parent.get_text(" ") if getattr(t, "parent", None) else str(t)
+        if _INSTALLMENT_RE.search(parent_txt):
+            continue
+        texts.append(t)
+        if len(texts) >= 3:
+            break
     current, normal = _spdigital_prices([str(t) for t in texts])
     title = " ".join(h1.get_text(" ").split())
     if not title or current <= 0:
@@ -1145,7 +1185,10 @@ def parse_falabella_product(html: str, url: str) -> Optional[ProductItem]:
     variants = pd.get("variants") or []
     if not pd or not variants:
         return None
-    v = variants[0]
+    v = next(
+        (cand for cand in variants if cand.get("isPurchaseable", True) and _falabella_prices(cand.get("prices"))[0] > 0),
+        variants[0],
+    )
     current, normal, card = _falabella_prices(v.get("prices"))
     pid = canonical_product_id("falabella", url) or f"falabella-{str(pd.get('id', '')).lower()}"
     if current <= 0:
@@ -1449,7 +1492,7 @@ class DirectStoreReader:
         """Una página de 250 productos, solo si es el turno de esta tienda y pasó el espaciado."""
         order = list(SHOPIFY_STORES) if self.shopify_stores is None else list(self.shopify_stores)
         if not order:
-            return None
+            return []
         with self._shopify_lock:
             now = self.clock()
             if order[self._shopify_turn % len(order)] != store_id or now < self._shopify_next_at:
@@ -1760,7 +1803,15 @@ class DirectStoreReader:
             return items[0] if items else None
         if store_id in MAGENTO_STORES:
             html = self._get_html(store_id, url)
-            return parse_magento_product(store_id, html, url) if html else None
+            if not html:
+                return None
+            try:
+                item = parse_magento_product(store_id, html, url)
+                self.backoff.record_success(store_id)
+                return item
+            except (BlockedError, ValueError, KeyError) as exc:
+                self.backoff.record_block(store_id, f"formato inesperado: {exc}")
+                return None
         if store_id not in PRODUCT_PARSERS:
             return None
         html = self._get_html(store_id, url)

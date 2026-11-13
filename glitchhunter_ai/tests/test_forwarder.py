@@ -103,3 +103,97 @@ def test_full_scan_forwards_live_store_reads(tmp_path):
     pipeline.forwarder.reset_mock()
     pipeline.run_scan(use_live=False, send_notifications=False, rotate_categories=False, scan_watchlist=False)
     pipeline.forwarder.submit.assert_not_called()      # datos de demostración: no se envían
+
+
+def test_forwarder_persists_queue_across_restarts_and_recovers(tmp_path):
+    qdir = tmp_path / "forward_queue"
+    # Primera instancia: el servidor falla -> el lote queda guardado en disco
+    fw1 = Forwarder("http://127.0.0.1:8090/", "clave", post=_FakePost([OSError("sin red")]), sleep=lambda s: None, queue_dir=qdir)
+    fw1.submit("falabella", [_product("fal-1", store="falabella")])
+    fw1.submit("ripley", [_product("rip-1", store="ripley")])
+    assert not fw1.send_one()
+    assert len(list(qdir.glob("*.json"))) == 2
+
+    # Lote corrupto coexistiendo en disco: no debe trabar la recuperación
+    (qdir / "99999999999999999999_999999.json").write_text("{roto", encoding="utf-8")
+
+    # Segunda instancia tras reiniciar: recupera ambos lotes válidos y limpia al enviar / rechazar
+    post2 = _FakePost([200, 413])
+    fw2 = Forwarder("http://127.0.0.1:8090/", "clave", post=post2, sleep=lambda s: None, queue_dir=qdir)
+    assert fw2.pending() == 2
+    assert fw2.send_one() and fw2.sent == 1 and fw2.pending() == 1
+    assert fw2.send_one() and fw2.dropped == 1 and fw2.pending() == 0
+    assert list(qdir.glob("*.json")) == []
+
+
+def test_forwarder_disk_queue_enforces_max_queue(tmp_path):
+    qdir = tmp_path / "forward_queue_max"
+    fw = Forwarder("http://127.0.0.1:8090/", "clave", post=_FakePost([200, 200]), sleep=lambda s: None, queue_dir=qdir, max_queue=2)
+    fw.submit("paris", [_product("p-1", store="paris")])
+    fw.submit("paris", [_product("p-2", store="paris")])
+    fw.submit("paris", [_product("p-3", store="paris")])
+    assert fw.pending() == 2 and fw.dropped == 1
+    assert len(list(qdir.glob("*.json"))) == 2
+    fw.send_one()
+    fw.send_one()
+    assert fw._post.calls[0][1]["products"][0]["id"] == "p-2"
+    assert fw._post.calls[1][1]["products"][0]["id"] == "p-3"
+    assert list(qdir.glob("*.json")) == []
+
+
+def test_pipeline_forward_only_skips_local_db_and_alerts(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "fo.db")
+    db.init_db()
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock(), forward_only=True)
+    pipeline.telegram_dispatcher.send_alert = MagicMock(return_value=True)
+    pipeline.forwarder = MagicMock()
+
+    alerts, fresh = pipeline.process_store_products("ripley", [_product("rip-fo", price=19990, normal=100000)])
+    assert alerts == [] and fresh == 1
+    pipeline.forwarder.submit.assert_called_once()
+    pipeline.telegram_dispatcher.send_alert.assert_not_called()
+    assert db.get_stats()["total_products"] == 0
+
+    # Segunda lectura con el mismo precio: no vuelve a contar como fresh
+    alerts2, fresh2 = pipeline.process_store_products("ripley", [_product("rip-fo", price=19990, normal=100000)])
+    assert alerts2 == [] and fresh2 == 0
+
+
+def test_sync_watchlist_cache_and_collector_runner(tmp_path):
+    from glitchhunter_ai.core.collector import CollectorRunner, SyncWatchlistCache
+
+    db = PriceDatabase(db_path=tmp_path / "col.db")
+    db.init_db()
+    db.add_watchlist_keyword("fallback kw")
+
+    now = [100.0]
+    calls = [0]
+
+    def fake_get(url, timeout):
+        calls[0] += 1
+        if calls[0] == 1:
+            return {"keywords": ["rtx 5090", "lg c4"]}
+        raise OSError("servidor temporalmente caído")
+
+    cache = SyncWatchlistCache("http://127.0.0.1:8090", fallback_fn=db.get_watchlist_keywords, ttl_seconds=600.0, get_json=fake_get, clock=lambda: now[0])
+    assert cache.get_keywords() == ["rtx 5090", "lg c4"]
+    now[0] = 200.0
+    assert cache.get_keywords() == ["rtx 5090", "lg c4"]
+    assert calls[0] == 1  # servido desde caché
+    now[0] = 900.0
+    assert cache.get_keywords() == ["rtx 5090", "lg c4"]  # si falla remoto conserva última lista válida
+    assert calls[0] == 2
+
+    offline_cache = SyncWatchlistCache("http://127.0.0.1:8090", fallback_fn=db.get_watchlist_keywords, get_json=lambda u, t: (_ for _ in ()).throw(OSError("offline")))
+    assert offline_cache.get_keywords() == ["fallback kw"]
+
+    runner = CollectorRunner(
+        forward_url="http://127.0.0.1:8090",
+        forward_api_key="clave",
+        queue_dir=tmp_path / "q",
+        db=db,
+        get_json=fake_get,
+    )
+    st = runner.status()
+    assert st["target"] == "http://127.0.0.1:8090/api/ingest"
+    assert runner.pipeline.forward_only is True

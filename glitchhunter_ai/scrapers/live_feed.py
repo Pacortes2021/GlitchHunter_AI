@@ -210,6 +210,7 @@ def _extract_knasta_products(html: str) -> List[Dict[str, Any]]:
 # Caché breve de páginas de Knasta: la API no filtra por tienda, así que las 4 tiendas
 # que se leen vía agregador comparten las mismas páginas en cada ciclo de escaneo.
 _KNASTA_CACHE_TTL_SECONDS = 120.0
+_KNASTA_BLOCKED_COOLDOWN_SECONDS = 1800.0
 _knasta_cache: Dict[str, Any] = {}
 _knasta_cache_lock = threading.Lock()
 
@@ -338,15 +339,26 @@ class LiveRetailFeed:
         return products
 
     def _knasta_page(self, url: str) -> List[Dict[str, Any]]:
-        """Productos de una página de Knasta /results, con caché compartida de corta duración."""
+        """Productos de una página de Knasta /results, con caché y enfriamiento ante HTTP 403/429."""
         now = time.monotonic()
         with _knasta_cache_lock:
+            blocked_until = _knasta_cache.get("__blocked_until__", 0.0)
+            if isinstance(blocked_until, (int, float)) and now < blocked_until:
+                return []
             cached = _knasta_cache.get(url)
-            if cached and now - cached[0] < _KNASTA_CACHE_TTL_SECONDS:
+            if isinstance(cached, tuple) and now - cached[0] < _KNASTA_CACHE_TTL_SECONDS:
                 return cached[1]
         resp = self.session.get(url, timeout=self.timeout)
         if resp.status_code != 200:
-            logger.warning(f"Knasta respondió HTTP {resp.status_code} para {url}")
+            if resp.status_code in (403, 429):
+                with _knasta_cache_lock:
+                    _knasta_cache["__blocked_until__"] = now + _KNASTA_BLOCKED_COOLDOWN_SECONDS
+                logger.warning(
+                    f"Knasta respondió HTTP {resp.status_code} para {url}; "
+                    f"pausando consultas a Knasta por {int(_KNASTA_BLOCKED_COOLDOWN_SECONDS // 60)} min"
+                )
+            else:
+                logger.warning(f"Knasta respondió HTTP {resp.status_code} para {url}")
             return []
         products = _extract_knasta_products(resp.text)
         with _knasta_cache_lock:
@@ -366,6 +378,9 @@ class LiveRetailFeed:
             return None
         seen_urls.add(ext_url)
         card = parse_clp_price(k_item.get("price_card"))
+        desc = k_item.get("descriptive") or {}
+        k_state = str(desc.get("state") or "").strip().upper() or None
+        has_habitual = parse_clp_price(desc.get("habitual_price")) > 0.0
         cfg = STORE_MAPPING.get(store_id, {})
         return ProductItem(
             id=canonical_product_id(store_id, ext_url) or f"{store_id}-k{k_item.get('product_id')}",
@@ -381,6 +396,8 @@ class LiveRetailFeed:
             in_stock=True,
             timestamp=datetime.now(timezone.utc),
             source="knasta",
+            knasta_state=k_state,
+            knasta_has_habitual=has_habitual,
         )
 
     def search_live_products(
@@ -406,6 +423,9 @@ class LiveRetailFeed:
         # 1. Búsqueda en Knasta vía la página pública /results?q= (su robots.txt prohíbe /api)
         try:
             for k_item in self._knasta_page(f"https://knasta.cl/results?q={encoded_q}"):
+                state = str((k_item.get("descriptive") or {}).get("state") or "").strip().upper()
+                if state and state not in KNASTA_DEAL_STATES:
+                    continue
                 target_store = KNASTA_TO_STORE_ID.get(str(k_item.get("retail", "")).lower().strip())
                 if not target_store or (store_ids and target_store not in store_ids):
                     continue
@@ -415,4 +435,132 @@ class LiveRetailFeed:
         except Exception as exc:
             logger.debug("Error en búsqueda proactiva Knasta para '%s': %s", clean_q, exc)
 
+        # 2. Respaldo automático con SoloTodo si Knasta bloquea (403) o no devuelve resultados
+        if not products:
+            try:
+                products.extend(
+                    self._search_solotodo_products(
+                        clean_q,
+                        store_ids=store_ids,
+                        order=order,
+                        limit=limit,
+                        seen_urls=seen_urls,
+                    )
+                )
+            except Exception as exc:
+                logger.debug("Error en respaldo SoloTodo para '%s': %s", clean_q, exc)
+
         return products[:limit]
+
+    @staticmethod
+    def _resolve_solotodo_store(raw_store_id: str, external_url: str) -> Optional[str]:
+        from glitchhunter_ai.core.market_reference import (
+            SOLOTODO_STORE_IDS,
+            _EXCLUDE_STORE_DOMAINS,
+            _domain_matches,
+        )
+
+        sid_str = str(raw_store_id or "").strip()
+        if sid_str:
+            for s_key, st_ids in SOLOTODO_STORE_IDS.items():
+                if sid_str in st_ids:
+                    return s_key
+            for s_key, cfg in STORE_MAPPING.items():
+                if str(cfg.get("solotodo_id")) == sid_str:
+                    return s_key
+        if external_url:
+            for s_key, domains in _EXCLUDE_STORE_DOMAINS.items():
+                if _domain_matches(external_url, domains):
+                    return s_key
+        return None
+
+    def _search_solotodo_products(
+        self,
+        query: str,
+        store_ids: Optional[List[str]],
+        order: str,
+        limit: int,
+        seen_urls: set,
+    ) -> List[ProductItem]:
+        from glitchhunter_ai.core.market_reference import CLP_CURRENCY_ID, NEW_CONDITION
+
+        encoded_q = urllib.parse.quote(query)
+        browse_url = f"https://publicapi.solotodo.com/products/browse/?search={encoded_q}&page_size=4"
+        resp = self.session.get(browse_url, timeout=self.timeout)
+        if resp.status_code != 200:
+            return []
+
+        results = (resp.json() or {}).get("results") or []
+        allowed_stores = {s.lower() for s in store_ids} if store_ids else None
+        q_tokens = [t for t in re.split(r"\s+", query.lower()) if len(t) >= 2]
+        now = datetime.now(timezone.utc)
+        found: List[ProductItem] = []
+
+        for entry in results[:3]:
+            p_entries = entry.get("product_entries") or []
+            if not p_entries:
+                continue
+            prod = (p_entries[0] or {}).get("product") or {}
+            prod_id = prod.get("id")
+            prod_name = clean_title(prod.get("name"))
+            if not prod_id or not prod_name:
+                continue
+            name_low = prod_name.lower()
+            if q_tokens and not all(tok in name_low for tok in q_tokens[:2]):
+                continue
+
+            ent_resp = self.session.get(
+                f"https://publicapi.solotodo.com/products/{prod_id}/entities/",
+                timeout=self.timeout,
+            )
+            if ent_resp.status_code != 200:
+                continue
+            entities = ent_resp.json() or []
+            img_url = entry.get("picture_url") or prod.get("picture_url")
+
+            for e in entities:
+                reg = e.get("active_registry")
+                if not reg or not reg.get("is_available"):
+                    continue
+                currency = e.get("currency_id", e.get("currency"))
+                if currency is not None and currency != CLP_CURRENCY_ID:
+                    continue
+                if (e.get("condition") or NEW_CONDITION) != NEW_CONDITION:
+                    continue
+                ext_url = e.get("external_url") or ""
+                if not ext_url or ext_url in seen_urls:
+                    continue
+                sid_raw = str(e.get("store_id") or e.get("store") or "")
+                target_store = self._resolve_solotodo_store(sid_raw, ext_url)
+                if not target_store or (allowed_stores and target_store not in allowed_stores):
+                    continue
+
+                curr_price = parse_clp_price(reg.get("offer_price"))
+                if curr_price <= 0.0:
+                    continue
+                norm_price = max(parse_clp_price(reg.get("normal_price")), curr_price)
+                seen_urls.add(ext_url)
+                cfg = STORE_MAPPING.get(target_store, {})
+                item_id = canonical_product_id(target_store, ext_url) or f"{target_store}-st{e.get('id') or prod_id}"
+                found.append(
+                    ProductItem(
+                        id=item_id,
+                        store_id=target_store,
+                        store_name=cfg.get("name", target_store.capitalize()),
+                        title=prod_name,
+                        category=infer_category(prod_name),
+                        current_price=curr_price,
+                        normal_price=norm_price,
+                        url=ext_url,
+                        image_url=img_url,
+                        in_stock=True,
+                        timestamp=now,
+                        source="solotodo",
+                    )
+                )
+
+        if order == "price_asc":
+            found.sort(key=lambda p: (p.current_price, -p.discount_percentage))
+        else:
+            found.sort(key=lambda p: (-p.discount_percentage, p.current_price))
+        return found[:limit]

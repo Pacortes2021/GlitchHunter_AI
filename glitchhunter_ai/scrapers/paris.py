@@ -107,97 +107,17 @@ class ParisScraper:
         return self._build_simulated_catalog()
 
     def _fetch_live_catalog(self, query: str = "tecnologia", count: int = 20) -> List[ProductItem]:
-        """
-        Ejecuta una consulta estructurada a la API pública de catálogo VTEX de Paris.cl.
-        """
-        params = {
-            "ft": query,
-            "_from": 0,
-            "_to": max(0, count - 1),
-        }
+        """Lectura directa en vivo de Paris.cl vía flujo Next.js App Router (direct_reader)."""
+        from glitchhunter_ai.scrapers.direct_reader import default_direct_reader
+
         try:
-            response = self.session.get(
-                self.vtex_search_url,
-                params=params,
-                timeout=self.timeout,
-            )
-            if response.status_code != 200:
-                logger.warning("Respuesta HTTP no esperada de Paris.cl: %s", response.status_code)
-                return []
-
-            data = response.json()
-            if not isinstance(data, list):
-                logger.warning("Formato JSON no esperado de Paris.cl (se esperaba lista): %s", type(data))
-                return []
-
-            products: List[ProductItem] = []
-            for raw in data:
-                item = self._parse_vtex_item(raw)
-                if item:
-                    products.append(item)
-
-            return products
-        except requests.exceptions.RequestException as exc:
-            logger.warning("Error de red al consultar Paris.cl en vivo: %s", exc)
-            return []
+            items = default_direct_reader.fetch_category("paris", "notebooks")
+            if not items and query:
+                items = default_direct_reader.search("paris", query)
+            return items[:count] if count else items
         except Exception as exc:
-            logger.warning("Error inesperado procesando respuesta en vivo de Paris.cl: %s", exc)
+            logger.warning("Error consultando Paris.cl en vivo: %s", exc)
             return []
-
-    def _parse_vtex_item(self, raw: Dict[str, Any]) -> Optional[ProductItem]:
-        """
-        Parsea un objeto de producto devuelto por el motor de búsqueda VTEX de Paris.cl.
-        """
-        try:
-            product_id = str(raw.get("productId") or raw.get("productReference") or "")
-            title = str(raw.get("productName") or "").strip()
-            link_text = raw.get("linkText") or ""
-            url = f"{self.base_url}/{link_text}.html" if link_text else f"{self.base_url}/p/{product_id}"
-
-            items_list = raw.get("items", [])
-            if not items_list:
-                return None
-
-            first_item = items_list[0]
-            images = first_item.get("images", [])
-            image_url = images[0].get("imageUrl") if images else None
-
-            sellers = first_item.get("sellers", [])
-            if not sellers:
-                return None
-
-            comm_offer = sellers[0].get("commertialOffer", {})
-            current_price = float(comm_offer.get("Price", 0.0))
-            normal_price = float(comm_offer.get("ListPrice", current_price))
-            available_qty = int(comm_offer.get("AvailableQuantity", 0))
-
-            if normal_price < current_price:
-                normal_price = current_price
-
-            # Categoría
-            categories = raw.get("categories", ["Tecnología"])
-            category = categories[0].strip("/").split("/")[-1] if categories else "general"
-
-            if not product_id or not title or current_price <= 0:
-                return None
-
-            return ProductItem(
-                id=f"paris-{product_id}",
-                store_id=self.store_id,
-                store_name=self.store_name,
-                title=title,
-                category=category.lower(),
-                current_price=current_price,
-                normal_price=normal_price,
-                card_price=None,
-                url=url,
-                image_url=image_url,
-                in_stock=available_qty > 0,
-                timestamp=datetime.now(timezone.utc),
-            )
-        except Exception as exc:
-            logger.debug("Error al parsear item VTEX: %s", exc)
-            return None
 
     def _build_simulated_catalog(self) -> List[ProductItem]:
         """

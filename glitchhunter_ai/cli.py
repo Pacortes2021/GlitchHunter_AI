@@ -70,51 +70,78 @@ def run_demo():
     console.print("   Y abre en tu navegador: [underline green]http://127.0.0.1:8080[/underline green]\n")
 
 
-def run_scan(live: bool = False, watchlist_only: bool = False, show_rotation: bool = False):
+def run_scan(
+    live: bool = False,
+    watchlist_only: bool = False,
+    show_rotation: bool = False,
+    direct: bool = False,
+):
     print_banner()
     mode_str = "EN VIVO" if live else "SIMULACIÓN DE ALTA FIDELIDAD"
     pipeline = GlitchHuntingPipeline()
 
-    if watchlist_only:
+    if direct:
+        from glitchhunter_ai.config import DIRECT_SCAN_CATEGORIES
+        from glitchhunter_ai.core.pipeline import DIRECT_STORES
+
+        console.print(
+            f"[bold cyan]⚡ Ejecutando escaneo DIRECTO en tiempo real ({len(DIRECT_STORES)} tiendas: "
+            f"{', '.join(DIRECT_STORES)})...[/bold cyan]\n"
+        )
+        glitches = pipeline.run_direct_scan(
+            categories=DIRECT_SCAN_CATEGORIES,
+            send_notifications=live,
+        )
+    elif watchlist_only:
         console.print(f"[bold cyan]🎯 Ejecutando escaneo prioritario de WATCHLIST en modo: {mode_str}...[/bold cyan]\n")
         glitches = pipeline.run_watchlist_scan(use_live=live)
     else:
         console.print(f"[bold cyan]Ejecutando escaneo retail en modo: {mode_str}...[/bold cyan]\n")
         if show_rotation and pipeline.catalog_rotator:
             status = pipeline.catalog_rotator.get_status()
+            cats = ", ".join(status.get("categories") or [])
             console.print(
-                f"🔄 [bold yellow]Rotación de Catálogo:[/bold yellow] Ciclo #{status['cycle_counter']} | "
-                f"Estrategia: {status['current_strategy']} | "
-                f"Categorías totales: {status['total_categories']}\n"
+                f"🔄 [bold yellow]Rotación de Catálogo:[/bold yellow] Ciclo #{status['cycle_counter']} "
+                f"(cursor {status['current_cursor_index']}/{status['total_categories']}) | "
+                f"Estrategia: {status['current_strategy']} | Categorías: {cats}\n"
             )
         glitches = pipeline.run_scan(use_live=live)
 
     pipeline.print_glitch_summary_table(glitches)
 
 
-def run_watchlist_cli(add_kw: Optional[str] = None, remove_kw: Optional[str] = None, list_kw: bool = False):
+def run_watchlist_cli(
+    add_kw: Optional[str] = None,
+    remove_kw: Optional[str] = None,
+    list_kw: bool = False,
+    max_price: Optional[float] = None,
+):
     print_banner()
     db = PriceDatabase()
 
     if add_kw:
-        db.add_watchlist_keyword(add_kw)
-        console.print(f"✅ [bold green]Palabra clave añadida exitosamente a la Watchlist:[/bold green] '{add_kw}'")
+        db.add_watchlist_keyword(add_kw, max_price=max_price)
+        cap_msg = f" (tope ${max_price:,.0f})" if max_price else ""
+        console.print(f"✅ [bold green]Palabra clave añadida exitosamente a la Watchlist:[/bold green] '{add_kw}'{cap_msg}")
     elif remove_kw:
         db.remove_watchlist_keyword(remove_kw)
         console.print(f"🗑️ [bold yellow]Palabra clave eliminada de la Watchlist:[/bold yellow] '{remove_kw}'")
 
-    keywords = db.get_watchlist_keywords()
+    entries = db.get_watchlist_entries()
     table = Table(title="⭐ Watchlist - Palabras Clave Prioritarias", show_header=True, header_style="bold cyan")
     table.add_column("#", justify="center", width=4)
     table.add_column("Término / Modelo Monitoreado", style="white")
+    table.add_column("Tope CLP", justify="right", width=14)
 
-    if not keywords:
+    if not entries:
         console.print("[dim yellow]No hay palabras clave registradas actualmente en tu Watchlist.[/dim yellow]")
         console.print("Usa: [bold white]python3 run.py watchlist --add 'rtx 4080'[/bold white] para agregar una.\n")
         return
 
-    for idx, kw in enumerate(keywords, 1):
-        table.add_row(str(idx), kw)
+    for idx, entry in enumerate(entries, 1):
+        cap = entry.get("max_price")
+        cap_str = f"${cap:,.0f}".replace(",", ".") if cap else "Sin límite"
+        table.add_row(str(idx), str(entry["keyword"]), cap_str)
 
     console.print(table)
     console.print()
@@ -126,8 +153,59 @@ def run_tests():
     sys.exit(res.returncode)
 
 
-def run_diagnose(store_filter: Optional[str] = None):
+def run_diagnose(store_filter: Optional[str] = None, direct: bool = False):
     print_banner()
+    if direct:
+        from glitchhunter_ai.core.pipeline import DIRECT_STORES, STORE_NAMES
+        from glitchhunter_ai.scrapers.direct_reader import default_direct_reader
+
+        console.print("[bold cyan]⚡ DIAGNÓSTICO DE LECTORES DIRECTOS EN TIEMPO REAL[/bold cyan]")
+        console.print("[dim]Consultando sitios directos de tiendas chilenas (categoría notebooks)...[/dim]\n")
+        targets = [s for s in DIRECT_STORES if not store_filter or s.lower() == store_filter.lower()]
+        if not targets:
+            console.print(f"[red]Error: Tienda directa '{store_filter}' no encontrada.[/red]")
+            return
+
+        table = Table(title="📊 Matriz de Lectores Directos", border_style="cyan")
+        table.add_column("Tienda", style="bold white", width=18)
+        table.add_column("ID", style="dim cyan", width=13)
+        table.add_column("Estado", justify="center", width=14)
+        table.add_column("Latencia", justify="right", width=11)
+        table.add_column("Ítems", justify="right", width=9)
+        table.add_column("Muestra / Diagnóstico", style="white", width=44)
+
+        operational = 0
+        total_items = 0
+        with console.status("[cyan]Sondeando tiendas directas...[/cyan]"):
+            for sid in targets:
+                s_name = STORE_NAMES.get(sid, sid.title())
+                t_start = time.perf_counter()
+                items = []
+                err_msg = None
+                try:
+                    items = default_direct_reader.fetch_category(sid, "notebooks")
+                except Exception as exc:
+                    err_msg = str(exc)
+                elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                if items:
+                    operational += 1
+                    total_items += len(items)
+                    sample = items[0]
+                    price_clp = f"${sample.best_price:,.0f}".replace(",", ".")
+                    badge = "[bold green]🟢 OPERATIVO[/bold green]"
+                    desc = f"{sample.title[:26]}... ({price_clp})"
+                elif err_msg:
+                    badge = "[bold red]🔴 ERROR[/bold red]"
+                    desc = f"[red]{err_msg[:40]}[/red]"
+                else:
+                    badge = "[bold yellow]🟡 VACÍO[/bold yellow]"
+                    desc = "[yellow]0 productos devueltos o bloqueado[/yellow]"
+                table.add_row(s_name, sid, badge, f"{elapsed_ms:,.0f} ms", str(len(items)), desc)
+
+        console.print(table)
+        console.print(f"\n⚡ Operativos: {operational}/{len(targets)} | Productos: {total_items}\n")
+        return
+
     console.print("[bold cyan]🩺 DIAGNÓSTICO EN VIVO DE CONECTIVIDAD Y SCRAPERS RETAIL[/bold cyan]")
     console.print("[dim]Verificando endpoints reales, latencias y extracción de datos en vivo de las tiendas...[/dim]\n")
 
@@ -212,17 +290,22 @@ def main():
     scan_parser.add_argument("--live", action="store_true", help="Usar endpoints en vivo en lugar de simulación")
     scan_parser.add_argument("--watchlist", action="store_true", help="Escanear únicamente términos de la watchlist")
     scan_parser.add_argument("--rotate", action="store_true", help="Mostrar información detallada de la rotación de categorías")
+    scan_parser.add_argument("--direct", action="store_true", help="Escanear tiendas compatibles mediante lectores directos")
 
     # Comando watchlist
     wl_parser = subparsers.add_parser("watchlist", help="Gestionar palabras clave monitoreadas por el usuario")
     wl_parser.add_argument("--list", action="store_true", help="Listar palabras clave activas")
     wl_parser.add_argument("--add", help="Agregar una nueva palabra clave (ej: 'rtx 4080', 'ipad air')")
+    wl_parser.add_argument("--max-price", type=float, default=None, help="Precio máximo en CLP para alertar (con --add)")
     wl_parser.add_argument("--remove", help="Eliminar una palabra clave existente")
 
     # Comando server
     server_parser = subparsers.add_parser("server", help="Iniciar dashboard web en tiempo real con WebSockets")
     server_parser.add_argument("--host", default=WEB_HOST, help=f"Host (por defecto: {WEB_HOST})")
     server_parser.add_argument("--port", type=int, default=WEB_PORT, help=f"Puerto (por defecto: {WEB_PORT})")
+
+    # Comando collector (solo recolecta y reenvía al servidor principal sin levantar web local)
+    subparsers.add_parser("collector", help="Modo recolector silencioso (lee tiendas locales y reenvía a FORWARD_TO_URL)")
 
     # Comando test
     subparsers.add_parser("test", help="Ejecutar suite de tests unitarios")
@@ -231,20 +314,32 @@ def main():
     # Comando diagnose
     diagnose_parser = subparsers.add_parser("diagnose", help="Diagnosticar conectividad y extracción real en vivo de los retailers")
     diagnose_parser.add_argument("--store", help="Filtrar por ID de tienda específica (ej: falabella, solotodo)")
+    diagnose_parser.add_argument("--direct", action="store_true", help="Probar lectores directos en lugar de scrapers de feeds")
 
     args = parser.parse_args()
 
     if args.command == "demo" or args.command is None:
         run_demo()
     elif args.command == "scan":
-        run_scan(live=args.live, watchlist_only=args.watchlist, show_rotation=args.rotate)
+        run_scan(live=args.live, watchlist_only=args.watchlist, show_rotation=args.rotate, direct=args.direct)
     elif args.command == "watchlist":
-        run_watchlist_cli(add_kw=args.add, remove_kw=args.remove, list_kw=args.list)
+        run_watchlist_cli(add_kw=args.add, remove_kw=args.remove, list_kw=args.list, max_price=args.max_price)
     elif args.command == "server":
         print_banner()
         console.print(f"[bold green]🌐 Iniciando Radar Web en http://{args.host}:{args.port}[/bold green]")
         console.print("[dim]Presiona Ctrl+C para detener el servidor.[/dim]\n")
         start_server(host=args.host, port=args.port)
+    elif args.command == "collector":
+        from glitchhunter_ai.config import FORWARD_API_KEY, FORWARD_TO_URL
+        from glitchhunter_ai.core.collector import run_collector
+
+        if not FORWARD_TO_URL:
+            console.print("[red]Error: define FORWARD_TO_URL en .env antes de usar el modo collector.[/red]")
+            sys.exit(1)
+        print_banner()
+        console.print(f"[bold green]📡 Iniciando Recolector Silencioso -> {FORWARD_TO_URL}[/bold green]")
+        console.print("[dim]Sin servidor web local ni alertas duplicadas. Presiona Ctrl+C para detener.[/dim]\n")
+        run_collector(forward_url=FORWARD_TO_URL, forward_api_key=FORWARD_API_KEY)
     elif args.command == "retirar-falsos":
         from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
         counts = GlitchHuntingPipeline().withdraw_false_offers()
@@ -252,7 +347,7 @@ def main():
     elif args.command == "test":
         run_tests()
     elif args.command == "diagnose":
-        run_diagnose(store_filter=args.store)
+        run_diagnose(store_filter=args.store, direct=args.direct)
 
 
 if __name__ == "__main__":

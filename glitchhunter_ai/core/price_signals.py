@@ -77,23 +77,31 @@ def _is_retail_price_point(price: int) -> bool:
     return price % 1000 in (990, 900, 500, 0) or price % 100 == 90
 
 
-def detect_bulk_prices(products: Iterable[Any]) -> Dict[str, int]:
+def detect_bulk_prices(
+    products: Iterable[Any],
+    excluded_stores: Optional[Iterable[str]] = None,
+) -> Dict[str, int]:
     """
     Productos que comparten precio exacto con otros de la misma tienda en un mismo escaneo
     (≥4 productos distintos, ≥60% de descuento, ≥3 precios normales distintos, y algún descuento ≥80%
     o un precio que no sea de campaña).
+    `excluded_stores` permite ignorar tiendas con inflación crónica de MSRP en este heurístico.
     Retorna {product_id: cantidad de productos con ese mismo precio}.
     """
+    skip_stores = {str(s).strip().lower() for s in (excluded_stores or ()) if s}
     groups: Dict[Tuple[str, int], Dict[str, Any]] = {}
     for p in products:
         try:
+            store_key = str(p.store_id).lower()
+            if store_key in skip_stores:
+                continue
             best = float(p.best_price)
             normal = float(p.normal_price or 0)
         except (AttributeError, TypeError, ValueError):
             continue
         if best <= 0 or normal <= 0 or float(p.discount_percentage) < BULK_MIN_DISCOUNT:
             continue
-        key = (str(p.store_id), int(round(best)))
+        key = (store_key, int(round(best)))
         groups.setdefault(key, {})[str(p.id)] = int(round(normal))
     result: Dict[str, int] = {}
     for (_, price), members in groups.items():

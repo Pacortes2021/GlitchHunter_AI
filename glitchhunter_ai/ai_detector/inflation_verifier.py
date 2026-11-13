@@ -151,10 +151,7 @@ class InflationVerifier:
 
         # Cálculo del descuento real sobre el precio base histórico
         savings = baseline_price - effective_price
-        if savings <= 0:
-            real_discount = round((savings / baseline_price) * 100.0, 2)
-        else:
-            real_discount = round((savings / baseline_price) * 100.0, 2)
+        real_discount = round((savings / baseline_price) * 100.0, 2)
 
         # Verificación y generación de veredicto
         if is_fake_inflation:
@@ -206,6 +203,118 @@ class InflationVerifier:
         """
         _, real_discount, _ = self.verify_inflation(product, baseline_price)
         return real_discount >= self.min_glitch_discount
+
+    @staticmethod
+    def modified_z_score(current_price: float, prices) -> Optional[float]:
+        """
+        Calcula Modified Z-Score robusto vía MAD (Median Absolute Deviation):
+        M = 0.6745 * (x - mediana) / MAD. Retorna valores muy negativos ante caídas anómalas.
+        """
+        import statistics
+
+        valid = [float(p) for p in (prices or []) if p is not None and float(p) > 0.0]
+        if len(valid) < 3 or current_price <= 0.0:
+            return None
+        med = statistics.median(valid)
+        if med <= 0.0:
+            return None
+        abs_devs = [abs(p - med) for p in valid]
+        mad = statistics.median(abs_devs)
+        if mad <= 0.0:
+            ratio = current_price / med
+            if ratio <= 0.65:
+                return round(-10.0 * (1.0 - ratio), 3)
+            return 0.0
+        return round(0.6745 * (current_price - med) / mad, 3)
+
+    @staticmethod
+    def compute_history_stats(records, now=None) -> dict:
+        """
+        Resume el historial cronológico en mediana 30d/90d, mínimo 90d, MAD, cobertura en días
+        y señal de inflación previa a evento (`max_14d > 1.25 * median_90d`).
+        """
+        import statistics
+        from datetime import datetime, timedelta, timezone
+
+        ref_now = now or datetime.now(timezone.utc)
+        if ref_now.tzinfo is None:
+            ref_now = ref_now.replace(tzinfo=timezone.utc)
+
+        cutoff_90 = ref_now - timedelta(days=90)
+        cutoff_30 = ref_now - timedelta(days=30)
+        cutoff_14 = ref_now - timedelta(days=14)
+
+        prices_90 = []
+        prices_30 = []
+        prices_14 = []
+        timestamps = []
+
+        for rec in (records or []):
+            if isinstance(rec, dict):
+                price_raw = rec.get("price")
+                ts_raw = rec.get("recorded_at")
+            else:
+                price_raw = getattr(rec, "price", None)
+                ts_raw = getattr(rec, "recorded_at", None)
+            try:
+                price = float(price_raw)
+            except (TypeError, ValueError):
+                continue
+            if price <= 0.0:
+                continue
+
+            ts = None
+            if isinstance(ts_raw, datetime):
+                ts = ts_raw if ts_raw.tzinfo is not None else ts_raw.replace(tzinfo=timezone.utc)
+            elif isinstance(ts_raw, str) and ts_raw.strip():
+                try:
+                    parsed = datetime.fromisoformat(ts_raw.strip().replace("Z", "+00:00"))
+                    ts = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    ts = None
+
+            if ts is None or ts >= cutoff_90:
+                prices_90.append(price)
+                if ts is not None:
+                    timestamps.append(ts)
+                    if ts >= cutoff_30:
+                        prices_30.append(price)
+                    if ts >= cutoff_14:
+                        prices_14.append(price)
+            if ts is None:
+                prices_30.append(price)
+
+        med_90 = round(statistics.median(prices_90), 2) if prices_90 else None
+        med_30 = round(statistics.median(prices_30), 2) if prices_30 else None
+        min_90 = round(min(prices_90), 2) if prices_90 else None
+        max_14 = round(max(prices_14), 2) if prices_14 else None
+
+        mad_90 = None
+        if med_90 is not None and len(prices_90) >= 3:
+            mad_90 = round(statistics.median([abs(p - med_90) for p in prices_90]), 2)
+
+        days_span = 0.0
+        if len(timestamps) >= 2:
+            days_span = round(max(0.0, (max(timestamps) - min(timestamps)).total_seconds() / 86400.0), 2)
+        elif len(timestamps) == 1:
+            days_span = round(max(0.0, (ref_now - timestamps[0]).total_seconds() / 86400.0), 2)
+
+        pre_event_spike = bool(
+            med_90 and max_14 and len(prices_90) >= 3 and max_14 > (med_90 * 1.25)
+        )
+
+        return {
+            "median_30d": med_30,
+            "median_90d": med_90,
+            "min_90d": min_90,
+            "max_14d": max_14,
+            "mad_90d": mad_90,
+            "samples_30d": len(prices_30),
+            "samples_90d": len(prices_90),
+            "days_span": days_span,
+            "pre_event_spike": pre_event_spike,
+            "prices_90d": prices_90,
+        }
 
 
 if __name__ == "__main__":

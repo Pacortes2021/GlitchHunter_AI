@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import html
 import json
 import logging
+import os
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional, Union
@@ -262,6 +263,13 @@ class TelegramAlertDispatcher:
 
         return "\n".join(lines)
 
+    def _dashboard_base_url(self) -> str:
+        public_url = os.getenv("PUBLIC_DASHBOARD_URL", "").strip().rstrip("/")
+        if public_url:
+            return public_url
+        host = "127.0.0.1" if str(self.web_host) in ("0.0.0.0", "::", "") else self.web_host
+        return f"http://{host}:{self.web_port}"
+
     def build_inline_keyboard(self, alert: GlitchAlert) -> Dict[str, Any]:
         """
         Genera los botones inline interactivos de Telegram:
@@ -270,7 +278,7 @@ class TelegramAlertDispatcher:
           - [📊 Ver Historial en Dashboard]
         """
         buy_url = alert.alert_url or alert.product.url
-        dashboard_url = f"http://{self.web_host}:{self.web_port}/#alert-{alert.alert_id}"
+        dashboard_url = f"{self._dashboard_base_url()}/#alert-{alert.alert_id}"
 
         buttons = []
         if getattr(alert, "add_to_cart_url", None) and alert.add_to_cart_url != buy_url:
@@ -327,7 +335,7 @@ class TelegramAlertDispatcher:
             "target_chat": self.chat_id,
             "mode": mode,
             "buy_url": alert.alert_url or alert.product.url,
-            "dashboard_url": f"http://{self.web_host}:{self.web_port}/#alert-{alert.alert_id}",
+            "dashboard_url": f"{self._dashboard_base_url()}/#alert-{alert.alert_id}",
             "details": details or {},
         }
 
@@ -341,8 +349,9 @@ class TelegramAlertDispatcher:
         """
         Muestra en terminal una tarjeta visual atractiva de la alerta en modo simulación.
         """
-        buy_url = keyboard["inline_keyboard"][0][0]["url"]
-        dash_url = keyboard["inline_keyboard"][1][0]["url"]
+        rows = keyboard.get("inline_keyboard") or []
+        buy_url = next((btn.get("url") for row in rows for btn in row if "COMPRAR" in str(btn.get("text", ""))), alert.alert_url or alert.product.url)
+        dash_url = next((btn.get("url") for row in rows for btn in row if "Dashboard" in str(btn.get("text", ""))), f"{self._dashboard_base_url()}/#alert-{alert.alert_id}")
         chat_info = f"Canal Destino: {self.chat_id} | Modo: SIMULACIÓN LOCAL | ID: {alert.alert_id}"
 
         if _HAS_RICH:

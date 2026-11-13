@@ -31,13 +31,49 @@ STORE_DOMAINS: Dict[str, List[str]] = {
     "mercadolibre": ["mercadolibre.cl"],
     "pcfactory": ["pcfactory.cl"],
 }
+# Dominios ampliados para exclusión estricta cuando evaluamos cualquiera de las tiendas directas
+_EXCLUDE_STORE_DOMAINS: Dict[str, List[str]] = {
+    **{k: list(v) for k, v in STORE_DOMAINS.items()},
+    "abc": ["abc.cl", "abcdin.cl", "lapolar.cl"],
+    "hites": ["hites.com"],
+    "spdigital": ["spdigital.cl"],
+    "winpy": ["winpy.cl"],
+    "hp": ["hp.com", "hp.cl"],
+    "sodimac": ["sodimac.cl"],
+    "easy": ["easy.cl"],
+    "jumbo": ["jumbo.cl"],
+    "santaisabel": ["santaisabel.cl"],
+    "nike": ["nike.cl"],
+    "adidas": ["adidas.cl"],
+    "puma": ["puma.com", "cl.puma.com"],
+    "maconline": ["maconline.com"],
+    "wei": ["wei.cl"],
+    "myshop": ["myshop.cl"],
+    "centrale": ["centrale.cl"],
+}
+try:
+    from glitchhunter_ai.scrapers.direct_reader import STORE_BASE as _DIRECT_STORE_BASE
+    for _sid, _base_url in _DIRECT_STORE_BASE.items():
+        _host = (urllib.parse.urlparse(_base_url).hostname or "").lower().removeprefix("www.")
+        if _host:
+            _existing = _EXCLUDE_STORE_DOMAINS.setdefault(_sid, [])
+            if _host not in _existing:
+                _existing.append(_host)
+except Exception:
+    pass
+
 SOLOTODO_STORE_IDS: Dict[str, List[str]] = {
-    "falabella": ["9"],
+    "falabella": ["9", "8147"],
     "ripley": ["18"],
     "paris": ["11"],
     "lider": ["43"],
     "mercadolibre": ["260"],
     "pcfactory": ["12"],
+    "spdigital": ["5"],
+    "winpy": ["16"],
+    "hites": ["21"],
+    "abc": ["22", "19"],
+    "hp": ["278"],
 }
 
 NEW_CONDITION = "https://schema.org/NewCondition"
@@ -193,7 +229,7 @@ class MarketReferenceService:
             entities = ent_resp.json()
             store_prices: Dict[str, Dict[str, float]] = {}
             store_key = exclude_store_id.lower()
-            exclude_domains = STORE_DOMAINS.get(store_key, [])
+            exclude_domains = _EXCLUDE_STORE_DOMAINS.get(store_key, STORE_DOMAINS.get(store_key, []))
             exclude_ids = SOLOTODO_STORE_IDS.get(store_key, [])
 
             for e in entities:

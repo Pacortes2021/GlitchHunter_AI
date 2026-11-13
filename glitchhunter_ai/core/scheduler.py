@@ -56,7 +56,8 @@ class StoreScheduler:
         base = float(base if base is not None else (self.hot_interval if lane == HOT else self.deep_interval))
         spread = (zlib.crc32(f"{store_id}:{lane}".encode()) % 1000) / 1000.0
         first = self.clock() + spread * min(base, 30.0)
-        self.lanes[(store_id, lane)] = LaneState(store_id, lane, base, base, first)
+        with self._lock:
+            self.lanes[(store_id, lane)] = LaneState(store_id, lane, base, base, first)
 
     def due(self) -> List[Tuple[str, str]]:
         """Carriles cuyo turno llegó (y que no están en lectura). Quedan marcados en lectura."""
@@ -68,7 +69,7 @@ class StoreScheduler:
                     st.in_flight = True
                     st.last_started = now
                     out.append(key)
-        out.sort(key=lambda k: self.lanes[k].next_at)
+            out.sort(key=lambda k: self.lanes[k].next_at)
         return out
 
     def done(self, store_id: str, lane: str, count: int, fresh: int, ok: bool = True) -> None:

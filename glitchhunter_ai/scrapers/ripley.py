@@ -133,51 +133,6 @@ class RipleyScraper:
             return items
         return default_direct_reader.fetch_category("ripley", "notebooks")
 
-    def _parse_ripley_product(self, raw: Dict[str, Any]) -> Optional[ProductItem]:
-        """
-        Transforma una entrada cruda de producto de Ripley en un ProductItem fuertemente tipado.
-        """
-        try:
-            prod_id = str(raw.get("partNumber") or raw.get("uniqueID") or raw.get("id") or "").strip()
-            title = str(raw.get("name") or raw.get("title") or "").strip()
-            if not prod_id or not title:
-                return None
-
-            prices = raw.get("prices", {})
-            normal_p = float(prices.get("listPrice") or prices.get("normalPrice") or 0.0)
-            offer_p = float(prices.get("offerPrice") or prices.get("currentPrice") or 0.0)
-            card_p_raw = prices.get("cardPrice") or prices.get("ripleyPrice")
-            card_p = float(card_p_raw) if card_p_raw is not None else None
-
-            # Ajuste de precios base si faltan campos
-            current_p = offer_p if offer_p > 0.0 else normal_p
-            if normal_p == 0.0:
-                normal_p = current_p
-
-            url_suffix = raw.get("url") or f"/{prod_id}p"
-            url = urllib.parse.urljoin(self.base_url, url_suffix)
-            image_url = raw.get("thumbnailImage") or raw.get("fullImage")
-            category = str(raw.get("category") or raw.get("definingCategory") or "general")
-            in_stock = bool(raw.get("isAvailable", True))
-
-            return ProductItem(
-                id=f"RIP-{prod_id}",
-                store_id=self.store_id,
-                store_name=self.store_name,
-                title=title,
-                category=category,
-                current_price=current_p,
-                normal_price=normal_p,
-                card_price=card_p,
-                url=url,
-                image_url=image_url,
-                in_stock=in_stock,
-                timestamp=datetime.now(timezone.utc),
-            )
-        except Exception as exc:
-            logger.debug("No se pudo parsear producto de Ripley: %s", exc)
-            return None
-
     def get_simulated_catalog(self) -> List[ProductItem]:
         """
         Retorna un conjunto de datos realista de alta fidelidad representativo de Ripley Chile.

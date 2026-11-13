@@ -7,15 +7,16 @@ from pathlib import Path
 import os
 
 try:
-    from dotenv import load_dotenv
-    # Cargar automáticamente variables de entorno desde .env si existe
     BASE_DIR = Path(__file__).resolve().parent
-    for env_file in [BASE_DIR / ".env", BASE_DIR.parent / ".env"]:
-        if env_file.is_file():
-            load_dotenv(dotenv_path=env_file)
-            break
-    else:
-        load_dotenv()
+    if os.environ.get("GLITCHHUNTER_SKIP_DOTENV", "").strip().lower() not in ("1", "true", "yes"):
+        from dotenv import load_dotenv
+        # Cargar automáticamente variables de entorno desde .env si existe
+        for env_file in [BASE_DIR / ".env", BASE_DIR.parent / ".env"]:
+            if env_file.is_file():
+                load_dotenv(dotenv_path=env_file)
+                break
+        else:
+            load_dotenv()
 except ImportError:
     pass
 

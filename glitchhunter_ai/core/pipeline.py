@@ -6,6 +6,7 @@ la verificación de inflación artificial (precios falsos de CyberDay)
 y el filtro semántico NLP estricto para erradicar el 'Carcasa Trap'.
 """
 
+from collections import OrderedDict
 import logging
 import re
 import threading
@@ -23,7 +24,8 @@ from glitchhunter_ai.ai_detector.math_detector import MathAnomalyDetector
 from glitchhunter_ai.ai_detector.semantic_filter import SemanticGlitchFilter
 from glitchhunter_ai.core.cart_sniper import generate_direct_add_to_cart_url
 from glitchhunter_ai.core.categories import ACCESSORY_CATEGORY, NON_TECH_CATEGORIES, classify_category
-from glitchhunter_ai.core.price_signals import BULK_MIN_PRODUCTS, detect_bulk_prices
+from glitchhunter_ai.core.price_signals import BULK_MIN_PRODUCTS, detect_bulk_prices, risk_tier
+from glitchhunter_ai.scrapers.live_feed import KNASTA_DEAL_STATES
 from glitchhunter_ai.core.database import PriceDatabase
 from glitchhunter_ai.core.market_reference import default_market_reference
 from glitchhunter_ai.core.models import (
@@ -74,6 +76,7 @@ class GlitchHuntingPipeline:
         on_glitch_callback: Optional[Callable[[GlitchAlert], Any]] = None,
         direct_reader: Optional[Any] = None,
         confirm_with_store: Optional[bool] = None,
+        forward_only: bool = False,
     ):
         from glitchhunter_ai.config import DIRECT_CONFIRM_ENABLED
 
@@ -88,15 +91,43 @@ class GlitchHuntingPipeline:
         self.discord_dispatcher = discord_dispatcher or DiscordAlertDispatcher()
         self.scrapers = get_all_scrapers()
         self.on_glitch_callback = on_glitch_callback
-        from glitchhunter_ai.core.catalog_rotator import default_catalog_rotator
-        self.catalog_rotator = default_catalog_rotator
+        from glitchhunter_ai.core.catalog_rotator import CatalogRotator
+        self.catalog_rotator = CatalogRotator(state_db=self.db)
+        self._orchestrator_lock = threading.Lock()
         self._scan_lock = threading.Lock()
         # Productos con el mismo precio que otros de su tienda en el escaneo en curso (carga masiva)
         self._bulk_price_counts: Dict[str, int] = {}
         self.last_direct_scan_skipped = False   # True si el último escaneo directo se omitió por otro en curso
         self.is_scanning = False
-        self._rejected_deals: set = set()   # (product_id, precio) rechazados por el filtro de calidad
+        self._rejected_deals: OrderedDict = OrderedDict()   # (product_id, precio) rechazados (acotado a 5000)
+        self._rejected_deals_max = 5000
         self.forwarder = None   # core/forwarder.Forwarder: envía cada lectura a otro radar (FORWARD_TO_URL)
+        self.forward_only = bool(forward_only)
+        self._forward_seen_prices: Dict[str, float] = {}
+        self._store_inflation_cache: Dict[str, Dict[str, Any]] = {}
+        self._store_inflation_cache_ts: float = 0.0
+
+    def _get_store_inflation_map(self, ttl_seconds: float = 300.0) -> Dict[str, Dict[str, Any]]:
+        """Perfil empírico cacheado de tiendas con inflación crónica de precios de lista."""
+        now = time.monotonic()
+        if self._store_inflation_cache and (now - self._store_inflation_cache_ts) < ttl_seconds:
+            return self._store_inflation_cache
+        getter = getattr(self.db, "get_store_inflation_stats", None)
+        if callable(getter):
+            try:
+                data = getter()
+                if isinstance(data, dict):
+                    self._store_inflation_cache = data
+                    self._store_inflation_cache_ts = now
+            except Exception as exc:
+                logger.debug(f"No se pudo calcular perfil de inflación por tienda: {exc}")
+        return self._store_inflation_cache
+
+    def _inflated_store_ids(self) -> List[str]:
+        return [
+            sid for sid, info in self._get_store_inflation_map().items()
+            if isinstance(info, dict) and info.get("is_chronic_inflator")
+        ]
 
     def process_product(
         self,
@@ -115,8 +146,17 @@ class GlitchHuntingPipeline:
             logger.debug(f"📦 [Sin Stock Omitido] {product.title} ({product.id}) no tiene stock disponible.")
             return None
 
-        # Fase 1: Consulta de precio histórico base previo (30 días) y persistencia
+        # Fase 1: Consulta de precio histórico base previo (30d / 90d) y persistencia
         baseline_price = self.db.get_baseline_price(product.id, days=30)
+        hist_stats: Dict[str, Any] = {}
+        hist_getter = getattr(self.db, "get_price_history_summary", None)
+        if callable(hist_getter):
+            try:
+                raw_hist = hist_getter(product.id, days=90)
+                if isinstance(raw_hist, dict):
+                    hist_stats = raw_hist
+            except Exception as exc:
+                logger.debug(f"Error leyendo resumen histórico para {product.id}: {exc}")
         self.db.upsert_product(product)
 
         # Fase 2: Detector Matemático de Anomalías (Porcentaje y Missing Zero Bug)
@@ -197,6 +237,7 @@ class GlitchHuntingPipeline:
                     "current_price": fresh.current_price,
                     "normal_price": fresh.normal_price,
                     "card_price": fresh.card_price,
+                    "in_stock": fresh.in_stock,
                     "source": "direct",
                     "timestamp": fresh.timestamp,
                 })
@@ -242,17 +283,38 @@ class GlitchHuntingPipeline:
             )
 
         # ¿Hay evidencia INDEPENDIENTE de la tienda de que el precio realmente se desplomó?
-        # El precio tachado lo pone la tienda: perfumes y cremas muestran "-70%" todo el año.
-        # Sin evidencia, el producto se publica como oferta (sin push), no como error de precio.
+        # El precio tachado lo pone la tienda: perfumes, ropa o porcelanato muestran "-70%" todo el año.
         best_now = product.best_price
         bulk_count = self._bulk_price_counts.get(product.id, 0)
-        verified_drop = bool(
-            math_eval.get("is_missing_zero")                                        # ~10x: firma clásica de error
-            or bulk_count >= BULK_MIN_PRODUCTS                                      # mismo precio en muchos productos
-            or (baseline_price and baseline_price > 0 and best_now <= baseline_price * 0.5)  # nuestro historial
-            or (mkt_ref and not market_inflation and mkt_ref.market_discount_pct >= 50.0)  # otras tiendas
-            or product.source == "knasta"                                           # vs precio habitual de Knasta
+        inflation_map = self._get_store_inflation_map()
+        store_inflated = bool((inflation_map.get(product.store_id.lower()) or {}).get("is_chronic_inflator"))
+        pre_event_spike = bool(hist_stats.get("pre_event_spike"))
+        modified_z = InflationVerifier.modified_z_score(best_now, hist_stats.get("prices_90d"))
+
+        has_hist_drop = bool(
+            (baseline_price and baseline_price > 0 and best_now <= baseline_price * 0.5)
+            or (
+                hist_stats.get("median_90d")
+                and best_now <= float(hist_stats["median_90d"]) * 0.5
+                and float(hist_stats.get("days_span") or 0) >= 0.5
+            )
         )
+        has_mkt_drop = bool(mkt_ref and not market_inflation and mkt_ref.market_discount_pct >= 50.0)
+        has_knasta_drop = bool(
+            getattr(product, "knasta_has_habitual", False)
+            and (
+                not getattr(product, "knasta_state", None)
+                or product.knasta_state in KNASTA_DEAL_STATES
+            )
+        )
+        has_bulk_drop = bool(bulk_count >= BULK_MIN_PRODUCTS and not store_inflated)
+
+        # Tiendas con inflación crónica de MSRP no pueden autoverificar alertas sin historial ni mercado
+        if store_inflated and not (has_hist_drop or has_mkt_drop or has_knasta_drop) and not is_simulated_test:
+            logger.debug(
+                f"🚫 [Tienda MSRP Inflado] {product.title} ({product.store_name}) omitido sin respaldo histórico/mercado."
+            )
+            return None
 
         # Determinación de severidad
         severity_val = math_eval.get("severity")
@@ -272,7 +334,50 @@ class GlitchHuntingPipeline:
         discount_pct = float(math_eval.get("discount_percentage", 0.0))
         savings_clp = float(math_eval.get("absolute_savings_clp", 0.0))
         missing_zero = bool(math_eval.get("is_missing_zero", False))
+        # Evitar falsos "Missing Zero" en ropa/hogar baratos o si historial/mercado/pre-evento contradice
+        nontech_cheap_trap = bool(
+            classify_category(product.title) in NON_TECH_CATEGORIES
+            and product.category in NON_TECH_CATEGORIES
+            and best_now <= 25000.0
+            and product.normal_price < 200000.0
+            and not has_hist_drop
+            and not has_mkt_drop
+            and not has_knasta_drop
+        )
+        if market_inflation or pre_event_spike or nontech_cheap_trap or (store_inflated and not (has_hist_drop or has_mkt_drop)):
+            missing_zero = False
+
+        verified_drop = bool(
+            has_hist_drop
+            or has_mkt_drop
+            or has_knasta_drop
+            or has_bulk_drop
+            or missing_zero
+        )
         confidence = float(math_eval.get("confidence_score", 95.0))
+        if pre_event_spike:
+            is_fake_inflation = True
+            confidence = max(25.0, confidence - 20.0)
+
+        if has_hist_drop:
+            span_days = int(round(max(1.0, float(hist_stats.get("days_span") or 30.0))))
+            evidence_source = "historial_30d"
+            evidence_label = f"Bajó de su precio real en {span_days}d"
+        elif has_mkt_drop:
+            evidence_source = "mercado"
+            evidence_label = f"{mkt_ref.market_discount_pct:.0f}% más barato que {mkt_ref.stores_count} tiendas"
+        elif has_knasta_drop:
+            evidence_source = "knasta_habitual"
+            evidence_label = "Bajo su precio habitual registrado en Knasta"
+        elif has_bulk_drop:
+            evidence_source = "carga_masiva"
+            evidence_label = f"{bulk_count} productos distintos al mismo precio exacto"
+        elif missing_zero:
+            evidence_source = "missing_zero_tech"
+            evidence_label = "Posible error de tipeo (~10x menos)"
+        else:
+            evidence_source = "solo_precio_lista"
+            evidence_label = "Basado solo en precio tachado de la tienda (sin historial suficiente)"
 
         # Nunca se publica un "error de precio" sin descuento (p. ej. el precio confirmado en la tienda
         # ya no tiene rebaja, o dos productos distintos compartían ID y "saltaba" el precio).
@@ -319,12 +424,23 @@ class GlitchHuntingPipeline:
             market_match_method=mkt_ref.match_method if mkt_ref else None,
             market_matched_model=mkt_ref.matched_model if mkt_ref else None,
             user_trust_modifier=trust_mod if trust_mod != 0.0 else None,
+            evidence_source=evidence_source,
+            evidence_label=evidence_label,
+            baseline_30d=hist_stats.get("median_30d") or baseline_price,
+            baseline_90d=hist_stats.get("median_90d"),
+            min_90d=hist_stats.get("min_90d"),
+            history_days=float(hist_stats.get("days_span") or 0.0),
+            modified_z_score=modified_z,
+            inflation_warning=bool(market_inflation or pre_event_spike or store_inflated),
+            risk_tier_label=risk_tier(discount_pct),
+            verified_drop=verified_drop,
             reason=(
                 f"{'⚠️ Missing Zero Bug (~10x)' if missing_zero else f'Descuento masivo {discount_pct:.1f}%'} "
                 f"en {product.store_name} | Ahorro: ${savings_clp:,.0f} CLP".replace(",", ".")
                 + (" | 📉 Caída vs su precio habitual (la tienda no muestra rebaja)" if from_history else "")
                 + (" | ⚠️ Precio normal inflado vs mercado" if market_inflation else "")
-                + (f" | 📦 Mismo precio en {bulk_count} productos (posible error de carga masiva)" if bulk_count else "")
+                + (" | 📈 Inflación previa detectada en historial" if pre_event_spike else "")
+                + (f" | 📦 Mismo precio en {bulk_count} productos (posible error de carga masiva)" if has_bulk_drop else "")
             ),
         )
 
@@ -359,7 +475,7 @@ class GlitchHuntingPipeline:
             return None
 
         # ⭐ REVISIÓN DE WATCHLIST: Prioridad especial sin corromper la certeza matemática (Hallazgo E de Auditoría 4)
-        is_watchlist = self.db.is_in_watchlist(product.title)
+        is_watchlist = self.db.is_in_watchlist(product.title, price=product.best_price)
         if is_watchlist:
             logger.info("⭐ [WATCHLIST HIT] %s coincide con las palabras clave de seguimiento prioritario!", product.title)
 
@@ -415,7 +531,16 @@ class GlitchHuntingPipeline:
             or getattr(product, "is_mock", False)
         )
 
-        if send_notifications and not is_test_product and not market_inflation and verified_drop:
+        push_allowed = bool(send_notifications and not is_test_product and not market_inflation and verified_drop)
+        if push_allowed:
+            llm_gate = self.semantic_filter.verify_glitch_with_llm(product, evidence_label)
+            if llm_gate is not None and not llm_gate.get("approved", True):
+                logger.info(
+                    f"🤖 [LLM Filtro] Push omitido para {product.title} ({product.store_name}): {llm_gate.get('reason')}"
+                )
+                push_allowed = False
+
+        if push_allowed:
             # Despacho por Telegram
             try:
                 dispatch_ok = self.telegram_dispatcher.send_alert(alert)
@@ -480,19 +605,30 @@ class GlitchHuntingPipeline:
         y escaneo proactivo de la Watchlist del usuario.
         Protegido con un cerrojo atómico para impedir carreras por escaneos concurrentes (Hallazgo F).
         """
-        # El escaneo automático espera a que termine un escaneo directo en curso (en vez de perder el ciclo);
-        # un escaneo manual vía API no espera y responde "ocupado".
-        acquired = (
+        # El escaneo automático espera a que termine un escaneo en curso; un escaneo manual vía API no espera.
+        # _orchestrator_lock serializa escaneos macro, mientras _scan_lock solo protege procesamiento y SQLite
+        # para no bloquear lecturas continuas durante descargas HTTP lentas.
+        orch_acquired = (
+            self._orchestrator_lock.acquire(timeout=wait_for_lock_seconds)
+            if wait_for_lock_seconds > 0
+            else self._orchestrator_lock.acquire(blocking=False)
+        )
+        if not orch_acquired:
+            logger.warning("⚠️ Intento de escaneo concurrente rechazado: ya existe un ciclo de escaneo en ejecución.")
+            return []
+
+        scan_acquired = (
             self._scan_lock.acquire(timeout=wait_for_lock_seconds)
             if wait_for_lock_seconds > 0
             else self._scan_lock.acquire(blocking=False)
         )
-        if not acquired:
-            logger.warning("⚠️ Intento de escaneo concurrente rechazado: ya existe un ciclo de escaneo en ejecución.")
+        if not scan_acquired:
+            self._orchestrator_lock.release()
+            logger.warning("⚠️ Intento de escaneo concurrente rechazado: cerrojo de base de datos ocupado.")
             return []
+        self._scan_lock.release()
 
         self.is_scanning = True
-        self._bulk_price_counts = {}
         all_detected_glitches: List[GlitchAlert] = []
 
         try:
@@ -501,7 +637,8 @@ class GlitchHuntingPipeline:
 
             # Expirar ofertas que no han sido vistas en las últimas 12 horas
             try:
-                expired = self.db.expire_stale_deals(max_hours=12)
+                with self._scan_lock:
+                    expired = self.db.expire_stale_deals(max_hours=12)
                 if expired > 0:
                     logger.info(f"⏳ [Expiración Automática] {expired} oferta(s) no vistas en >12h transicionadas a EXPIRED.")
             except Exception as e:
@@ -544,11 +681,14 @@ class GlitchHuntingPipeline:
                     total_scanned += len(products)
                     if use_live and products and self.forwarder is not None:
                         self.forwarder.submit(scraper.store_id, products)   # unir paneles (FORWARD_TO_URL)
-                    self._note_bulk_prices(products)
-                    for prod in products:
-                        alert = self.process_product(prod, send_notifications=send_notifications)
-                        if alert:
-                            all_detected_glitches.append(alert)
+                    with self._scan_lock:
+                        self._bulk_price_counts = {}
+                        self._note_bulk_prices(products)
+                        for prod in products:
+                            alert = self.process_product(prod, send_notifications=send_notifications)
+                            if alert:
+                                all_detected_glitches.append(alert)
+                        self._bulk_price_counts = {}
                 except Exception as exc:
                     has_error = True
                     logger.error(f"Error escaneando {scraper.store_name}: {exc}")
@@ -581,18 +721,19 @@ class GlitchHuntingPipeline:
                 f"{len(all_detected_glitches)} glitches confirmados."
             )
             if use_live:
-                self.publish_new_deals()
-                self.refresh_feed_statuses()
+                with self._scan_lock:
+                    self.publish_new_deals()
+                    self.refresh_feed_statuses()
             return all_detected_glitches
         finally:
             self.is_scanning = False
-            self._scan_lock.release()
+            self._orchestrator_lock.release()
 
     run_scan_cycle = run_scan
 
     def _note_bulk_prices(self, products: List[ProductItem]) -> None:
         """Registra los productos que comparten precio exacto con otros de su tienda (carga masiva)."""
-        counts = detect_bulk_prices(products)
+        counts = detect_bulk_prices(products, excluded_stores=self._inflated_store_ids())
         if counts:
             stores = sorted({p.store_id for p in products if p.id in counts})
             logger.info(f"📦 [Carga masiva] {len(counts)} producto(s) con precio repetido en {', '.join(stores)}.")
@@ -614,6 +755,16 @@ class GlitchHuntingPipeline:
                     self.on_glitch_callback({"type": "feed_status", "changes": changed})
                 except Exception:
                     pass
+        try:
+            last_prune_raw = self.db.get_state("last_history_prune_epoch")
+            now_epoch = time.time()
+            if not last_prune_raw or (now_epoch - float(last_prune_raw)) >= 43200.0:
+                pruned = self.db.prune_old_price_history(keep_days=120, batch_size=25000)
+                self.db.set_state("last_history_prune_epoch", str(int(now_epoch)))
+                if pruned:
+                    logger.info(f"🧹 [Mantenimiento BD] Podadas {pruned} muestra(s) de historial >120 días.")
+        except Exception as exc:
+            logger.debug(f"Poda periódica de price_history omitida: {exc}")
         return changed
 
     def withdraw_false_offers(self) -> Dict[str, int]:
@@ -685,6 +836,13 @@ class GlitchHuntingPipeline:
             return False
         if str(row.get("store_id") or "").lower() in DEAL_GLITCH_ONLY_STORES:
             return False   # tiendas de ropa: solo errores de precio verificados
+        store_key = str(row.get("store_id") or "").lower()
+        if (self._get_store_inflation_map().get(store_key) or {}).get("is_chronic_inflator"):
+            # En tiendas con inflación crónica de MSRP exigimos caída real contra historial (>=25%)
+            baseline_getter = getattr(self.db, "get_baseline_price", None)
+            baseline = baseline_getter(product_id, days=30) if callable(baseline_getter) and product_id else None
+            if not (baseline and baseline > 0 and best_price <= baseline * 0.75):
+                return False
         if REFURBISHED_RE.search(title):
             return False
         category = classify_category(title)
@@ -771,7 +929,9 @@ class GlitchHuntingPipeline:
                     break
                 checked += 1
                 if not self._is_publishable_deal(row, best):
-                    self._rejected_deals.add(key)
+                    self._rejected_deals[key] = None
+                    if len(self._rejected_deals) > self._rejected_deals_max:
+                        self._rejected_deals.popitem(last=False)
                     continue
                 # Categoría consistente para los filtros de la página (los scrapers usan rótulos distintos)
                 row = dict(row, category=classify_category(str(row.get("title") or "")))
@@ -792,7 +952,7 @@ class GlitchHuntingPipeline:
             logger.info(f"📢 [Canal] {published} oferta(s) nueva(s) publicada(s).")
             if self.on_glitch_callback:
                 try:
-                    self.on_glitch_callback({"type": "feed_updated", "new_posts": published})
+                    self.on_glitch_callback({"type": "feed_new", "new_posts": published})
                 except Exception:
                     pass
         return published
@@ -805,19 +965,25 @@ class GlitchHuntingPipeline:
     ) -> List[GlitchAlert]:
         """
         Escaneo directo y frecuente de Falabella y Ripley (modo híbrido): términos de la watchlist
-        y categorías prioritarias, con precios en tiempo real. Comparte el cerrojo con run_scan,
-        por lo que se omite si hay un escaneo completo en curso.
+        y categorías prioritarias, con precios en tiempo real. Solo libera `_scan_lock` durante
+        descargas HTTP para no frenar al lector continuo.
         """
         from glitchhunter_ai.config import DIRECT_FETCH_WORKERS, DIRECT_PCFACTORY_PAGES_PER_CYCLE
 
-        if not self._scan_lock.acquire(blocking=False):
-            logger.debug("Escaneo directo omitido: hay un escaneo en curso.")
+        if not self._orchestrator_lock.acquire(blocking=False):
+            logger.debug("Escaneo directo omitido: hay otro ciclo de escaneo en curso.")
             self.last_direct_scan_skipped = True
             return []
 
+        if not self._scan_lock.acquire(blocking=False):
+            self._orchestrator_lock.release()
+            logger.debug("Escaneo directo omitido: hay un procesamiento en curso.")
+            self.last_direct_scan_skipped = True
+            return []
+        self._scan_lock.release()
+
         self.last_direct_scan_skipped = False
         self.is_scanning = True
-        self._bulk_price_counts = {}
         detected: List[GlitchAlert] = []
         started = time.monotonic()
         try:
@@ -836,8 +1002,7 @@ class GlitchHuntingPipeline:
                     batches.append(self.direct_reader.fetch_catalog_slice(store_id, pages=DIRECT_PCFACTORY_PAGES_PER_CYCLE))
                 return batches
 
-            # Cada tienda es un sitio distinto: se consultan en paralelo (la red es ~80% del escaneo).
-            # El procesamiento y la base de datos siguen en este hilo, en el orden de DIRECT_STORES.
+            # Cada tienda es un sitio distinto: se consultan en paralelo fuera de _scan_lock.
             fetched: Dict[str, List[List[ProductItem]]] = {}
             with ThreadPoolExecutor(max_workers=DIRECT_FETCH_WORKERS, thread_name_prefix="direct") as pool:
                 from glitchhunter_ai.config import store_enabled
@@ -851,31 +1016,34 @@ class GlitchHuntingPipeline:
                         fetched[store_id] = []
 
             seen: set = set()
-            for store_id in DIRECT_STORES:
-                batches = fetched.get(store_id, [])
-                store_products: List[ProductItem] = []
-                for products in batches:
-                    for prod in products:
-                        if prod.id in seen:
-                            continue
-                        seen.add(prod.id)
-                        store_products.append(prod)
-                self._note_bulk_prices(store_products)
-                for prod in store_products:
-                    alert = self.process_product(prod, send_notifications=send_notifications)
-                    if alert:
-                        detected.append(alert)
+            with self._scan_lock:
+                self._bulk_price_counts = {}
+                for store_id in DIRECT_STORES:
+                    batches = fetched.get(store_id, [])
+                    store_products: List[ProductItem] = []
+                    for products in batches:
+                        for prod in products:
+                            if prod.id in seen:
+                                continue
+                            seen.add(prod.id)
+                            store_products.append(prod)
+                    self._note_bulk_prices(store_products)
+                    for prod in store_products:
+                        alert = self.process_product(prod, send_notifications=send_notifications)
+                        if alert:
+                            detected.append(alert)
+                self._bulk_price_counts = {}
 
-            logger.info(
-                "⚡ [Escaneo Directo] %d producto(s) revisados en tiempo real en %s, %d alerta(s) nueva(s) (%.0f s).",
-                len(seen), ", ".join(STORE_NAMES[s] for s in DIRECT_STORES), len(detected), time.monotonic() - started,
-            )
-            self.publish_new_deals()
-            self.refresh_feed_statuses()
+                logger.info(
+                    "⚡ [Escaneo Directo] %d producto(s) revisados en tiempo real en %s, %d alerta(s) nueva(s) (%.0f s).",
+                    len(seen), ", ".join(STORE_NAMES[s] for s in DIRECT_STORES), len(detected), time.monotonic() - started,
+                )
+                self.publish_new_deals()
+                self.refresh_feed_statuses()
             return detected
         finally:
             self.is_scanning = False
-            self._scan_lock.release()
+            self._orchestrator_lock.release()
 
     def count_fresh_deals(self, products: List[ProductItem], min_discount: float = 40.0) -> int:
         """Productos con ≥min_discount% que son nuevos en el radar o bajaron de precio desde la última lectura."""
@@ -901,6 +1069,22 @@ class GlitchHuntingPipeline:
             return [], 0
         if self.forwarder is not None:
             self.forwarder.submit(store_id, products)
+            if self.forward_only:
+                if not self._scan_lock.acquire(timeout=lock_timeout):
+                    return [], 0
+                try:
+                    fresh = 0
+                    for p in products:
+                        prev = self._forward_seen_prices.get(p.id)
+                        if p.normal_price > 0 and (p.normal_price - p.best_price) / p.normal_price * 100 >= 40.0:
+                            if prev is None or p.best_price < prev - 0.5:
+                                fresh += 1
+                        self._forward_seen_prices[p.id] = p.best_price
+                    if len(self._forward_seen_prices) > 50000:
+                        self._forward_seen_prices.clear()
+                    return [], fresh
+                finally:
+                    self._scan_lock.release()
         if not self._scan_lock.acquire(timeout=lock_timeout):
             logger.warning("⚠️ [Lector %s] %d producto(s) descartados: cerrojo ocupado.", store_id, len(products))
             return [], 0
@@ -935,18 +1119,23 @@ class GlitchHuntingPipeline:
         send_notifications: Optional[bool] = None,
     ) -> List[GlitchAlert]:
         """
-        Escaneo de la watchlist bajo demanda (API / CLI). Toma el mismo cerrojo que run_scan:
-        si hay un escaneo en curso se omite, en vez de correr dos escaneos en paralelo.
+        Escaneo de la watchlist bajo demanda (API / CLI). Serializa contra otros ciclos
+        y libera `_scan_lock` durante consultas de red.
         """
-        if not self._scan_lock.acquire(blocking=False):
+        if not self._orchestrator_lock.acquire(blocking=False):
             logger.warning("⚠️ Escaneo de watchlist omitido: ya hay un escaneo en curso.")
             return []
+        if not self._scan_lock.acquire(blocking=False):
+            self._orchestrator_lock.release()
+            logger.warning("⚠️ Escaneo de watchlist omitido: cerrojo ocupado.")
+            return []
+        self._scan_lock.release()
         self.is_scanning = True
         try:
             return self._run_watchlist_scan_unlocked(use_live=use_live, send_notifications=send_notifications)
         finally:
             self.is_scanning = False
-            self._scan_lock.release()
+            self._orchestrator_lock.release()
 
     def _run_watchlist_scan_unlocked(
         self,
@@ -984,10 +1173,11 @@ class GlitchHuntingPipeline:
             else:
                 matched_products = self._generate_simulated_watchlist_products(kw)
 
-            for prod in matched_products:
-                alert = self.process_product(prod, send_notifications=send_notifications)
-                if alert:
-                    detected_watchlist_alerts.append(alert)
+            with self._scan_lock:
+                for prod in matched_products:
+                    alert = self.process_product(prod, send_notifications=send_notifications)
+                    if alert:
+                        detected_watchlist_alerts.append(alert)
 
         logger.info(
             "🎯 [Watchlist Scan] Concluido: %d alertas prioritarias confirmadas para la Watchlist.",
@@ -1025,15 +1215,18 @@ class GlitchHuntingPipeline:
         )
         logger.warning(msg)
         try:
-            if hasattr(self.ntfy_dispatcher, "enabled") and self.ntfy_dispatcher.enabled and getattr(self.ntfy_dispatcher, "topic", None):
+            server_url = getattr(self.ntfy_dispatcher, "server_url", None) or getattr(self.ntfy_dispatcher, "server", None)
+            topic = getattr(self.ntfy_dispatcher, "topic", None)
+            if getattr(self.ntfy_dispatcher, "enabled", False) and server_url and topic:
                 import requests
+                ascii_name = str(store_name).encode("ascii", "ignore").decode("ascii").strip() or store_id
                 headers = {
-                    "Title": f"⚠️ Alerta Salud Retailer: {store_name}",
+                    "Title": f"Alerta Salud Retailer: {ascii_name}",
                     "Priority": "high",
                     "Tags": "warning,rotating_light",
                 }
                 requests.post(
-                    f"{self.ntfy_dispatcher.server}/{self.ntfy_dispatcher.topic}",
+                    f"{str(server_url).rstrip('/')}/{topic}",
                     data=msg.encode("utf-8"),
                     headers=headers,
                     timeout=5,

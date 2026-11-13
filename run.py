@@ -4,6 +4,7 @@ GlitchHunter AI - Entry Point Principal (CLI Maestro)
 
 Comandos disponibles:
   python3 run.py server      Inicia el servidor web FastAPI y el Radar en http://127.0.0.1:8080
+  python3 run.py collector   Inicia solo el recolector silencioso y reenvía lecturas a FORWARD_TO_URL
   python3 run.py scan        Ejecuta un ciclo de escaneo bajo demanda en retail chileno
   python3 run.py diagnose    Diagnostica la conectividad y extracción en vivo de cada tienda
   python3 run.py demo        Demostración interactiva con salida visual en terminal

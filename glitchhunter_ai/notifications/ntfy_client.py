@@ -8,6 +8,7 @@ Envía alertas prioritarias a tu teléfono móvil con enlace de apertura directa
 
 import asyncio
 import logging
+import os
 import urllib.parse
 from typing import Any, Dict, Optional
 
@@ -56,7 +57,7 @@ class NtfyAlertDispatcher:
         """Genera el cuerpo del mensaje push con precios formateados en pesos chilenos."""
         p = alert.product
         v = alert.verdict
-        best_price = p.card_price or p.current_price
+        best_price = p.best_price
 
         body_lines = [
             f"📦 {p.title}",
@@ -103,6 +104,10 @@ class NtfyAlertDispatcher:
 
         # Headers HTTP para ntfy (Click abre automáticamente la URL al presionar la notificación)
         clean_title = title.encode("ascii", "ignore").decode("ascii")
+        dash_url = os.getenv("PUBLIC_DASHBOARD_URL", "").strip().rstrip("/")
+        if not dash_url:
+            host = "127.0.0.1" if str(WEB_HOST) in ("0.0.0.0", "::", "") else WEB_HOST
+            dash_url = f"http://{host}:{WEB_PORT}/"
         headers: Dict[str, str] = {
             "Title": clean_title,
             "Priority": priority,
@@ -110,7 +115,7 @@ class NtfyAlertDispatcher:
             "Click": alert.alert_url or str(p.url),
             "Actions": (
                 f"view, Comprar Ahora, {alert.alert_url or str(p.url)}; "
-                f"view, Ver Radar, http://{WEB_HOST}:{WEB_PORT}/"
+                f"view, Ver Radar, {dash_url}"
             ),
         }
 

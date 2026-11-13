@@ -12,6 +12,7 @@ Permite maximizar la superficie de monitoreo a través de:
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -64,7 +65,7 @@ DEFAULT_CATEGORIES: List[CategoryDefinition] = [
     CategoryDefinition(
         key="smartphones",
         display_name="Smartphones y Telefonía",
-        search_terms=["iphone 15", "samsung galaxy s24", "smartphone xiaomi", "celular motorola"],
+        search_terms=["iphone 16", "samsung galaxy s25", "smartphone xiaomi 14t", "celular motorola edge"],
         solotodo_category_ids=[6],  # SoloTodo: Celulares
         default_sort=SortStrategy.DISCOUNT_DESC,
     ),
@@ -78,7 +79,7 @@ DEFAULT_CATEGORIES: List[CategoryDefinition] = [
     CategoryDefinition(
         key="televisores",
         display_name="Smart TVs y Pantallas OLED/QLED",
-        search_terms=["smart tv oled", "samsung qled 65", "lg c3 55", "televisor 4k"],
+        search_terms=["smart tv oled", "samsung qled 65", "lg oled c4 55", "televisor 4k"],
         solotodo_category_ids=[11],  # SoloTodo: Televisores
         default_sort=SortStrategy.DISCOUNT_DESC,
     ),
@@ -92,7 +93,7 @@ DEFAULT_CATEGORIES: List[CategoryDefinition] = [
     CategoryDefinition(
         key="componentes",
         display_name="Componentes PC (GPUs, CPUs, SSD)",
-        search_terms=["rtx 4070 super", "rtx 4080", "ryzen 7 7800x3d", "ssd 2tb nvme"],
+        search_terms=["rtx 5070", "rtx 4070 super", "ryzen 7 9800x3d", "ssd 2tb nvme"],
         solotodo_category_ids=[2, 3],  # SoloTodo: Tarjetas de video, Procesadores
         default_sort=SortStrategy.PRICE_ASC,
     ),
@@ -113,7 +114,7 @@ DEFAULT_CATEGORIES: List[CategoryDefinition] = [
     CategoryDefinition(
         key="smartwatch",
         display_name="Smartwatches y Wearables",
-        search_terms=["apple watch ultra", "galaxy watch 6", "reloj garmin"],
+        search_terms=["apple watch ultra", "galaxy watch 7", "reloj garmin"],
         solotodo_category_ids=[48],  # SoloTodo: Wearables
         default_sort=SortStrategy.PRICE_ASC,
     ),
@@ -145,6 +146,8 @@ class CatalogRotator:
         self,
         categories: Optional[List[CategoryDefinition]] = None,
         batch_size: int = 3,
+        state_db: Optional[Any] = None,
+        state_key: str = "catalog_rotator",
     ) -> None:
         self._categories = categories or list(DEFAULT_CATEGORIES)
         self.batch_size = max(1, batch_size)
@@ -152,6 +155,52 @@ class CatalogRotator:
         self._cycle_counter = 0
         self._lock = threading.Lock()
         self._current_strategy = SortStrategy.DISCOUNT_DESC
+        self._state_db = state_db
+        self._state_key = state_key
+        if self._state_db is not None:
+            self._load_state_locked()
+
+    def bind_state_db(self, state_db: Optional[Any]) -> None:
+        """Asocia una instancia de PriceDatabase para persistir cursor y ciclo entre reinicios."""
+        with self._lock:
+            self._state_db = state_db
+            if state_db is not None:
+                self._load_state_locked()
+
+    def _load_state_locked(self) -> None:
+        """Carga el estado persistido (si existe) manteniendo el lock."""
+        if self._state_db is None or not hasattr(self._state_db, "get_state"):
+            return
+        try:
+            raw = self._state_db.get_state(self._state_key)
+            if not raw:
+                return
+            payload = json.loads(raw)
+            num_categories = len(self._categories)
+            idx = int(payload.get("current_index", 0))
+            self._current_index = idx % num_categories if num_categories > 0 else 0
+            self._cycle_counter = max(0, int(payload.get("cycle_counter", 0)))
+            strat_val = payload.get("current_strategy")
+            if strat_val in (SortStrategy.DISCOUNT_DESC.value, SortStrategy.PRICE_ASC.value):
+                self._current_strategy = SortStrategy(strat_val)
+        except Exception as exc:
+            logger.debug("No se pudo restaurar estado de CatalogRotator: %s", exc)
+
+    def _save_state_locked(self) -> None:
+        """Guarda cursor y ciclo en `radar_state` si hay DB asociada."""
+        if self._state_db is None or not hasattr(self._state_db, "set_state"):
+            return
+        try:
+            payload = json.dumps(
+                {
+                    "current_index": self._current_index,
+                    "cycle_counter": self._cycle_counter,
+                    "current_strategy": self._current_strategy.value,
+                }
+            )
+            self._state_db.set_state(self._state_key, payload)
+        except Exception as exc:
+            logger.debug("No se pudo persistir estado de CatalogRotator: %s", exc)
 
     def get_next_batch(self, batch_size: Optional[int] = None) -> CategoryBatch:
         """
@@ -189,6 +238,7 @@ class CatalogRotator:
                 categories=batch_cats,
                 strategy=self._current_strategy,
             )
+            self._save_state_locked()
 
             logger.info(
                 "🔄 [Rotación Catálogo] Ciclo #%d: Escaneando %d categorías (%s) con orden '%s'",
@@ -218,6 +268,7 @@ class CatalogRotator:
             self._current_index = 0
             self._cycle_counter = 0
             self._current_strategy = SortStrategy.DISCOUNT_DESC
+            self._save_state_locked()
 
 
 # Instancia singleton predeterminada

@@ -17,7 +17,7 @@ import re
 import statistics
 import sys
 import unicodedata
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 import uuid
 
 # Configuración de rutas para imports robustos
@@ -130,7 +130,7 @@ class PriceDatabase:
                 check_same_thread=False,
             )
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA busy_timeout=15000;")
             conn.execute("PRAGMA synchronous=NORMAL;")
             conn.execute("PRAGMA foreign_keys=ON;")
             try:
@@ -152,6 +152,8 @@ class PriceDatabase:
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            if not self.is_memory:
+                cursor.execute("PRAGMA journal_mode=WAL;")
 
             # 1. Tabla de Productos
             cursor.execute("""
@@ -224,6 +226,8 @@ class PriceDatabase:
 
             # Índices de Alto Rendimiento
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_store_id ON products(store_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_last_updated ON products(last_updated);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_store_updated ON products(store_id, last_updated);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_history_product_id ON price_history(product_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_history_timestamp ON price_history(timestamp);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_history_prod_time ON price_history(product_id, timestamp);")
@@ -243,6 +247,7 @@ class PriceDatabase:
                 cursor.execute("ALTER TABLE products ADD COLUMN in_stock INTEGER DEFAULT 1;")
             except Exception:
                 pass
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_in_stock ON products(in_stock);")
             try:
                 cursor.execute("ALTER TABLE tracked_deals ADD COLUMN card_price REAL;")
             except Exception:
@@ -293,7 +298,21 @@ class PriceDatabase:
                 CREATE TABLE IF NOT EXISTS watchlist (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     keyword TEXT UNIQUE NOT NULL,
+                    max_price REAL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("PRAGMA table_info(watchlist);")
+            wl_cols = {r[1] for r in cursor.fetchall()}
+            if "max_price" not in wl_cols:
+                cursor.execute("ALTER TABLE watchlist ADD COLUMN max_price REAL;")
+
+            # 5b. Estado persistente del radar (ej. rotación de catálogo / cursores)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS radar_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
             """)
 
@@ -347,6 +366,8 @@ class PriceDatabase:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_status_changed ON offer_feed(status_changed_at);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_url ON offer_feed(url_key);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_title ON offer_feed(title_key);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_kind_received ON offer_feed(kind, received_at);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_offer_feed_prod_price ON offer_feed(product_id, best_price);")
 
             # 7. Tabla de Feedback del Usuario (👍 Buena Oferta / 👎 Falso Positivo)
             cursor.execute("""
@@ -416,16 +437,32 @@ class PriceDatabase:
         else:
             raise TypeError(f"Tipo de producto no soportado: {type(product)}")
 
-        # Normalizar timestamp a ISO string si es datetime (priorizando last_updated si fue asignado explícitamente)
-        ts = data.get("last_updated") or data.get("timestamp")
-        if isinstance(ts, datetime):
-            data["last_updated"] = ts.strftime("%Y-%m-%d %H:%M:%S")
-        elif ts is None:
-            data["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            data["last_updated"] = str(ts)
+        # Normalizar timestamp a UTC ISO string ("YYYY-MM-DD HH:MM:SS")
+        data["last_updated"] = self._normalize_utc_timestamp(
+            data.get("last_updated") or data.get("timestamp")
+        )
 
         return data
+
+    @staticmethod
+    def _normalize_utc_timestamp(ts: Any) -> str:
+        """Convierte datetime o string ISO (con zona horaria opcional) a UTC '%Y-%m-%d %H:%M:%S'."""
+        if isinstance(ts, datetime):
+            dt = ts.astimezone(timezone.utc) if ts.tzinfo is not None else ts
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        if ts is None:
+            return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        raw = str(ts).strip()
+        if not raw:
+            return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        iso_candidate = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
+        try:
+            dt = datetime.fromisoformat(iso_candidate)
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(timezone.utc)
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return raw
 
     def upsert_product(self, product: Union[ProductItem, Dict[str, Any]]) -> bool:
         """
@@ -508,6 +545,108 @@ class PriceDatabase:
                 """, (prod_id, current_price, last_updated))
 
         return True
+
+    def upsert_products_batch(self, products: Sequence[Union[ProductItem, Dict[str, Any]]]) -> int:
+        """
+        Inserta o actualiza un lote completo de productos en una sola transacción SQLite,
+        evitando múltiples conexiones por escaneo. Retorna la cantidad procesada.
+        """
+        if not products:
+            return 0
+
+        deduped: Dict[str, Dict[str, Any]] = {}
+        for item in products:
+            data = self._extract_product_dict(item)
+            prod_id = str(data["id"])
+            deduped[prod_id] = {
+                "id": prod_id,
+                "store_id": str(data["store_id"]),
+                "title": str(data["title"]),
+                "category": str(data.get("category") or "General"),
+                "url": str(data.get("url") or ""),
+                "image_url": data.get("image_url"),
+                "current_price": float(data["current_price"]),
+                "normal_price": float(data["normal_price"]) if data.get("normal_price") is not None else None,
+                "card_price": float(data["card_price"]) if data.get("card_price") is not None else None,
+                "in_stock": 1 if bool(data.get("in_stock", True)) else 0,
+                "last_updated": data["last_updated"],
+            }
+
+        items = list(deduped.values())
+        prod_rows = [
+            (
+                d["id"], d["store_id"], d["title"], d["category"], d["url"], d["image_url"],
+                d["current_price"], d["normal_price"], d["card_price"], d["in_stock"], d["last_updated"],
+            )
+            for d in items
+        ]
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.executemany("""
+                INSERT INTO products (
+                    id, store_id, title, category, url, image_url,
+                    current_price, normal_price, card_price, in_stock, last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    store_id = excluded.store_id,
+                    title = excluded.title,
+                    category = excluded.category,
+                    url = excluded.url,
+                    image_url = excluded.image_url,
+                    current_price = excluded.current_price,
+                    normal_price = excluded.normal_price,
+                    card_price = excluded.card_price,
+                    in_stock = excluded.in_stock,
+                    last_updated = excluded.last_updated;
+            """, prod_rows)
+
+            last_by_id: Dict[str, tuple] = {}
+            all_ids = [d["id"] for d in items]
+            for i in range(0, len(all_ids), 400):
+                chunk = all_ids[i:i + 400]
+                marks = ",".join("?" for _ in chunk)
+                cursor.execute(f"""
+                    SELECT product_id, price, timestamp
+                    FROM (
+                        SELECT product_id, price, timestamp,
+                               ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY timestamp DESC, id DESC) AS rn
+                        FROM price_history
+                        WHERE product_id IN ({marks})
+                    )
+                    WHERE rn = 1;
+                """, chunk)
+                for r in cursor.fetchall():
+                    last_by_id[str(r["product_id"])] = (float(r["price"]), str(r["timestamp"]))
+
+            history_rows = []
+            for d in items:
+                last_rec = last_by_id.get(d["id"])
+                should_record = False
+                if not last_rec:
+                    should_record = True
+                else:
+                    last_price, last_ts = last_rec
+                    if abs(d["current_price"] - last_price) > 0.01:
+                        should_record = True
+                    else:
+                        try:
+                            dt_last = datetime.strptime(last_ts[:19], "%Y-%m-%d %H:%M:%S")
+                            dt_curr = datetime.strptime(str(d["last_updated"])[:19], "%Y-%m-%d %H:%M:%S")
+                            if abs((dt_curr - dt_last).total_seconds()) >= 3600 * 12:
+                                should_record = True
+                        except Exception:
+                            pass
+                if should_record:
+                    history_rows.append((d["id"], d["current_price"], d["last_updated"]))
+
+            if history_rows:
+                cursor.executemany("""
+                    INSERT INTO price_history (product_id, price, timestamp)
+                    VALUES (?, ?, ?);
+                """, history_rows)
+
+        return len(prod_rows)
 
     def get_baseline_price(self, product_id: str, days: int = 30) -> Optional[float]:
         """
@@ -1327,6 +1466,7 @@ class PriceDatabase:
                 WHERE COALESCE(f.expired_reason, '') != 'withdrawn';
             """)
             updates = []
+            price_only_updates = []
             for r in cursor.fetchall():
                 current = float(r["current_price"] or 0.0)
                 card = r["card_price"]
@@ -1346,8 +1486,10 @@ class PriceDatabase:
                 if status != r["status"] or reason != r["expired_reason"] or (status == "expired" and price_changed):
                     updates.append((status, reason, now_iso, best_now, r["id"]))
                 elif price_changed:
-                    # Precio actual al día, sin marcar cambio de estado (no hay nada que mostrar distinto)
-                    cursor.execute("UPDATE offer_feed SET price_now = ? WHERE id = ?;", (best_now, r["id"]))
+                    # Precio actual al día, sin marcar cambio de estado (en lote al final)
+                    price_only_updates.append((best_now, r["id"]))
+            if price_only_updates:
+                cursor.executemany("UPDATE offer_feed SET price_now = ? WHERE id = ?;", price_only_updates)
             if updates:
                 cursor.executemany("""
                     UPDATE offer_feed SET status = ?, expired_reason = ?, status_changed_at = ?, price_now = ?
@@ -1549,6 +1691,88 @@ class PriceDatabase:
             """, (product_id, limit))
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_price_history_summary(self, product_id: str, days: int = 90) -> Dict[str, Any]:
+        """
+        Resume el historial de precios reales (medianas 30d/90d, mínimo 90d, MAD, días cubiertos
+        y serie cronológica resumida para el dashboard).
+        """
+        from glitchhunter_ai.ai_detector.inflation_verifier import InflationVerifier
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT price, timestamp AS recorded_at
+                FROM price_history
+                WHERE product_id = ? AND timestamp >= ?
+                ORDER BY timestamp ASC;
+                """,
+                (product_id, cutoff),
+            )
+            rows = [dict(r) for r in cursor.fetchall()]
+
+        stats = InflationVerifier.compute_history_stats(rows)
+        # Compactar puntos consecutivos con el mismo precio para no inflar payload JSON del gráfico
+        points: List[Dict[str, Any]] = []
+        for r in rows:
+            p = float(r.get("price") or 0.0)
+            if p <= 0.0:
+                continue
+            if not points or abs(points[-1]["price"] - p) >= 1.0 or r is rows[-1]:
+                points.append({"price": p, "recorded_at": str(r.get("recorded_at") or "")})
+        if len(points) > 120:
+            step = max(1, len(points) // 120)
+            points = points[::step] + ([points[-1]] if points[-1] != points[::step][-1] else [])
+        stats["points"] = points
+        return stats
+
+    def get_store_inflation_stats(
+        self,
+        min_products: int = 25,
+        threshold_ratio: float = 0.28,
+        discount_cutoff: float = 40.0,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Mide empíricamente qué tiendas inflan precios de lista (MSRP) de forma crónica:
+        proporción del catálogo con supuesto descuento >= 40%.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    LOWER(store_id) AS store_id,
+                    COUNT(*) AS total,
+                    SUM(
+                        CASE
+                            WHEN normal_price > 0 AND current_price > 0
+                             AND (1.0 - (
+                                    CASE WHEN card_price IS NOT NULL AND card_price > 0 AND card_price < current_price
+                                         THEN card_price ELSE current_price END
+                                 ) / normal_price) * 100.0 >= ?
+                            THEN 1 ELSE 0
+                        END
+                    ) AS inflated_cnt
+                FROM products
+                GROUP BY LOWER(store_id);
+                """,
+                (float(discount_cutoff),),
+            )
+            out: Dict[str, Dict[str, Any]] = {}
+            for r in cursor.fetchall():
+                sid = str(r["store_id"] or "")
+                total = int(r["total"] or 0)
+                cnt = int(r["inflated_cnt"] or 0)
+                ratio = round(cnt / total, 4) if total > 0 else 0.0
+                out[sid] = {
+                    "total": total,
+                    "inflated_count": cnt,
+                    "inflated_ratio": ratio,
+                    "is_chronic_inflator": bool(total >= min_products and ratio >= threshold_ratio),
+                }
+            return out
+
     def clear_all(self) -> None:
         """Limpia todas las tablas (usado en tests y reseteos)."""
         with self.get_connection() as conn:
@@ -1561,17 +1785,55 @@ class PriceDatabase:
     # MÉTODOS DE WATCHLIST (Seguimiento prioritario por palabras clave)
     # =========================================================================
 
-    def add_watchlist_keyword(self, keyword: str) -> bool:
-        """Añade una palabra clave a la watchlist del usuario (ej: 'macbook', 'rtx 4080')."""
+    def get_state(self, key: str) -> Optional[str]:
+        """Recupera un valor de estado persistente desde la tabla `radar_state`."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM radar_state WHERE key = ?;", (key,))
+            row = cursor.fetchone()
+            return str(row["value"]) if row else None
+
+    def set_state(self, key: str, value: str) -> None:
+        """Persiste un valor de estado en la tabla `radar_state`."""
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO radar_state (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at;
+            """, (key, str(value), now_str))
+
+    def add_watchlist_keyword(self, keyword: str, max_price: Optional[float] = None) -> bool:
+        """Añade una palabra clave a la watchlist del usuario (opcionalmente con precio máximo)."""
         clean_kw = keyword.strip().lower()
         if not clean_kw:
             return False
+        clean_max: Optional[float] = None
+        if max_price is not None:
+            try:
+                val = float(max_price)
+                if val > 0:
+                    clean_max = val
+            except (TypeError, ValueError):
+                clean_max = None
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
-                cursor.execute("INSERT INTO watchlist (keyword) VALUES (?);", (clean_kw,))
+                cursor.execute(
+                    "INSERT INTO watchlist (keyword, max_price) VALUES (?, ?);",
+                    (clean_kw, clean_max),
+                )
                 return True
             except sqlite3.IntegrityError:
+                if clean_max is not None:
+                    cursor.execute(
+                        "UPDATE watchlist SET max_price = ? WHERE keyword = ?;",
+                        (clean_max, clean_kw),
+                    )
+                    return True
                 return False
 
     def remove_watchlist_keyword(self, keyword: str) -> bool:
@@ -1582,6 +1844,19 @@ class PriceDatabase:
             cursor.execute("DELETE FROM watchlist WHERE keyword = ?;", (clean_kw,))
             return cursor.rowcount > 0
 
+    def get_watchlist_entries(self) -> List[Dict[str, Any]]:
+        """Retorna las entradas de la watchlist con su `keyword` y `max_price` opcional."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT keyword, max_price FROM watchlist ORDER BY created_at ASC;")
+            return [
+                {
+                    "keyword": row["keyword"],
+                    "max_price": float(row["max_price"]) if row["max_price"] is not None else None,
+                }
+                for row in cursor.fetchall()
+            ]
+
     def get_watchlist_keywords(self) -> List[str]:
         """Retorna todas las palabras clave activas en la watchlist."""
         with self.get_connection() as conn:
@@ -1589,13 +1864,18 @@ class PriceDatabase:
             cursor.execute("SELECT keyword FROM watchlist ORDER BY created_at ASC;")
             return [row["keyword"] for row in cursor.fetchall()]
 
-    def is_in_watchlist(self, title: str) -> bool:
-        """Verifica si el título de un producto coincide con alguna palabra clave de la watchlist."""
+    def is_in_watchlist(self, title: str, price: Optional[float] = None) -> bool:
+        """Verifica si el producto coincide con la watchlist (y con `max_price` si fue configurado)."""
         if not title:
             return False
         t_lower = title.lower()
-        keywords = self.get_watchlist_keywords()
-        return any(kw in t_lower for kw in keywords)
+        entries = self.get_watchlist_entries()
+        for entry in entries:
+            if entry["keyword"] in t_lower:
+                cap = entry["max_price"]
+                if cap is None or price is None or price <= cap:
+                    return True
+        return False
 
     # =========================================================================
     # Referencias de Mercado Inter-Tiendas (Caché y Match Local)
@@ -1661,7 +1941,7 @@ class PriceDatabase:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT store_id, title, current_price, normal_price
+                SELECT store_id, title, current_price, card_price, normal_price
                 FROM products
                 WHERE store_id != ? AND store_id != 'solotodo'
                   AND in_stock = 1 AND current_price > 0
@@ -1679,9 +1959,11 @@ class PriceDatabase:
                     continue
                 sid = r["store_id"]
                 cur_p = float(r["current_price"])
+                card_raw = r["card_price"]
+                best_p = float(card_raw) if card_raw is not None and 0 < float(card_raw) < cur_p else cur_p
                 norm_p = float(r["normal_price"] or cur_p)
-                if sid not in store_prices or cur_p < store_prices[sid]["offer"]:
-                    store_prices[sid] = {"offer": cur_p, "normal": norm_p}
+                if sid not in store_prices or best_p < store_prices[sid]["offer"]:
+                    store_prices[sid] = {"offer": best_p, "normal": norm_p}
 
             if len(store_prices) < 2:
                 return None
@@ -1874,6 +2156,35 @@ class PriceDatabase:
             elif up_ratio >= 0.85:
                 return +5.0
             return 0.0
+
+    def prune_old_price_history(self, keep_days: int = 120, batch_size: int = 25000) -> int:
+        """
+        Poda muestras antiguas de `price_history` (> `keep_days`) en lotes acotados,
+        conservando siempre al menos el último registro histórico de cada producto.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(30, int(keep_days)))).strftime("%Y-%m-%d %H:%M:%S")
+        limit = max(1, int(batch_size))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM price_history
+                WHERE id IN (
+                    SELECT ph.id
+                    FROM price_history ph
+                    WHERE ph.timestamp < ?
+                      AND EXISTS (
+                          SELECT 1 FROM price_history newer
+                          WHERE newer.product_id = ph.product_id
+                            AND (
+                                newer.timestamp > ph.timestamp
+                                OR (newer.timestamp = ph.timestamp AND newer.id > ph.id)
+                            )
+                      )
+                    LIMIT ?
+                );
+            """, (cutoff, limit))
+            conn.commit()
+            return int(cursor.rowcount or 0)
 
 
 # =====================================================================
