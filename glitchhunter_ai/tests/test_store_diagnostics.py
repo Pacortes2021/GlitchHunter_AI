@@ -102,3 +102,52 @@ def test_run_diagnose_cli_with_mocked_scraper():
     with patch("glitchhunter_ai.cli.get_all_scrapers", return_value=[mock_scraper]):
         # No debe lanzar ninguna excepción
         run_diagnose(store_filter="pcfactory")
+
+
+def test_continuous_reader_health_excludes_lock_processing_time(monkeypatch):
+    """La latencia de salud mide solo la descarga HTTP, no la espera de cerrojo/SQLite en _process."""
+    import time
+    import glitchhunter_ai.core.continuous_reader as cr_mod
+    from glitchhunter_ai.core.continuous_reader import ContinuousReader, SHOPIFY_KEY
+    from glitchhunter_ai.scrapers.direct_reader import DirectStoreReader
+
+    tracker = StoreHealthTracker()
+    monkeypatch.setattr(cr_mod, "global_store_health", tracker)
+
+    sample = ProductItem(
+        id="karcher-1", store_id="karcher", store_name="Kärcher", title="Hidrolavadora K2",
+        category="hogar", current_price=89990.0, normal_price=119990.0,
+        url="https://karcherstore.cl/p/k2", in_stock=True,
+    )
+
+    pipeline = MagicMock()
+    pipeline.direct_reader = DirectStoreReader(client=MagicMock())
+
+    def slow_process(store_id, items, latency_ms=None):
+        time.sleep(0.15)  # Simula espera de _scan_lock + SQLite
+        return [], 0
+
+    pipeline.process_store_products.side_effect = slow_process
+
+    cr = ContinuousReader(pipeline, workers=2, hot_interval=60, deep_interval=180, deep_min=60, deep_max=900)
+    try:
+        monkeypatch.setattr(cr.reader, "fetch_shopify_next", lambda: ("karcher", "deep", [sample]))
+        cr.run_lane(SHOPIFY_KEY, "turno")
+
+        rec = next(s for s in tracker.get_matrix() if s["store_id"] == "karcher")
+        assert rec["status"] == "HEALTHY"
+        assert rec["latency_ms"] < 80.0
+        # _process recibió la latencia real de red (no los 150ms del procesamiento)
+        passed_lat = pipeline.process_store_products.call_args.kwargs["latency_ms"]
+        assert passed_lat < 80.0
+
+        # En tiendas con búsqueda por palabras + categorías, promedia latencia por petición
+        monkeypatch.setattr(cr.reader, "search", lambda s, kw: [sample])
+        monkeypatch.setattr(cr.reader, "fetch_category", lambda s, cat: [])
+        cr._watchlist_provider = lambda: ["kw1", "kw2"]
+        cr.categories = ["smartphones", "notebooks"]
+        cr.run_lane("ripley", "deep")
+        rip = next(s for s in tracker.get_matrix() if s["store_id"] == "ripley")
+        assert rip["status"] == "HEALTHY"
+    finally:
+        cr.pool.shutdown(wait=False)

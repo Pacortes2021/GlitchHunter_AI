@@ -664,6 +664,7 @@ class GlitchHuntingPipeline:
             total_scanned = 0
             for scraper in target_scrapers:
                 t_start = time.perf_counter()
+                fetch_ms = 0.0
                 has_error = False
                 products = []
                 try:
@@ -678,9 +679,10 @@ class GlitchHuntingPipeline:
                             kwargs["active_category_ids"] = cat_ids
 
                     products = scraper.fetch_catalog(**kwargs)
+                    fetch_ms = (time.perf_counter() - t_start) * 1000.0
                     total_scanned += len(products)
                     if use_live and products and self.forwarder is not None:
-                        self.forwarder.submit(scraper.store_id, products)   # unir paneles (FORWARD_TO_URL)
+                        self.forwarder.submit(scraper.store_id, products, latency_ms=round(fetch_ms, 1))   # unir paneles (FORWARD_TO_URL)
                     with self._scan_lock:
                         self._bulk_price_counts = {}
                         self._note_bulk_prices(products)
@@ -690,14 +692,15 @@ class GlitchHuntingPipeline:
                                 all_detected_glitches.append(alert)
                         self._bulk_price_counts = {}
                 except Exception as exc:
+                    if fetch_ms == 0.0:
+                        fetch_ms = (time.perf_counter() - t_start) * 1000.0
                     has_error = True
                     logger.error(f"Error escaneando {scraper.store_name}: {exc}")
                 finally:
-                    elapsed_ms = (time.perf_counter() - t_start) * 1000.0
                     global_store_health.record_scan(
                         store_id=scraper.store_id,
                         store_name=scraper.store_name,
-                        latency_ms=elapsed_ms,
+                        latency_ms=fetch_ms,
                         items_count=len(products),
                         error=has_error,
                     )
@@ -1055,7 +1058,12 @@ class GlitchHuntingPipeline:
         return sum(1 for p in candidates if p.id not in known or p.best_price < known[p.id] - 0.5)
 
     def process_store_products(
-        self, store_id: str, products: List[ProductItem], send_notifications: bool = True, lock_timeout: float = 120.0,
+        self,
+        store_id: str,
+        products: List[ProductItem],
+        send_notifications: bool = True,
+        lock_timeout: float = 120.0,
+        latency_ms: Optional[float] = None,
     ) -> tuple:
         """
         Procesa la lectura de UNA tienda (lectores independientes por tienda). Espera su turno en el
@@ -1068,7 +1076,10 @@ class GlitchHuntingPipeline:
         if not products:
             return [], 0
         if self.forwarder is not None:
-            self.forwarder.submit(store_id, products)
+            if latency_ms is not None:
+                self.forwarder.submit(store_id, products, latency_ms=latency_ms)
+            else:
+                self.forwarder.submit(store_id, products)
             if self.forward_only:
                 if not self._scan_lock.acquire(timeout=lock_timeout):
                     return [], 0

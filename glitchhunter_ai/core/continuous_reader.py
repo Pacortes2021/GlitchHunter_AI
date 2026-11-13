@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
 from glitchhunter_ai.core.scheduler import DEEP, HOT, StoreScheduler, build_scheduler, parse_interval_overrides
 from glitchhunter_ai.core.store_health import global_store_health
@@ -78,9 +78,9 @@ class ContinuousReader:
         self._minute = {"reads": 0, "products": 0, "fresh": 0, "alerts": 0}
 
     # --- lectura de un carril ------------------------------------------------------
-    def _fetch(self, store_id: str, lane: str) -> List:
+    def _fetch_with_calls(self, store_id: str, lane: str) -> Tuple[List, int]:
         if lane == HOT:
-            return self.reader.fetch_hot(store_id)
+            return self.reader.fetch_hot(store_id), 1
         items: List = []
         if store_id not in CATALOG_STORES:
             # Tiendas sin recorrido de catálogo: watchlist y categorías prioritarias
@@ -93,11 +93,18 @@ class ContinuousReader:
                 items.extend(self.reader.search(store_id, kw))
             for cat in self.categories:
                 items.extend(self.reader.fetch_category(store_id, cat))
-            return items
-        return self.reader.fetch_deep(store_id, self.catalog_pages)
+            return items, max(1, len(keywords) + len(self.categories))
+        return self.reader.fetch_deep(store_id, self.catalog_pages), 1
 
-    def _process(self, store_id: str, items: List) -> tuple:
-        alerts, fresh = self.pipeline.process_store_products(store_id, items)
+    def _fetch(self, store_id: str, lane: str) -> List:
+        items, _ = self._fetch_with_calls(store_id, lane)
+        return items
+
+    def _process(self, store_id: str, items: List, latency_ms: Optional[float] = None) -> tuple:
+        if latency_ms is not None:
+            alerts, fresh = self.pipeline.process_store_products(store_id, items, latency_ms=latency_ms)
+        else:
+            alerts, fresh = self.pipeline.process_store_products(store_id, items)
         with self._stats_lock:
             self._minute["reads"] += 1
             self._minute["products"] += len(items)
@@ -108,22 +115,30 @@ class ContinuousReader:
     def run_lane(self, store_id: str, lane: str) -> None:
         count, fresh, ok = 0, 0, True
         target_store = store_id
-        t_start = time.perf_counter()
+        fetch_ms = 0.0
+        t_fetch = time.perf_counter()
         try:
             if store_id == SHOPIFY_KEY:
                 result = self.reader.fetch_shopify_next()
+                fetch_ms = (time.perf_counter() - t_fetch) * 1000.0
                 if result:
                     shop, _, items = result
                     target_store = shop
                     count = len(items)
                     if items:
-                        _, fresh = self._process(shop, items)
+                        _, fresh = self._process(shop, items, latency_ms=round(fetch_ms, 1))
                 return
-            items = self._fetch(store_id, lane)
+            if "_fetch" in self.__dict__:
+                items, calls = self._fetch(store_id, lane), 1
+            else:
+                items, calls = self._fetch_with_calls(store_id, lane)
+            fetch_ms = ((time.perf_counter() - t_fetch) * 1000.0) / max(1, calls)
             count = len(items)
             if items:
-                _, fresh = self._process(store_id, items)
+                _, fresh = self._process(store_id, items, latency_ms=round(fetch_ms, 1))
         except Exception as exc:
+            if fetch_ms == 0.0:
+                fetch_ms = (time.perf_counter() - t_fetch) * 1000.0
             ok = False
             logger.warning("⚠️ [Lector %s/%s] falló: %s", store_id, lane, exc)
         finally:
@@ -131,11 +146,10 @@ class ContinuousReader:
             if target_store != SHOPIFY_KEY:
                 is_paused = bool(getattr(self.reader, "backoff", None) and self.reader.backoff.is_paused(target_store))
                 if count > 0 or not is_paused:
-                    latency_ms = (time.perf_counter() - t_start) * 1000.0
                     global_store_health.record_scan(
                         store_id=target_store,
                         store_name=STORE_NAMES.get(target_store, target_store.title()),
-                        latency_ms=latency_ms,
+                        latency_ms=fetch_ms,
                         items_count=count,
                         error=not ok,
                     )

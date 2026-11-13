@@ -946,6 +946,7 @@ async def get_product_price_history(
 class IngestRequest(BaseModel):
     store_id: str = Field(..., min_length=1, max_length=64)
     products: List[ProductItem]
+    latency_ms: Optional[float] = Field(None, ge=0.0, le=600000.0)
 
 
 @app.post("/api/ingest", dependencies=[Depends(verify_admin_key)])
@@ -963,6 +964,14 @@ async def ingest_products(req: IngestRequest):
     products = [p for p in req.products if p.store_id.lower() == store_id]
     loop = asyncio.get_running_loop()
     alerts, fresh = await loop.run_in_executor(None, pipeline.process_store_products, store_id, products)
+    if products:
+        global_store_health.record_scan(
+            store_id=store_id,
+            store_name=STORE_NAMES.get(store_id) or DIRECT_STORE_NAMES.get(store_id, store_id.title()),
+            latency_ms=float(req.latency_ms) if req.latency_ms is not None else 0.0,
+            items_count=len(products),
+            error=False,
+        )
     return {"status": "ok", "store_id": store_id, "received": len(products), "fresh": fresh, "alerts": len(alerts)}
 
 

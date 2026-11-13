@@ -1233,12 +1233,19 @@
   // ---------------------------------------------------------------------------
   const HEALTH_LABELS = {
     HEALTHY: ['Funcionando', 'st-ok'],
-    DEGRADED: ['Lenta / con errores', 'st-warn'],
+    DEGRADED: ['Lenta', 'st-warn'],
     EMPTY_RESPONSE: ['Sin productos', 'st-warn'],
     BLOCKED: ['Bloqueada', 'st-bad'],
     OFFLINE: ['Caída', 'st-bad'],
     IDLE: ['Sin escanear', 'st-idle']
   };
+
+  function healthBadge(s) {
+    if (s.status === 'DEGRADED' && toNum(s.error_count) > 0) {
+      return ['Con errores', 'st-warn'];
+    }
+    return HEALTH_LABELS[s.status] || [String(s.status || '–'), 'st-idle'];
+  }
 
   async function refreshStatusPanel() {
     const [stats, status, health, rotation, feedback] = await Promise.all([
@@ -1284,17 +1291,33 @@
 
     const hl = $('store-health');
     if (hl) {
-      const storesH = health && Array.isArray(health.stores) ? health.stores : [];
-      hl.innerHTML = storesH.length
-        ? storesH.map(s => {
-            const [label, cls] = HEALTH_LABELS[s.status] || [String(s.status || '–'), 'st-idle'];
-            const lat = Math.round(toNum(s.avg_latency_ms || s.latency_ms));
-            const when = s.last_scan_at ? formatRelative(s.last_scan_at) : 'nunca';
-            return `<li class="health-item"><div>${escapeHtml(s.store_name || s.store_id)}
-                <small>${toNum(s.items_scanned).toLocaleString('es-CL')} productos · ${lat} ms · último escaneo ${escapeHtml(when)}</small></div>
-                <span class="status-badge ${cls}">${escapeHtml(label)}</span></li>`;
-          }).join('')
-        : '<li class="muted small">Aún no hay escaneos desde que se inició el servidor.</li>';
+      const rawStores = health && Array.isArray(health.stores) ? health.stores : [];
+      if (rawStores.length) {
+        const rank = { OFFLINE: 0, BLOCKED: 1, EMPTY_RESPONSE: 2, DEGRADED: 3, HEALTHY: 4, IDLE: 5 };
+        const storesH = [...rawStores].sort((a, b) => {
+          const ea = a.status === 'DEGRADED' && toNum(a.error_count) > 0 ? 2.5 : (rank[a.status] ?? 9);
+          const eb = b.status === 'DEGRADED' && toNum(b.error_count) > 0 ? 2.5 : (rank[b.status] ?? 9);
+          if (ea !== eb) return ea - eb;
+          return String(a.store_name || a.store_id).localeCompare(String(b.store_name || b.store_id), 'es');
+        });
+        const okCount = storesH.filter(s => s.status === 'HEALTHY').length;
+        const slowCount = storesH.filter(s => s.status === 'DEGRADED' && toNum(s.error_count) === 0).length;
+        const errCount = storesH.filter(s => ['OFFLINE', 'BLOCKED', 'EMPTY_RESPONSE'].includes(s.status) || (s.status === 'DEGRADED' && toNum(s.error_count) > 0)).length;
+        const parts = [`${okCount} funcionando`];
+        if (slowCount) parts.push(`${slowCount} lenta${slowCount === 1 ? '' : 's'}`);
+        if (errCount) parts.push(`${errCount} con aviso`);
+        const summary = `<li class="muted small">${escapeHtml(parts.join(' · '))}</li>`;
+        hl.innerHTML = summary + storesH.map(s => {
+          const [label, cls] = healthBadge(s);
+          const lat = Math.round(toNum(s.avg_latency_ms || s.latency_ms));
+          const when = s.last_scan_at ? formatRelative(s.last_scan_at) : 'nunca';
+          return `<li class="health-item"><div>${escapeHtml(s.store_name || s.store_id)}
+              <small>${toNum(s.items_scanned).toLocaleString('es-CL')} productos · ${lat} ms · último escaneo ${escapeHtml(when)}</small></div>
+              <span class="status-badge ${cls}">${escapeHtml(label)}</span></li>`;
+        }).join('');
+      } else {
+        hl.innerHTML = '<li class="muted small">Aún no hay escaneos desde que se inició el servidor.</li>';
+      }
     }
 
     const rot = $('rotation');

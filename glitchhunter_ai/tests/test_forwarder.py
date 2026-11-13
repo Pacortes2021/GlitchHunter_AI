@@ -197,3 +197,36 @@ def test_sync_watchlist_cache_and_collector_runner(tmp_path):
     st = runner.status()
     assert st["target"] == "http://127.0.0.1:8090/api/ingest"
     assert runner.pipeline.forward_only is True
+
+
+def test_forwarder_persists_latency_and_ingest_updates_store_health(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    import glitchhunter_ai.web.server as server
+    from glitchhunter_ai.core.store_health import StoreHealthTracker
+
+    qdir = tmp_path / "forward_lat"
+    fw1 = Forwarder("http://127.0.0.1:8090/", "clave", post=_FakePost([OSError("offline")]), sleep=lambda s: None, queue_dir=qdir)
+    fw1.submit("falabella", [_product("fal-1", store="falabella")], latency_ms=345.67)
+    assert not fw1.send_one()
+
+    post2 = _FakePost([200])
+    fw2 = Forwarder("http://127.0.0.1:8090/", "clave", post=post2, sleep=lambda s: None, queue_dir=qdir)
+    assert fw2.send_one() and fw2.pending() == 0
+    assert post2.calls[0][1]["latency_ms"] == 345.7
+
+    tracker = StoreHealthTracker()
+    monkeypatch.setattr(server, "global_store_health", tracker)
+    monkeypatch.setattr(server, "API_AUTH_KEY", "secreta")
+    monkeypatch.setattr(server.pipeline, "process_store_products", MagicMock(return_value=([], 1)))
+
+    client = TestClient(server.app)
+    res = client.post(
+        "/api/ingest",
+        json={"store_id": "falabella", "products": [_product("fal-1", store="falabella").model_dump(mode="json")], "latency_ms": 345.7},
+        headers={"X-API-Key": "secreta"},
+    )
+    assert res.status_code == 200
+    rec = next(s for s in tracker.get_matrix() if s["store_id"] == "falabella")
+    assert rec["status"] == "HEALTHY"
+    assert rec["latency_ms"] == 345.7
+    assert rec["items_scanned"] == 1

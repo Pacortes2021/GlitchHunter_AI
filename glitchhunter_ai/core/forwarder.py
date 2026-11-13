@@ -54,7 +54,7 @@ class Forwarder:
         self.queue_dir: Optional[Path] = Path(queue_dir) if queue_dir else None
         self._max_queue = max(1, int(max_queue))
         self._seq = 0
-        self._queue: Deque[Tuple[str, List[dict], Optional[Path]]] = deque()
+        self._queue: Deque[Tuple[str, List[dict], Optional[float], Optional[Path]]] = deque()
         self._cond = threading.Condition()
         self._stop = False
         self._thread: Optional[threading.Thread] = None
@@ -75,7 +75,7 @@ class Forwarder:
             return
         for tmp in self.queue_dir.glob("*.tmp"):
             _unlink_file(tmp)
-        loaded: List[Tuple[str, List[dict], Path]] = []
+        loaded: List[Tuple[str, List[dict], Optional[float], Path]] = []
         for path in sorted(self.queue_dir.glob("*.json")):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
@@ -83,13 +83,15 @@ class Forwarder:
                 products = data.get("products") if isinstance(data, dict) else None
                 if not isinstance(store_id, str) or not store_id or not isinstance(products, list):
                     raise ValueError("formato inválido")
-                loaded.append((store_id, products, path))
+                raw_lat = data.get("latency_ms")
+                latency_ms = round(float(raw_lat), 1) if isinstance(raw_lat, (int, float)) and raw_lat >= 0 else None
+                loaded.append((store_id, products, latency_ms, path))
             except Exception as exc:
                 logger.warning("⚠️ [Reenvío] Se descartó lote corrupto en %s (%s).", path.name, exc)
                 _unlink_file(path)
         if len(loaded) > self._max_queue:
             excess = len(loaded) - self._max_queue
-            for _, _, old_path in loaded[:excess]:
+            for _, _, _, old_path in loaded[:excess]:
                 _unlink_file(old_path)
             self.dropped += excess
             loaded = loaded[excess:]
@@ -97,7 +99,12 @@ class Forwarder:
         if loaded:
             logger.info("📦 [Reenvío] %d lectura(s) pendiente(s) recuperada(s) desde disco.", len(loaded))
 
-    def _persist_batch(self, store_id: str, payload: List[dict]) -> Optional[Path]:
+    def _persist_batch(
+        self,
+        store_id: str,
+        payload: List[dict],
+        latency_ms: Optional[float] = None,
+    ) -> Optional[Path]:
         """Guarda un lote en disco de forma atómica (.tmp -> replace)."""
         if self.queue_dir is None:
             return None
@@ -107,8 +114,11 @@ class Forwarder:
             filename = f"{time.time_ns():020d}_{self._seq:06d}.json"
             target = self.queue_dir / filename
             tmp = self.queue_dir / f".{filename}.tmp"
+            record: dict = {"store_id": store_id, "products": payload}
+            if latency_ms is not None:
+                record["latency_ms"] = round(float(latency_ms), 1)
             tmp.write_text(
-                json.dumps({"store_id": store_id, "products": payload}, ensure_ascii=False),
+                json.dumps(record, ensure_ascii=False),
                 encoding="utf-8",
             )
             os.replace(tmp, target)
@@ -117,18 +127,19 @@ class Forwarder:
             logger.warning("⚠️ [Reenvío] No se pudo guardar lote en disco (%s); sigue en memoria.", exc)
             return None
 
-    def submit(self, store_id: str, products: List[Any]) -> None:
+    def submit(self, store_id: str, products: List[Any], latency_ms: Optional[float] = None) -> None:
         """Encola una lectura (no bloquea). Acepta ProductItem o dicts."""
         if not products:
             return
+        norm_lat = round(float(latency_ms), 1) if latency_ms is not None and latency_ms >= 0 else None
         payload = [p.model_dump(mode="json") if hasattr(p, "model_dump") else dict(p) for p in products]
         with self._cond:
             while len(self._queue) >= self._max_queue:
-                _, _, old_path = self._queue.popleft()
+                _, _, _, old_path = self._queue.popleft()
                 _unlink_file(old_path)
                 self.dropped += 1
-            batch_path = self._persist_batch(store_id, payload)
-            self._queue.append((store_id, payload, batch_path))
+            batch_path = self._persist_batch(store_id, payload, latency_ms=norm_lat)
+            self._queue.append((store_id, payload, norm_lat, batch_path))
             self._cond.notify()
 
     def pending(self) -> int:
@@ -140,8 +151,11 @@ class Forwarder:
         with self._cond:
             if not self._queue:
                 return True
-            store_id, products, _ = self._queue[0]
-        body = json.dumps({"store_id": store_id, "products": products}).encode("utf-8")
+            store_id, products, latency_ms, _ = self._queue[0]
+        body_dict: dict = {"store_id": store_id, "products": products}
+        if latency_ms is not None:
+            body_dict["latency_ms"] = latency_ms
+        body = json.dumps(body_dict).encode("utf-8")
         headers = {"Content-Type": "application/json", "X-API-Key": self.api_key}
         try:
             code = self._post(self.url, body, headers, self.timeout)
@@ -152,7 +166,7 @@ class Forwarder:
         if 200 <= code < 300:
             with self._cond:
                 if self._queue and self._queue[0][1] is products:
-                    _, _, batch_path = self._queue.popleft()
+                    _, _, _, batch_path = self._queue.popleft()
                     _unlink_file(batch_path)
             self.sent += 1
             if self._failing_since is not None:
@@ -163,7 +177,7 @@ class Forwarder:
             # El servidor rechaza esta lectura (clave inválida, formato): reintentarla no sirve
             with self._cond:
                 if self._queue and self._queue[0][1] is products:
-                    _, _, batch_path = self._queue.popleft()
+                    _, _, _, batch_path = self._queue.popleft()
                     _unlink_file(batch_path)
             self.dropped += 1
             logger.warning("⚠️ [Reenvío] El servidor rechazó la lectura de %s (HTTP %s).", store_id, code)
