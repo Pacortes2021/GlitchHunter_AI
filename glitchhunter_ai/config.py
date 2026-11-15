@@ -43,6 +43,9 @@ DEAL_PRIORITY_KEYWORDS = [k.strip().lower() for k in os.getenv(
     "iphone,macbook,ipad,airpods,apple watch,imac,mac mini,mac studio,homepod,apple tv",
 ).split(",") if k.strip()]
 DEAL_PRIORITY_MIN_DISCOUNT = float(os.getenv("DEAL_PRIORITY_MIN_DISCOUNT", "15"))
+# Tecnología y línea blanca con ahorro sustantivo entran al canal desde 25% (no requieren 40% de liquidación textil)
+DEAL_TECH_MIN_DISCOUNT = float(os.getenv("DEAL_TECH_MIN_DISCOUNT", "25.0"))
+DEAL_TECH_MIN_SAVINGS_CLP = float(os.getenv("DEAL_TECH_MIN_SAVINGS_CLP", "30000.0"))
 DEAL_INCLUDE_NON_TECH = os.getenv("DEAL_INCLUDE_NON_TECH", "true").lower() in ("true", "1", "yes")  # Ropa, muebles, etc.
 # Tiendas "solo errores de precio" (opcional, vía .env): sus liquidaciones normales no se publican
 # como ofertas; solo entran al canal los errores de precio verificados. Por defecto todas publican ofertas.

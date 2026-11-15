@@ -234,6 +234,8 @@ VTEX_PAGES_PER_CYCLE = 4     # 200 productos por tienda y ciclo
 # productos con mayor descuento de todo el catálogo (VTEX lo ordena) o la primera página de la sección
 # de ofertas (Magento, Santa Isabel). Así un descuento grande aparece en minutos, no en horas.
 VTEX_HOT_ORDER = "OrderByBestDiscountDESC"
+VTEX_HOT_MAX_OFFSET = 200    # rota las primeras 4 páginas (200 productos) de mayor descuento
+CATEGORY_MAX_PAGES = 4       # rota hasta 4 páginas por categoría en grandes tiendas
 
 DIRECT_STORES = (
     ("falabella", "ripley", "paris", "abc", "jumbo", "santaisabel", "hp", "winpy", "sodimac", "pcfactory", "spdigital")
@@ -343,6 +345,13 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
         "notebooks": "/falabella-cl/category/cat2018/Computacion",
         "consolas": "/falabella-cl/category/cat2012/Consolas-y-Videojuegos",
         "televisores": "/falabella-cl/category/cat2070/Televisores",
+        "linea_blanca": "/falabella-cl/category/cat3205/Refrigeradores",
+        "audio": "/falabella-cl/category/cat2005/Audio",
+        "monitores": "/falabella-cl/search?Ntt=monitor+gamer",
+        "componentes": "/falabella-cl/search?Ntt=tarjeta+de+video",
+        "gaming": "/falabella-cl/search?Ntt=perifericos+gamer",
+        "smartwatch": "/falabella-cl/category/cat4290063/Smartwatch",
+        "electrodomesticos": "/falabella-cl/category/cat3136/Electrodomesticos-de-Cocina",
     },
     # Sodimac: sus rutas de categoría redirigen a la portada; la búsqueda sí funciona (y a veces
     # redirige a una página /lista/ con el formato de Falabella, que el parser también entiende).
@@ -351,22 +360,35 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
         "linea_blanca": "/sodimac-cl/search?Ntt=refrigerador",
         "lavadoras": "/sodimac-cl/search?Ntt=lavadora",
         "herramientas": "/sodimac-cl/search?Ntt=taladro",
+        "notebooks": "/sodimac-cl/search?Ntt=notebook",
+        "consolas": "/sodimac-cl/search?Ntt=playstation",
+        "audio": "/sodimac-cl/search?Ntt=parlante+soundbar",
+        "electrodomesticos": "/sodimac-cl/search?Ntt=freidora+cafetera",
     },
-    # Paris: Next.js App Router; cada página trae ~30 productos (ignora ?page=). Línea blanca vía búsqueda.
+    # Paris: Next.js App Router; cada página trae ~30 productos. Búsquedas ampliadas cubren audio, gamer y componentes.
     "paris": {
         "smartphones": "/tecnologia/celulares/",
         "notebooks": "/tecnologia/computadores/notebooks/",
         "televisores": "/electro/television/",
         "consolas": "/tecnologia/consolas-videojuegos/",
         "linea_blanca": "/search?q=refrigerador",
+        "audio": "/search?q=audifonos+parlante",
+        "monitores": "/search?q=monitor",
+        "componentes": "/search?q=ssd+nvme",
+        "gaming": "/search?q=teclado+mouse+gamer",
+        "smartwatch": "/search?q=smartwatch",
+        "electrodomesticos": "/search?q=freidora+cafetera",
     },
-    # ABC (Salesforce Commerce Cloud): ?sz=48 trae 48 productos por página; notebooks vía búsqueda
-    # (la búsqueda "consola" devuelve sofás "consola", así que no se incluye)
+    # ABC (Salesforce Commerce Cloud): ?sz=48 trae 48 productos por página; categorías faltantes vía búsqueda
+    # (la búsqueda "consola" sola devuelve sofás "consola", así que se consulta "playstation nintendo")
     "abc": {
         "televisores": "/tecnologia/televisores/?sz=48",
         "smartphones": "/tecnologia/celulares/?sz=48",
         "linea_blanca": "/linea-blanca/refrigeradores/?sz=48",
         "notebooks": "/on/demandware.store/Sites-Abc-Site/es_CL/Search-Show?q=notebook&sz=48",
+        "consolas": "/on/demandware.store/Sites-Abc-Site/es_CL/Search-Show?q=playstation+nintendo&sz=48",
+        "audio": "/tecnologia/audio/?sz=48",
+        "electrodomesticos": "/on/demandware.store/Sites-Abc-Site/es_CL/Search-Show?q=freidora+cafetera&sz=48",
     },
     # Jumbo (Cencosud; Next.js App Router): solo vende electro pequeño y accesorios de tecnología.
     # Su búsqueda responde 404 a peticiones directas, así que se leen estas dos categorías (~50 por página).
@@ -388,6 +410,13 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
         "notebooks": "/tecno/computacion/notebooks",
         "televisores": "/tecno/television",
         "consolas": "/tecno/mundo-gamer",
+        "linea_blanca": "/electro/refrigeracion",
+        "audio": "/search/audifonos%20parlante",
+        "monitores": "/tecno/computacion/monitores",
+        "componentes": "/search/tarjeta%20de%20video",
+        "gaming": "/tecno/mundo-gamer",
+        "smartwatch": "/search/smartwatch",
+        "electrodomesticos": "/electro/electrodomesticos",
     },
 }
 
@@ -1299,6 +1328,8 @@ class DirectStoreReader:
         self.timeout = timeout
         self._catalog_cursor: Dict[str, int] = {}
         self._catalog_pages: Dict[str, int] = {}
+        self._vtex_hot_cursor: Dict[str, int] = {}
+        self._category_cursor: Dict[tuple, int] = {}
         self._magento_cursor: Dict[str, tuple] = {}
         self._magento_page_size: Dict[str, int] = {}   # productos por página que entrega cada tienda
         self._empty_page: Dict[str, bool] = {}         # la última página pedida respondió sin productos
@@ -1607,11 +1638,22 @@ class DirectStoreReader:
     def _vtex_catalog_slice(self, store_id: str, pages: int, lane: str = "both") -> List[ProductItem]:
         items: List[ProductItem] = []
         if lane in ("both", "hot"):
-            hot = self._vtex_query(store_id, params={"_from": 0, "_to": VTEX_PAGE_SIZE - 1, "O": VTEX_HOT_ORDER})
+            hot_offset = self._vtex_hot_cursor.get(store_id, 0) if lane == "hot" else 0
+            hot = self._vtex_query(
+                store_id,
+                params={"_from": hot_offset, "_to": hot_offset + VTEX_PAGE_SIZE - 1, "O": VTEX_HOT_ORDER},
+            )
             if hot is None:
                 return items   # tienda en pausa o sin respuesta: no se sigue con el recorrido
-            items.extend(hot[0])
+            hot_items, hot_total = hot
+            items.extend(hot_items)
             if lane == "hot":
+                next_hot = hot_offset + VTEX_PAGE_SIZE
+                limit_hot = min(hot_total or 0, VTEX_HOT_MAX_OFFSET)
+                if len(hot_items) >= VTEX_PAGE_SIZE and next_hot < limit_hot:
+                    self._vtex_hot_cursor[store_id] = next_hot
+                else:
+                    self._vtex_hot_cursor[store_id] = 0
                 return items
         offset = self._catalog_cursor.get(store_id, 0)
         for _ in range(max(1, pages)):
@@ -1743,7 +1785,25 @@ class DirectStoreReader:
         path = CATEGORY_PATHS.get(store_id, {}).get(category_key)
         if not path:
             return []
-        return self._listing(store_id, STORE_BASE[store_id] + path, category_key)
+        paginated_stores = ("falabella", "ripley", "sodimac", "jumbo", "abc")
+        key = (store_id, category_key)
+        page = self._category_cursor.get(key, 1) if store_id in paginated_stores else 1
+        base_url = STORE_BASE[store_id] + path
+        if page <= 1:
+            url = base_url
+        elif store_id == "abc":
+            sep = "&" if "?" in base_url else "?"
+            url = f"{base_url}{sep}start={(page - 1) * 48}"
+        else:
+            sep = "&" if "?" in base_url else "?"
+            url = f"{base_url}{sep}page={page}"
+        items = self._listing(store_id, url, category_key, tolerant=(page > 1))
+        if store_id in paginated_stores:
+            if items and page < CATEGORY_MAX_PAGES:
+                self._category_cursor[key] = page + 1
+            else:
+                self._category_cursor[key] = 1
+        return items
 
     def search(self, store_id: str, keyword: str) -> List[ProductItem]:
         q = urllib.parse.quote(keyword.strip())

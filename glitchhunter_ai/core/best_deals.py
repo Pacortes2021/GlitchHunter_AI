@@ -67,13 +67,20 @@ def score_post(post: Dict[str, Any], hist: Optional[Dict[str, float]] = None,
         score += min(25.0, 10.0 * math.log10(savings / 5000.0))
     if savings >= 100_000:
         reasons.append(f"Ahorras ${savings:,.0f}".replace(",", "."))
-    if post.get("kind") == "glitch":
+    cheap_outlet_bulk = (
+        bool(payload.get("bulk_price_count"))
+        and not verdict.get("is_missing_zero")
+        and best <= 15000
+        and int(round(best)) % 1000 == 0
+        and savings < 50000
+    )
+    if post.get("kind") == "glitch" and not cheap_outlet_bulk:
         score += 15.0
         reasons.append("Error de precio verificado")
     if verdict.get("is_missing_zero"):
         score += 10.0
         reasons.append("Parece que le falta un cero")
-    if payload.get("bulk_price_count"):
+    if payload.get("bulk_price_count") and not cheap_outlet_bulk:
         score += 4.0
 
     if hist and hist.get("n", 0) >= 5 and best > 0:

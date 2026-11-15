@@ -891,7 +891,12 @@ class GlitchHuntingPipeline:
         Solo pasan las que superan el filtro de calidad (ver _is_publishable_deal).
         """
         from glitchhunter_ai.config import (
-            DEAL_MAX_AGE_HOURS, DEAL_MIN_SAVINGS_CLP, DEAL_PRIORITY_MIN_DISCOUNT, DEAL_PUBLISH_BATCH,
+            DEAL_MAX_AGE_HOURS,
+            DEAL_MIN_SAVINGS_CLP,
+            DEAL_PRIORITY_MIN_DISCOUNT,
+            DEAL_PUBLISH_BATCH,
+            DEAL_TECH_MIN_DISCOUNT,
+            DEAL_TECH_MIN_SAVINGS_CLP,
         )
 
         published = 0
@@ -906,6 +911,7 @@ class GlitchHuntingPipeline:
             )
             # Segunda pasada: Apple y la watchlist desde un descuento menor (DEAL_PRIORITY_MIN_DISCOUNT)
             terms = self._priority_terms()
+            priority_rows: List[Dict[str, Any]] = []
             if terms and DEAL_PRIORITY_MIN_DISCOUNT < min_discount:
                 priority = self.db.get_commercial_deals(
                     min_discount=DEAL_PRIORITY_MIN_DISCOUNT,
@@ -916,8 +922,31 @@ class GlitchHuntingPipeline:
                     unpublished_only=True,
                     title_terms=terms,
                 )
-                # Primero: son pocas, y las de 40%+ pueden ser miles y agotar el cupo de DEAL_PUBLISH_BATCH
-                rows = [r for r in priority if self._priority_match(str(r.get("title") or ""), terms)] + list(rows)
+                priority_rows = [r for r in priority if self._priority_match(str(r.get("title") or ""), terms)]
+            # Tercera pasada: tecnología y línea blanca desde 25% con ahorro sustantivo en pesos
+            tech_rows: List[Dict[str, Any]] = []
+            if DEAL_TECH_MIN_DISCOUNT < min_discount:
+                raw_tech = self.db.get_commercial_deals(
+                    min_discount=DEAL_TECH_MIN_DISCOUNT,
+                    max_discount=min_discount,
+                    limit=5000,
+                    max_age_hours=DEAL_MAX_AGE_HOURS,
+                    min_savings=max(DEAL_MIN_SAVINGS_CLP, DEAL_TECH_MIN_SAVINGS_CLP),
+                    unpublished_only=True,
+                )
+                for r in raw_tech:
+                    cat = classify_category(str(r.get("title") or ""))
+                    if cat not in NON_TECH_CATEGORIES and cat != ACCESSORY_CATEGORY and cat != "otros":
+                        tech_rows.append(r)
+            # Primero prioridad (Apple/watchlist), luego >=40%, luego tech 25%–39%, sin duplicar
+            seen_pids: set = set()
+            combined: List[Dict[str, Any]] = []
+            for r in (priority_rows + list(rows) + tech_rows):
+                pid = str(r.get("product_id") or "")
+                if pid and pid not in seen_pids:
+                    seen_pids.add(pid)
+                    combined.append(r)
+            rows = combined
             checked = 0
             for row in rows:
                 current = float(row.get("current_price") or 0.0)

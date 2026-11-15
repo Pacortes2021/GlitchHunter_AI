@@ -373,3 +373,154 @@ def test_shopify_sale_collection_ignores_product_lines_named_black():
             {"handle": "black-friday", "title": "Black Friday", "products_count": 12}]
     assert pick_shopify_sale_collection(cols) == "black-friday"
     assert pick_shopify_sale_collection(cols[:1]) is None
+
+
+def test_category_pagination_rotates_pages_and_wraps():
+    seen_urls = []
+    reader = DirectStoreReader(client=MagicMock(), backoff=StoreBackoff(clock=_Clock()))
+
+    def fake_listing(store_id, url, category_hint, tolerant=False):
+        seen_urls.append(url)
+        return [ProductItem(
+            id=f"{store_id}-item-1", store_id=store_id, store_name=store_id.title(),
+            title="Smartphone Pro 5G", category=category_hint,
+            current_price=199990, normal_price=299990,
+            url=f"https://example.com/{store_id}/1", source="direct",
+        )]
+
+    reader._listing = fake_listing
+    for _ in range(5):
+        reader.fetch_category("falabella", "smartphones")
+    assert seen_urls == [
+        "https://www.falabella.com/falabella-cl/category/cat70008/Smartphones-y-Telefonia",
+        "https://www.falabella.com/falabella-cl/category/cat70008/Smartphones-y-Telefonia?page=2",
+        "https://www.falabella.com/falabella-cl/category/cat70008/Smartphones-y-Telefonia?page=3",
+        "https://www.falabella.com/falabella-cl/category/cat70008/Smartphones-y-Telefonia?page=4",
+        "https://www.falabella.com/falabella-cl/category/cat70008/Smartphones-y-Telefonia",
+    ]
+    seen_urls.clear()
+    reader.fetch_category("abc", "smartphones")
+    reader.fetch_category("abc", "smartphones")
+    assert seen_urls[0] == "https://www.abc.cl/tecnologia/celulares/?sz=48"
+    assert seen_urls[1] == "https://www.abc.cl/tecnologia/celulares/?sz=48&start=48"
+
+
+def test_vtex_hot_lane_rotates_offsets_when_full_page():
+    reader = DirectStoreReader(client=MagicMock(), backoff=StoreBackoff(clock=_Clock()))
+    full_page = [
+        ProductItem(
+            id=f"sony-{i}", store_id="sony", store_name="Sony",
+            title=f"Audífono Sony {i}", category="audio",
+            current_price=49990, normal_price=99990,
+            url=f"https://store.sony.cl/item-{i}/p", source="direct",
+        )
+        for i in range(50)
+    ]
+    offsets = []
+
+    def fake_vtex_query(store_id, params):
+        offsets.append(params["_from"])
+        return list(full_page), 250
+
+    reader._vtex_query = fake_vtex_query
+    for _ in range(5):
+        items = reader.fetch_hot("sony")
+        assert len(items) == 50
+    assert offsets == [0, 50, 100, 150, 0]
+
+
+def test_continuous_reader_batches_large_watchlist(tmp_path):
+    from glitchhunter_ai.core.continuous_reader import ContinuousReader, WATCHLIST_BATCH_SIZE
+
+    db = PriceDatabase(db_path=tmp_path / "wl_batch.db")
+    db.init_db()
+    reader = MagicMock()
+    searched = []
+    reader.search.side_effect = lambda sid, kw: searched.append((sid, kw)) or []
+    reader.fetch_category.return_value = []
+    pipe = GlitchHuntingPipeline(db=db, direct_reader=reader)
+    kws = [f"kw{i:02d}" for i in range(12)]
+    cr = ContinuousReader(
+        pipe, workers=2, hot_interval=30.0, deep_interval=60.0, deep_min=20.0, deep_max=120.0,
+        categories=[], watchlist_provider=lambda: kws,
+    )
+
+    _, calls1 = cr._fetch_with_calls("ripley", "recorrido")
+    _, calls2 = cr._fetch_with_calls("ripley", "recorrido")
+    cr.pool.shutdown(wait=False)
+    assert WATCHLIST_BATCH_SIZE == 8
+    assert len(searched) == 16
+    assert [kw for _, kw in searched[:8]] == kws[:8]
+    assert [kw for _, kw in searched[8:]] == kws[8:] + kws[:4]
+    assert calls1 == 8 + len(cr.categories) and calls2 == 8 + len(cr.categories)
+
+
+def test_publish_new_deals_includes_25pct_tech_with_30k_savings(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "tech25.db")
+    db.init_db()
+    pipe = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
+    pipe.telegram_dispatcher.send_alert = MagicMock(return_value=True)
+
+    tech_item = ProductItem(
+        id="rip-nb-4060", store_id="ripley", store_name="Ripley",
+        title="Notebook Gamer Lenovo RTX 4060", category="notebooks",
+        current_price=350000, normal_price=500000,
+        url="https://simple.ripley.cl/nb-4060", source="direct",
+    )
+    cloth_item = ProductItem(
+        id="rip-chaqueta", store_id="ripley", store_name="Ripley",
+        title="Chaqueta Outdoor Impermeable Negra", category="ropa",
+        current_price=84000, normal_price=120000,
+        url="https://simple.ripley.cl/chaqueta", source="direct",
+    )
+    pipe.process_store_products("ripley", [tech_item, cloth_item], send_notifications=False)
+    published = pipe.publish_new_deals()
+    assert published == 1
+    feed_pids = {p["product_id"] for p in db.get_feed(limit=10)}
+    assert "rip-nb-4060" in feed_pids
+    assert "rip-chaqueta" not in feed_pids
+
+
+def test_live_search_pending_and_external_ingest(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "live_ext.db")
+    db.init_db()
+    reader = MagicMock()
+    reader.search.return_value = []
+    pipe = GlitchHuntingPipeline(db=db, direct_reader=reader)
+    pipe.telegram_dispatcher.send_alert = MagicMock(return_value=True)
+
+    ls = LiveSearch(pipe, workers=2)
+    snap = ls.start("rtx 4070")
+    assert snap is not None
+    pending = ls.pending_jobs()
+    assert any(j["id"] == snap["id"] and j["query"] == "rtx 4070" for j in pending)
+
+    ext_item = ProductItem(
+        id="rip-rtx-4070", store_id="ripley", store_name="Ripley",
+        title="Tarjeta de Video MSI RTX 4070", category="componentes",
+        current_price=499990, normal_price=699990,
+        url="https://simple.ripley.cl/rtx-4070", source="direct",
+    )
+    added = ls.ingest_external_results(snap["id"], "ripley", [ext_item])
+    assert added == 1
+    updated = ls.snapshot(snap["id"])
+    assert updated["count"] == 1
+    assert updated["results"][0]["product_id"] == "rip-rtx-4070"
+
+
+def test_best_deals_cheap_outlet_bulk_not_boosted():
+    from glitchhunter_ai.core.best_deals import score_post
+
+    outlet_post = {
+        "kind": "glitch",
+        "best_price": 5000,
+        "discount_pct": 70.6,
+        "payload": {
+            "bulk_price_count": 5,
+            "product": {"normal_price": 16990},
+            "verdict": {"is_missing_zero": False, "absolute_savings_clp": 11990},
+        },
+    }
+    score, reasons = score_post(outlet_post)
+    assert "Error de precio verificado" not in reasons
+    assert score < 70.0  # no recibe +15 (glitch) ni +4 (bulk_price_count)

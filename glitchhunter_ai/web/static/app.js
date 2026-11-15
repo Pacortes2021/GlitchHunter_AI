@@ -870,6 +870,7 @@
       showToast('No se pudo conectar con el radar. Reintentando…', 'Sin conexión');
     }
     state.loaded = true;
+    if (!state.statusSince) state.statusSince = new Date().toISOString();
     $('feed-loading').hidden = true;
     state.appliedSort = 'recent';
     renderFilterChips();

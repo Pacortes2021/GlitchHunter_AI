@@ -28,6 +28,7 @@ logger = logging.getLogger("GlitchHunter.Readers")
 SHOPIFY_KEY = "shopify"
 SHOPIFY_LANE = "turno"
 SHOPIFY_POLL_SECONDS = 10.0   # fetch_shopify_next respeta su propio espaciado global
+WATCHLIST_BATCH_SIZE = 8      # máximo de palabras de búsqueda por turno en grandes tiendas
 
 
 class ContinuousReader:
@@ -75,6 +76,8 @@ class ContinuousReader:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._stats_lock = threading.Lock()
+        self._kw_lock = threading.Lock()
+        self._kw_cursor: Dict[str, int] = {}
         self._minute = {"reads": 0, "products": 0, "fresh": 0, "alerts": 0}
 
     # --- lectura de un carril ------------------------------------------------------
@@ -83,18 +86,25 @@ class ContinuousReader:
             return self.reader.fetch_hot(store_id), 1
         items: List = []
         if store_id not in CATALOG_STORES:
-            # Tiendas sin recorrido de catálogo: watchlist y categorías prioritarias
+            # Tiendas sin recorrido de catálogo: watchlist dosificada en lotes y categorías prioritarias
             keywords = (
                 self._watchlist_provider()
                 if self._watchlist_provider is not None
                 else self.pipeline.db.get_watchlist_keywords()
             )
-            for kw in keywords:
+            if len(keywords) > WATCHLIST_BATCH_SIZE:
+                with self._kw_lock:
+                    start_idx = self._kw_cursor.get(store_id, 0) % len(keywords)
+                    batch_kw = [keywords[(start_idx + i) % len(keywords)] for i in range(WATCHLIST_BATCH_SIZE)]
+                    self._kw_cursor[store_id] = (start_idx + WATCHLIST_BATCH_SIZE) % len(keywords)
+            else:
+                batch_kw = list(keywords)
+            for kw in batch_kw:
                 items.extend(self.reader.search(store_id, kw))
             for cat in self.categories:
                 items.extend(self.reader.fetch_category(store_id, cat))
-            return items, max(1, len(keywords) + len(self.categories))
-        return self.reader.fetch_deep(store_id, self.catalog_pages), 1
+            return items, max(1, len(batch_kw) + len(self.categories))
+        return self.reader.fetch_deep(store_id, self.catalog_pages), max(1, self.catalog_pages)
 
     def _fetch(self, store_id: str, lane: str) -> List:
         items, _ = self._fetch_with_calls(store_id, lane)

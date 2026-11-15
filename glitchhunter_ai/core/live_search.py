@@ -90,11 +90,49 @@ class LiveSearch:
             job = {
                 "id": uuid.uuid4().hex[:12], "key": key, "query": query, "words": words,
                 "stores": list(self.stores), "done": 0, "failed": [], "results": {}, "by_store": {},
-                "started_at": self.clock(), "finished_at": None,
+                "external_stores": set(),
+                "started_at": self.clock(), "created_wall": time.time(), "finished_at": None,
             }
             self.jobs[job["id"]] = job
         threading.Thread(target=self._run, args=(job,), name=f"busqueda-{job['id']}", daemon=True).start()
         return self.snapshot(job["id"])
+
+    def pending_jobs(self, max_age_seconds: float = 45.0) -> List[Dict[str, str]]:
+        """Trabajos de búsqueda recientes para que un recolector remoto aporte sus tiendas."""
+        now_wall = time.time()
+        with self._lock:
+            self._purge()
+            return [
+                {"id": j["id"], "query": j["query"]}
+                for j in self.jobs.values()
+                if now_wall - j.get("created_wall", 0.0) <= max_age_seconds
+            ]
+
+    def ingest_external_results(self, job_id: str, store_id: str, items: List[Any]) -> int:
+        """Incorpora resultados enviados por un recolector remoto (ej. Mac residencial) a una búsqueda activa."""
+        sid = (store_id or "").lower()
+        with self._lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                return 0
+            words = list(job["words"])
+        matched = [i for i in items if matches_query(getattr(i, "title", ""), words)]
+        with self._lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                return 0
+            for item in matched:
+                job["results"][item.id] = item_to_result(item, source="live")
+            ext = job.setdefault("external_stores", set())
+            if sid not in ext and sid not in job["by_store"]:
+                ext.add(sid)
+            job["by_store"][sid] = matched
+        if matched:
+            try:
+                self.pipeline.process_store_products(sid, matched, lock_timeout=120)
+            except Exception as exc:
+                logger.debug("No se pudo procesar resultados externos de búsqueda (%s): %s", sid, exc)
+        return len(matched)
 
     def _search_store(self, job: Dict[str, Any], store_id: str) -> None:
         items: List[Any] = []
@@ -110,13 +148,42 @@ class LiveSearch:
             job["by_store"][store_id] = items
             job["done"] += 1
 
+    def _search_aggregators(self, job: Dict[str, Any], store_ids: List[str]) -> Dict[str, List[Any]]:
+        agg_by_store: Dict[str, List[Any]] = {}
+        try:
+            from glitchhunter_ai.scrapers.live_feed import LiveRetailFeed
+            agg_items = LiveRetailFeed().search_live_products(
+                job["query"],
+                store_ids=store_ids,
+                limit=30,
+            )
+            matched_agg = [i for i in agg_items if matches_query(i.title, job["words"])]
+            if matched_agg:
+                with self._lock:
+                    ext = job.setdefault("external_stores", set())
+                    for item in matched_agg:
+                        job["results"].setdefault(item.id, item_to_result(item))
+                        sid = (item.store_id or "").lower()
+                        if sid and sid not in ext and sid not in job["stores"]:
+                            job["by_store"].setdefault(sid, []).append(item)
+                            agg_by_store.setdefault(sid, []).append(item)
+        except Exception as exc:
+            logger.debug("Respaldo agregador en búsqueda en vivo falló: %s", exc)
+        return agg_by_store
+
     def _run(self, job: Dict[str, Any]) -> None:
+        from glitchhunter_ai import config as _cfg
         futures = [self.pool.submit(self._search_store, job, s) for s in job["stores"]]
+        skip_stores = list(_cfg.RADAR_SKIP_STORES)
+        agg_future = self.pool.submit(self._search_aggregators, job, skip_stores) if skip_stores else None
         for fut in futures:
             fut.result()
+        agg_by_store = agg_future.result() if agg_future is not None else {}
         with self._lock:
             job["finished_at"] = self.clock()
             by_store = dict(job["by_store"])
+            for sid, a_items in agg_by_store.items():
+                by_store.setdefault(sid, a_items)
         found = sum(len(v) for v in by_store.values())
         logger.info("🔎 [Buscador] \"%s\": %d producto(s) en %d tienda(s) (%.0f s).", job["query"], found,
                     sum(1 for v in by_store.values() if v), job["finished_at"] - job["started_at"])

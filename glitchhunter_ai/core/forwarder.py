@@ -40,7 +40,7 @@ class Forwarder:
         self,
         base_url: str,
         api_key: str,
-        timeout: float = 30.0,
+        timeout: float = 45.0,
         post: Optional[Callable[[str, bytes, dict, float], int]] = None,
         sleep: Callable[[float], None] = time.sleep,
         queue_dir: Optional[Union[str, Path]] = None,

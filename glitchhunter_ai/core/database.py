@@ -1511,7 +1511,8 @@ class PriceDatabase:
             else:
                 cursor.execute("""
                     SELECT id, status, expired_reason, status_changed_at, price_now FROM offer_feed
-                    WHERE status = 'expired';
+                    WHERE status = 'expired'
+                    ORDER BY id DESC LIMIT 500;
                 """)
             return [dict(r) for r in cursor.fetchall()]
 

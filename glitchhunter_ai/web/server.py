@@ -858,6 +858,14 @@ async def start_live_search(req: LiveSearchRequest):
     return job
 
 
+@app.get("/api/search/live/pending", dependencies=[Depends(verify_admin_key)])
+async def get_pending_live_searches():
+    """Búsquedas en vivo recientes para que el recolector residencial aporte sus tiendas."""
+    if not API_AUTH_KEY:
+        raise HTTPException(status_code=403, detail="Configura API_AUTH_KEY en este servidor.")
+    return {"jobs": live_search.pending_jobs()}
+
+
 @app.get("/api/search/live/{job_id}")
 async def get_live_search(job_id: str):
     job = live_search.snapshot(job_id)
@@ -973,6 +981,20 @@ async def ingest_products(req: IngestRequest):
             error=False,
         )
     return {"status": "ok", "store_id": store_id, "received": len(products), "fresh": fresh, "alerts": len(alerts)}
+
+
+@app.post("/api/search/live/{job_id}/ingest", dependencies=[Depends(verify_admin_key)])
+async def ingest_live_search_results(job_id: str, req: IngestRequest):
+    """Recibe resultados de búsqueda en vivo desde el recolector residencial."""
+    if not API_AUTH_KEY:
+        raise HTTPException(status_code=403, detail="Configura API_AUTH_KEY en este servidor para recibir lecturas.")
+    if len(req.products) > INGEST_MAX_PRODUCTS:
+        raise HTTPException(status_code=413, detail=f"Máximo {INGEST_MAX_PRODUCTS} productos por lectura.")
+    store_id = req.store_id.lower()
+    products = [p for p in req.products if p.store_id.lower() == store_id]
+    loop = asyncio.get_running_loop()
+    added = await loop.run_in_executor(None, live_search.ingest_external_results, job_id, store_id, products)
+    return {"status": "ok", "job_id": job_id, "store_id": store_id, "added": added}
 
 
 @app.get("/api/readers")
