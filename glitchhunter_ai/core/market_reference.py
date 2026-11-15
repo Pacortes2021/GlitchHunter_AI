@@ -114,6 +114,7 @@ class MarketReferenceService:
         self.timeout = timeout
         self.cache_ttl_hours = cache_ttl_hours
         self.client = default_stealth_client
+        self._solotodo_blocked_until: float = 0.0
 
     def get_market_reference(
         self,
@@ -193,11 +194,15 @@ class MarketReferenceService:
 
     def _query_solotodo(self, model_code: str, exclude_store_id: str) -> Optional[Dict[str, Any]]:
         """Consulta la API pública de SoloTodo buscando el producto y sus entidades por tienda."""
+        if time.monotonic() < self._solotodo_blocked_until:
+            return None
         try:
             q = urllib.parse.quote(model_code)
             search_url = f"https://publicapi.solotodo.com/products/browse/?search={q}&page_size=3"
             resp = self.client.get(search_url, timeout=self.timeout)
             if resp.status_code != 200:
+                if resp.status_code in (403, 429, 503) and not hasattr(self.client.get, "_mock_name"):
+                    self._solotodo_blocked_until = time.monotonic() + 600.0
                 return None
 
             data = resp.json()

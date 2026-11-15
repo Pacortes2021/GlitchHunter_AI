@@ -50,6 +50,8 @@ class ProductItem(BaseModel):
     add_to_cart_url: Optional[str] = Field(default=None, description="URL directa para agregar al carrito en 1 clic (Sniper Mode)")
     image_url: Optional[str] = Field(default=None, description="URL de la imagen principal del producto")
     in_stock: bool = Field(default=True, description="Indica si el producto tiene stock disponible")
+    brand: Optional[str] = Field(default=None, description="Marca comercial informada por la tienda")
+    seller: Optional[str] = Field(default=None, description="Vendedor del producto (1P o Marketplace)")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Fecha y hora de captura")
     source: Optional[str] = Field(default=None, description="Origen del dato: 'direct' (tienda), 'solotodo' o 'knasta' (agregador)")
     knasta_state: Optional[str] = Field(default=None, description="Estado reportado por Knasta (OPPORTUNITY, BELOW_HABITUAL, etc.)")

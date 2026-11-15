@@ -59,11 +59,11 @@ class FalabellaScraper:
 
     # URLs de categorías clave en Falabella Chile
     CATEGORY_URLS: Dict[str, str] = {
-        "tecnologia": "https://www.falabella.com/falabella-cl/category/cat20002/Tecnologia",
-        "smartphones": "https://www.falabella.com/falabella-cl/category/cat70008/Smartphones-y-Telefonia",
-        "notebooks": "https://www.falabella.com/falabella-cl/category/cat2018/Computacion",
-        "consolas": "https://www.falabella.com/falabella-cl/category/cat2012/Consolas-y-Videojuegos",
-        "televisores": "https://www.falabella.com/falabella-cl/category/cat2070/Televisores",
+        "tecnologia": "https://www.falabella.com/falabella-cl/category/cat40052/Computadores",
+        "smartphones": "https://www.falabella.com/falabella-cl/category/cat720161/Smartphones",
+        "notebooks": "https://www.falabella.com/falabella-cl/category/cat70057/Notebooks",
+        "consolas": "https://www.falabella.com/falabella-cl/category/cat202303/Consolas",
+        "televisores": "https://www.falabella.com/falabella-cl/category/cat7190148/Smart-TV",
     }
 
     # Headers simulando un navegador real en Chile (Chrome macOS / Windows)

@@ -59,6 +59,28 @@ SERVICE_RE = re.compile(
 )
 # Títulos de accesorios que nombran al equipo ("Funda para iPhone 15", "compatible con MacBook")
 PRIORITY_ACCESSORY_RE = re.compile(r"\b(?:para|compatible|compatibles|for|con\s+cable\s+para)\b")
+
+GENERIC_BRAND_NAMES = {"generico", "genérico", "oem", "sin marca", "generic", "importado"}
+KNOWN_TECH_BRANDS_RE = re.compile(
+    r"\b(apple|iphone|ipad|macbook|airpods|samsung|galaxy|garmin|huawei|xiaomi|redmi|poco|motorola|honor|oppo|vivo|realme|"
+    r"sony|playstation|ps5|ps4|nintendo|switch|xbox|lg|tcl|hisense|caixun|philips|panasonic|aoc|benq|viewsonic|gigabyte|"
+    r"msi|asus|rog|tuf|acer|lenovo|hp|omen|victus|dell|alienware|razer|logitech|hyperx|corsair|jbl|bose|sennheiser|"
+    r"harman|anker|soundcore|marshall|edifier|amazfit|fitbit|polar|suunto|casio|gopro|dji|canon|nikon|epson|brother|"
+    r"sindelen|thomas|oster|ursus|trotter|somela|midea|mademsa|fensa|electrolux|whirlpool|bosch|teka|fdv|easyways|"
+    r"ninja|instant\s+pot|delonghi|nespresso|krups|moulinex|braun|remington|babyliss|siegen|gama|karcher|black\+?decker|"
+    r"makita|dewalt|stanley|einhell|bauker|levis|nike|adidas|puma|under\s+armour|reebok|new\s+balance|columbia|lippi)\b",
+    re.IGNORECASE,
+)
+GENERIC_TECH_TRAP_RE = re.compile(
+    r"\b(hk\d{2,3}|gt08|s37|i58\d+|iw\d+|5s01|km88|sk40|stn-?28|t800|t900|w26|w68|y68|d20)\b"
+    r"|smartwatch\s+reloj\s+inteligente"
+    r"|reloj\s+inteligente\s+(?:llamadas|bluetooth|smartwatch|mujer|hombre|deportivo|control|conectividad)"
+    r"|smartwatch\s+(?:mujer|hombre|control\s+de\s+salud|pantalla\s+hd|doble\s+correa)"
+    r"|aud[ií]fonos.*(?:cat\s+gato|cat\s+light|orejas\s+de\s+gato|modelo\s+m1\s+cat)"
+    r"|micr[oó]fono\s+inal[aá]mbrico\s+solapa\s+universal"
+    r"|calculadora\s+solar\s+de\s+escritorio",
+    re.IGNORECASE,
+)
 console = Console()
 
 
@@ -129,10 +151,27 @@ class GlitchHuntingPipeline:
             if isinstance(info, dict) and info.get("is_chronic_inflator")
         ]
 
+    @staticmethod
+    def is_generic_marketplace_trap(
+        title: str,
+        brand: Optional[str] = None,
+        seller: Optional[str] = None,
+    ) -> bool:
+        """Detecta clones genéricos 3P inflados (HK80/GT08/Cat Ear) salvo que tengan marca real reconocida."""
+        title_s = title or ""
+        brand_s = (brand or "").strip()
+        if KNOWN_TECH_BRANDS_RE.search(title_s) or (brand_s and KNOWN_TECH_BRANDS_RE.search(brand_s)):
+            return False
+        if brand_s.lower() in GENERIC_BRAND_NAMES:
+            return True
+        return bool(GENERIC_TECH_TRAP_RE.search(title_s))
+
     def process_product(
         self,
         product: ProductItem,
         send_notifications: bool = True,
+        _already_upserted: bool = False,
+        _baseline_price: Optional[float] = None,
     ) -> Optional[GlitchAlert]:
         """
         Ejecuta el protocolo de análisis para un solo producto.
@@ -146,18 +185,10 @@ class GlitchHuntingPipeline:
             logger.debug(f"📦 [Sin Stock Omitido] {product.title} ({product.id}) no tiene stock disponible.")
             return None
 
-        # Fase 1: Consulta de precio histórico base previo (30d / 90d) y persistencia
-        baseline_price = self.db.get_baseline_price(product.id, days=30)
-        hist_stats: Dict[str, Any] = {}
-        hist_getter = getattr(self.db, "get_price_history_summary", None)
-        if callable(hist_getter):
-            try:
-                raw_hist = hist_getter(product.id, days=90)
-                if isinstance(raw_hist, dict):
-                    hist_stats = raw_hist
-            except Exception as exc:
-                logger.debug(f"Error leyendo resumen histórico para {product.id}: {exc}")
-        self.db.upsert_product(product)
+        # Fase 1: Consulta de precio histórico base previo (30d) y persistencia
+        baseline_price = _baseline_price if _baseline_price is not None else self.db.get_baseline_price(product.id, days=30)
+        if not _already_upserted:
+            self.db.upsert_product(product)
 
         # Fase 2: Detector Matemático de Anomalías (Porcentaje y Missing Zero Bug)
         math_eval = self.math_detector.evaluate(product, baseline_price=baseline_price)
@@ -218,12 +249,21 @@ class GlitchHuntingPipeline:
         if SERVICE_RE.search(product.title):
             logger.debug(f"🧾 [Servicio Omitido] {product.title} ({product.store_name}).")
             return None
+        if self.is_generic_marketplace_trap(
+            product.title, getattr(product, "brand", None), getattr(product, "seller", None)
+        ):
+            if not (baseline_price and baseline_price > 0 and product.best_price <= baseline_price * 0.6):
+                logger.debug(f"🛡️ [Marketplace Genérico Omitido] {product.title} ({product.store_name}).")
+                return None
 
         # ⏱️ Confirmación en tiempo real: los precios del agregador llegan con ~40 min de retraso.
         # Antes de alertar se relee el producto directamente en la tienda (Falabella / Ripley).
+        from glitchhunter_ai.config import store_enabled
+
         if (
             self.confirm_with_store
             and product.store_id in DIRECT_STORES
+            and store_enabled(product.store_id)
             and product.source in ("solotodo", "knasta")
         ):
             fresh = self.direct_reader.fetch_product(product.store_id, str(product.url))
@@ -288,6 +328,15 @@ class GlitchHuntingPipeline:
         bulk_count = self._bulk_price_counts.get(product.id, 0)
         inflation_map = self._get_store_inflation_map()
         store_inflated = bool((inflation_map.get(product.store_id.lower()) or {}).get("is_chronic_inflator"))
+        hist_stats: Dict[str, Any] = {}
+        hist_getter = getattr(self.db, "get_price_history_summary", None)
+        if callable(hist_getter):
+            try:
+                raw_hist = hist_getter(product.id, days=90)
+                if isinstance(raw_hist, dict):
+                    hist_stats = raw_hist
+            except Exception as exc:
+                logger.debug(f"Error leyendo resumen histórico para {product.id}: {exc}")
         pre_event_spike = bool(hist_stats.get("pre_event_spike"))
         modified_z = InflationVerifier.modified_z_score(best_now, hist_stats.get("prices_90d"))
 
@@ -777,13 +826,20 @@ class GlitchHuntingPipeline:
         """
         from glitchhunter_ai.core.price_signals import BULK_EXTREME_DISCOUNT, _is_retail_price_point
 
-        services, outlets = [], []
+        services, outlets, generics = [], [], []
         for post in self.db.get_feed(limit=1_000_000):
             payload = post.get("payload") or {}
             product = payload.get("product") or {}
             title = str(product.get("title") or payload.get("title") or "")
             if SERVICE_RE.search(title):
                 services.append(post["id"])
+                continue
+            if self.is_generic_marketplace_trap(
+                title,
+                product.get("brand") or payload.get("brand"),
+                product.get("seller") or payload.get("seller"),
+            ):
+                generics.append(post["id"])
                 continue
             verdict = payload.get("verdict") or {}
             reason = str(verdict.get("reason") or "")
@@ -796,8 +852,11 @@ class GlitchHuntingPipeline:
                 and _is_retail_price_point(int(round(float(post.get("best_price") or 0))))
             ):
                 outlets.append(post["id"])
-        self.db.withdraw_feed_offers(services + outlets)
-        return {"servicios": len(services), "liquidaciones": len(outlets)}
+        self.db.withdraw_feed_offers(services + outlets + generics)
+        res = {"servicios": len(services), "liquidaciones": len(outlets)}
+        if generics:
+            res["genericos"] = len(generics)
+        return res
 
     def _publish_unverified_as_deal(self, product: ProductItem, discount_pct: float, savings_clp: float) -> None:
         """Publica como 'Oferta' un descuento ≥65% sin evidencia independiente (si pasa el filtro de calidad)."""
@@ -805,6 +864,8 @@ class GlitchHuntingPipeline:
             "product_id": product.id,
             "store_id": product.store_id,
             "title": product.title,
+            "brand": getattr(product, "brand", None),
+            "seller": getattr(product, "seller", None),
             "category": classify_category(product.title),
             "url": str(product.url),
             "image_url": product.image_url,
@@ -840,14 +901,18 @@ class GlitchHuntingPipeline:
         if str(row.get("store_id") or "").lower() in DEAL_GLITCH_ONLY_STORES:
             return False   # tiendas de ropa: solo errores de precio verificados
         store_key = str(row.get("store_id") or "").lower()
+        baseline_getter = getattr(self.db, "get_baseline_price", None)
         if (self._get_store_inflation_map().get(store_key) or {}).get("is_chronic_inflator"):
             # En tiendas con inflación crónica de MSRP exigimos caída real contra historial (>=25%)
-            baseline_getter = getattr(self.db, "get_baseline_price", None)
             baseline = baseline_getter(product_id, days=30) if callable(baseline_getter) and product_id else None
             if not (baseline and baseline > 0 and best_price <= baseline * 0.75):
                 return False
         if REFURBISHED_RE.search(title):
             return False
+        if self.is_generic_marketplace_trap(title, row.get("brand"), row.get("seller")):
+            baseline = baseline_getter(product_id, days=30) if callable(baseline_getter) and product_id else None
+            if not (baseline and baseline > 0 and best_price <= baseline * 0.75):
+                return False
         category = classify_category(title)
         if category == ACCESSORY_CATEGORY:
             return False
@@ -1131,10 +1196,29 @@ class GlitchHuntingPipeline:
         detected: List[GlitchAlert] = []
         try:
             fresh = self.count_fresh_deals(products)
+            baseline_map: Dict[str, Optional[float]] = {}
+            already_upserted = False
+            if (
+                isinstance(self.db, PriceDatabase)
+                and getattr(type(self.db), "upsert_product", None) is PriceDatabase.upsert_product
+                and "upsert_product" not in getattr(self.db, "__dict__", {})
+            ):
+                baseline_map = {
+                    p.id: self.db.get_baseline_price(p.id, days=30)
+                    for p in products
+                    if p.in_stock
+                }
+                self.db.upsert_products_batch(products)
+                already_upserted = True
             self._bulk_price_counts = {}
             self._note_bulk_prices(products)
             for prod in products:
-                alert = self.process_product(prod, send_notifications=send_notifications)
+                alert = self.process_product(
+                    prod,
+                    send_notifications=send_notifications,
+                    _already_upserted=already_upserted,
+                    _baseline_price=baseline_map.get(prod.id),
+                )
                 if alert:
                     detected.append(alert)
             return detected, fresh

@@ -403,7 +403,7 @@ def test_category_pagination_rotates_pages_and_wraps():
         return [_make_item(store_id, category_hint, 1)]
 
     reader._listing = fake_listing
-    base_fal = "https://www.falabella.com/falabella-cl/category/cat70008/Smartphones-y-Telefonia"
+    base_fal = "https://www.falabella.com/falabella-cl/category/cat720161/Smartphones"
     for _ in range(CATEGORY_MAX_PAGES + 1):
         reader.fetch_category("falabella", "smartphones")
     assert seen_urls == [base_fal] + [f"{base_fal}?page={p}" for p in range(2, CATEGORY_MAX_PAGES + 1)] + [base_fal]
@@ -427,9 +427,9 @@ def test_category_pagination_rotates_pages_and_wraps():
     reader.fetch_category("falabella", "notebooks")
     reader.fetch_category("falabella", "notebooks")
     assert seen_urls == [
-        "https://www.falabella.com/falabella-cl/category/cat2018/Computacion",
-        "https://www.falabella.com/falabella-cl/category/cat2018/Computacion?page=2",
-        "https://www.falabella.com/falabella-cl/category/cat2018/Computacion",
+        "https://www.falabella.com/falabella-cl/category/cat70057/Notebooks",
+        "https://www.falabella.com/falabella-cl/category/cat70057/Notebooks?page=2",
+        "https://www.falabella.com/falabella-cl/category/cat70057/Notebooks",
     ]
 
     # Paris alterna entre orden por defecto y mejor descuento (?sortby=best-discount+desc).
@@ -592,10 +592,10 @@ def test_big_store_hot_lane_rotates_discount_sections():
     for _ in range(BIG_HOT_MAX_PAGES + 1):
         reader.fetch_hot("falabella")
     fal_urls = [u for s, u, _, _ in seen if s == "falabella"]
-    assert "f.range.derived.variant.discount=40%25" in fal_urls[0]
+    assert "f.range.derived.variant.discount=30%25" in fal_urls[0]
     assert fal_urls[1].endswith("&page=2")
     assert fal_urls[2].endswith(f"&page={BIG_HOT_MAX_PAGES}")
-    assert "/Smartphones-y-Telefonia?" in fal_urls[3] and "&page=" not in fal_urls[3]
+    assert "/Notebooks?" in fal_urls[3] and "&page=" not in fal_urls[3]
 
     seen.clear()
     for _ in range(BIG_HOT_MAX_PAGES + 1):
@@ -612,3 +612,62 @@ def test_big_store_hot_lane_rotates_discount_sections():
     paris_urls = [u for s, u, _, _ in seen if s == "paris"]
     assert all("?sortby=best-discount+desc" in u and "page=" not in u for u in paris_urls)
     assert paris_urls[0] != paris_urls[1]
+
+
+def test_generic_marketplace_trap_filtering(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "trap.db")
+    db.init_db()
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
+    pipeline.telegram_dispatcher.send_alert = MagicMock(return_value=True)
+
+    assert pipeline.is_generic_marketplace_trap("Smartwatch HK80 Negro AMOLED Bluetooth", brand="GENERICO")
+    assert pipeline.is_generic_marketplace_trap("Audífonos Inalámbricos BT Modelo M1 Cat Gato", brand="Otro")
+    assert pipeline.is_generic_marketplace_trap("Calculadora Solar de Escritorio Teclas Redondas Rosa Pastel")
+    assert not pipeline.is_generic_marketplace_trap("Smartwatch Forerunner 165", brand="GARMIN")
+    assert not pipeline.is_generic_marketplace_trap("Celular Galaxy S25 FE 256GB", brand="SAMSUNG")
+
+    assert not pipeline._is_publishable_deal(
+        {"product_id": "fal-hk80", "store_id": "falabella", "title": "Smartwatch HK80 Negro AMOLED",
+         "brand": "GENERICO", "normal_price": 99990, "category": "tecnologia"},
+        best_price=49990,
+    )
+    assert pipeline._is_publishable_deal(
+        {"product_id": "fal-garmin", "store_id": "falabella", "title": "Smartwatch Forerunner 165",
+         "brand": "GARMIN", "normal_price": 329990, "category": "tecnologia"},
+        best_price=169990,
+    )
+
+
+def test_forwarder_coalesces_same_store_batches_when_queued(tmp_path):
+    from glitchhunter_ai.core.forwarder import Forwarder
+
+    qdir = tmp_path / "q_coalesce"
+    posted = []
+
+    def fake_post(url, body, headers, timeout):
+        posted.append(json.loads(body))
+        return 200
+
+    fw = Forwarder("http://127.0.0.1:8090/", "clave", post=fake_post, sleep=lambda s: None, queue_dir=qdir)
+    for idx in range(4):
+        fw.submit("falabella", [ProductItem(
+            id=f"fal-p-{idx}", store_id="falabella", store_name="Falabella",
+            title=f"Monitor LG {idx}", category="monitores",
+            current_price=199990, normal_price=299990, url=f"https://www.falabella.com/falabella-cl/product/{idx}",
+        )], latency_ms=100.0 + idx)
+    fw.submit("paris", [ProductItem(
+        id="par-p-0", store_id="paris", store_name="Paris",
+        title="Control PS5", category="consolas",
+        current_price=69990, normal_price=99990, url="https://www.paris.cl/control-1.html",
+    )])
+
+    assert fw.send_one() is True
+    assert len(posted) == 1
+    assert posted[0]["store_id"] == "falabella"
+    assert {p["id"] for p in posted[0]["products"]} == {"fal-p-0", "fal-p-1", "fal-p-2", "fal-p-3"}
+    assert fw.pending() == 1
+    assert fw.sent == 4
+    assert fw.send_one() is True
+    assert posted[1]["store_id"] == "paris"
+    assert fw.pending() == 0
+    assert list(qdir.glob("*.json")) == []

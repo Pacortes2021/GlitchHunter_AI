@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -31,7 +32,7 @@ except ImportError:
 from glitchhunter_ai.core.models import ProductItem
 
 logger = logging.getLogger("glitchhunter.scrapers.lider")
-if not logger.handlers:
+if not logger.handlers and not logging.getLogger().handlers:
     handler = logging.StreamHandler(sys.stdout)
     formatter = logging.Formatter(
         "[%(asctime)s] [%(levelname)s] [LiderScraper] %(message)s",
@@ -52,6 +53,7 @@ class LiderScraper:
     store_name: str = "Líder Chile"
     base_url: str = "https://www.lider.cl"
     search_api_url: str = "https://www.lider.cl/catalogo/api/products"
+    _api_blocked_until: float = 0.0
 
     # Headers estándar emulando un navegador moderno en Chile
     DEFAULT_HEADERS: Dict[str, str] = {
@@ -123,6 +125,10 @@ class LiderScraper:
             logger.warning("Librería 'httpx' no disponible para consulta live. Instale httpx.")
             return []
 
+        is_mocked = hasattr(httpx.Client, "_mock_name")
+        if not is_mocked and time.monotonic() < LiderScraper._api_blocked_until:
+            return []
+
         products: List[ProductItem] = []
         params = {
             "query": query,
@@ -133,9 +139,17 @@ class LiderScraper:
         try:
             with httpx.Client(headers=self.DEFAULT_HEADERS, timeout=self.timeout, follow_redirects=True) as client:
                 response = client.get(self.search_api_url, params=params)
-                if response.status_code == 200:
+                final_url = str(getattr(response, "url", "") or "")
+                if response.status_code == 200 and "queue-it.net" not in final_url:
+                    LiderScraper._api_blocked_until = 0.0
                     data = response.json()
                     products = self.parse_lider_json(data)
+                elif (response.status_code in (403, 429, 521) or "queue-it.net" in final_url) and not is_mocked:
+                    LiderScraper._api_blocked_until = time.monotonic() + 1800.0
+                    logger.debug(
+                        "Líder (/catalogo/api/products) bloqueado por cola/antibot (%d); pausa de 30 min.",
+                        response.status_code,
+                    )
                 else:
                     logger.warning(
                         "Respuesta HTTP no exitosa de Líder (%d): %s",

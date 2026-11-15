@@ -17,9 +17,17 @@ import urllib.error
 import urllib.request
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable, Deque, List, Optional, Tuple, Union
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple, Union
+
+try:
+    import httpx
+except ImportError:
+    httpx = None  # type: ignore[assignment]
 
 logger = logging.getLogger("GlitchHunter.Forwarder")
+_HTTP_CLIENT: Any = None
+_HTTP_CLIENT_LOCK = threading.Lock()
+MAX_COALESCE_PRODUCTS = 1500
 
 INGEST_PATH = "/api/ingest"
 MAX_QUEUE = 500          # lecturas en espera; si se llena se descarta la más antigua
@@ -146,12 +154,55 @@ class Forwarder:
         with self._cond:
             return len(self._queue)
 
+    def _collect_send_batch_unlocked(self) -> Tuple[str, List[dict], Optional[float], List[Tuple[str, List[dict], Optional[float], Optional[Path]]]]:
+        """Prepara el siguiente lote a enviar; con >=4 en cola fusiona lecturas de la misma tienda."""
+        first_entry = self._queue[0]
+        first_store, first_products, first_latency, _ = first_entry
+        if len(self._queue) < 4:
+            return first_store, first_products, first_latency, [first_entry]
+        merged_by_id: Dict[str, dict] = {}
+        extra_no_id: List[dict] = []
+        batch_entries: List[Tuple[str, List[dict], Optional[float], Optional[Path]]] = []
+        latest_latency = first_latency
+        for entry in self._queue:
+            sid, prods, lat, _ = entry
+            if sid != first_store:
+                continue
+            projected = len(merged_by_id) + len(extra_no_id) + len(prods)
+            if batch_entries and projected > MAX_COALESCE_PRODUCTS:
+                break
+            batch_entries.append(entry)
+            for p in prods:
+                pid = p.get("id") if isinstance(p, dict) else None
+                if pid:
+                    merged_by_id[str(pid)] = p
+                else:
+                    extra_no_id.append(p)
+            if lat is not None:
+                latest_latency = lat
+        combined = list(merged_by_id.values()) + extra_no_id
+        return first_store, combined, latest_latency, batch_entries
+
+    def _drop_sent_entries(self, batch_entries: List[Tuple[str, List[dict], Optional[float], Optional[Path]]]) -> int:
+        batch_ids = {id(entry) for entry in batch_entries}
+        removed_count = 0
+        with self._cond:
+            remaining: Deque[Tuple[str, List[dict], Optional[float], Optional[Path]]] = deque()
+            for entry in self._queue:
+                if id(entry) in batch_ids:
+                    _unlink_file(entry[3])
+                    removed_count += 1
+                else:
+                    remaining.append(entry)
+            self._queue = remaining
+        return removed_count
+
     def send_one(self) -> bool:
-        """Envía la lectura más antigua. True si salió bien (o no había nada); False si hay que reintentar."""
+        """Envía la lectura más antigua (o fusión de la misma tienda si hay cola). True si salió bien."""
         with self._cond:
             if not self._queue:
                 return True
-            store_id, products, latency_ms, _ = self._queue[0]
+            store_id, products, latency_ms, batch_entries = self._collect_send_batch_unlocked()
         body_dict: dict = {"store_id": store_id, "products": products}
         if latency_ms is not None:
             body_dict["latency_ms"] = latency_ms
@@ -164,22 +215,16 @@ class Forwarder:
         else:
             err = None
         if 200 <= code < 300:
-            with self._cond:
-                if self._queue and self._queue[0][1] is products:
-                    _, _, _, batch_path = self._queue.popleft()
-                    _unlink_file(batch_path)
-            self.sent += 1
+            cleared = self._drop_sent_entries(batch_entries)
+            self.sent += cleared
             if self._failing_since is not None:
                 logger.info("🔗 [Reenvío] Conexión con el servidor recuperada (%d lectura(s) en espera).", self.pending())
                 self._failing_since = None
             return True
         if code in (400, 401, 403, 413, 422):
             # El servidor rechaza esta lectura (clave inválida, formato): reintentarla no sirve
-            with self._cond:
-                if self._queue and self._queue[0][1] is products:
-                    _, _, _, batch_path = self._queue.popleft()
-                    _unlink_file(batch_path)
-            self.dropped += 1
+            cleared = self._drop_sent_entries(batch_entries)
+            self.dropped += cleared
             logger.warning("⚠️ [Reenvío] El servidor rechazó la lectura de %s (HTTP %s).", store_id, code)
             return True
         if self._failing_since is None:
@@ -224,7 +269,25 @@ class Forwarder:
             self._cond.notify_all()
 
 
+def _get_http_client() -> Any:
+    global _HTTP_CLIENT
+    if httpx is None:
+        return None
+    if _HTTP_CLIENT is None:
+        with _HTTP_CLIENT_LOCK:
+            if _HTTP_CLIENT is None:
+                _HTTP_CLIENT = httpx.Client(
+                    limits=httpx.Limits(max_keepalive_connections=4, max_connections=8),
+                    timeout=45.0,
+                )
+    return _HTTP_CLIENT
+
+
 def _urllib_post(url: str, body: bytes, headers: dict, timeout: float) -> int:
+    client = _get_http_client()
+    if client is not None:
+        resp = client.post(url, content=body, headers=headers, timeout=timeout)
+        return resp.status_code
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

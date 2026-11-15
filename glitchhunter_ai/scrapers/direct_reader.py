@@ -282,17 +282,18 @@ def pick_shopify_sale_collection(collections: List[Dict[str, Any]]) -> Optional[
 # Rutas ordenadas/filtradas por mayor descuento u outlet para las 5 grandes tiendas (carril rápido)
 BIG_STORE_HOT_SECTIONS: Dict[str, tuple] = {
     "falabella": (
-        ("tecnologia", "/falabella-cl/category/cat20002/Tecnologia?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
-        ("smartphones", "/falabella-cl/category/cat70008/Smartphones-y-Telefonia?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
-        ("notebooks", "/falabella-cl/category/cat2018/Computacion?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
-        ("televisores", "/falabella-cl/category/cat2070/Televisores?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
-        ("consolas", "/falabella-cl/category/cat2012/Consolas-y-Videojuegos?f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
-        ("audio", "/falabella-cl/category/cat2005/Audio?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
-        ("linea_blanca", "/falabella-cl/category/cat3205/Refrigeradores?f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
-        ("electrodomesticos", "/falabella-cl/category/cat3136/Electrodomesticos-de-Cocina?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
+        ("smartphones", "/falabella-cl/category/cat720161/Smartphones?f.derived.variant.sellerId_popularBrand=FALABELLA+Y+MEJORES+MARCAS&f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
+        ("notebooks", "/falabella-cl/category/cat70057/Notebooks?f.derived.variant.sellerId_popularBrand=FALABELLA+Y+MEJORES+MARCAS&f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
+        ("televisores", "/falabella-cl/category/cat7190148/Smart-TV?f.derived.variant.sellerId_popularBrand=FALABELLA+Y+MEJORES+MARCAS&f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
+        ("consolas", "/falabella-cl/category/cat202303/Consolas?f.range.derived.variant.discount=20%25+dcto+y+m%C3%A1s"),
+        ("audio", "/falabella-cl/category/cat2005/Audio?f.derived.variant.sellerId_popularBrand=FALABELLA+Y+MEJORES+MARCAS&f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
+        ("smartwatch", "/falabella-cl/category/cat4290063/SmartWatch?f.derived.variant.sellerId_popularBrand=FALABELLA+Y+MEJORES+MARCAS&f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
+        ("linea_blanca", "/falabella-cl/category/cat3205/Refrigeradores?f.derived.variant.sellerId_popularBrand=FALABELLA+Y+MEJORES+MARCAS&f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
+        ("electrodomesticos", "/falabella-cl/category/cat2034/Electrodomesticos-Cocina?f.derived.variant.sellerId_popularBrand=FALABELLA+Y+MEJORES+MARCAS&f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
+        ("monitores", "/falabella-cl/category/cat2062/Monitores?f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
         ("hogar", "/falabella-cl/category/cat1005/Dormitorio?f.range.derived.variant.discount=50%25+dcto+y+m%C3%A1s"),
         ("hogar", "/falabella-cl/category/cat1008/Muebles?f.range.derived.variant.discount=50%25+dcto+y+m%C3%A1s"),
-        ("vestuario", "/falabella-cl/category/cat2083/Zapatillas?f.range.derived.variant.discount=50%25+dcto+y+m%C3%A1s"),
+        ("vestuario", "/falabella-cl/category/cat2083/Zapatillas?f.derived.variant.sellerId_popularBrand=FALABELLA+Y+MEJORES+MARCAS&f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
         ("deportes", "/falabella-cl/category/cat2036/Fitness?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
     ),
     "ripley": (
@@ -311,10 +312,18 @@ BIG_STORE_HOT_SECTIONS: Dict[str, tuple] = {
     ),
     "paris": (
         ("smartphones", "/tecnologia/celulares/?sortby=best-discount+desc"),
+        ("smartphones", "/tecnologia/celulares/iphone/?sortby=best-discount+desc"),
+        ("smartphones", "/tecnologia/celulares/samsung/?sortby=best-discount+desc"),
+        ("smartphones", "/tecnologia/celulares/xiaomi/?sortby=best-discount+desc"),
         ("notebooks", "/tecnologia/computadores/notebooks/?sortby=best-discount+desc"),
+        ("notebooks", "/tecnologia/computadores/pc-gamer/?sortby=best-discount+desc"),
+        ("notebooks", "/tecnologia/computadores/apple/?sortby=best-discount+desc"),
         ("televisores", "/electro/television/?sortby=best-discount+desc"),
+        ("televisores", "/electro/television/smart-tv/?sortby=best-discount+desc"),
         ("audio", "/electro/audio/?sortby=best-discount+desc"),
         ("consolas", "/tecnologia/consolas-videojuegos/?sortby=best-discount+desc"),
+        ("consolas", "/tecnologia/consolas-videojuegos/consolas-playstation/?sortby=best-discount+desc"),
+        ("consolas", "/tecnologia/consolas-videojuegos/consolas-nintendo/?sortby=best-discount+desc"),
         ("electrodomesticos", "/linea-blanca/electrodomesticos/?sortby=best-discount+desc"),
         ("vestuario", "/outlet/?sortby=best-discount+desc"),
         ("hogar", "/dormitorio/outlet-dormitorio/?sortby=best-discount+desc"),
@@ -403,18 +412,18 @@ STORE_BASE = {
 # Categorías verificadas para lectura directa (clave -> ruta)
 CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
     "falabella": {
-        "tecnologia": "/falabella-cl/category/cat20002/Tecnologia",
-        "smartphones": "/falabella-cl/category/cat70008/Smartphones-y-Telefonia",
-        "notebooks": "/falabella-cl/category/cat2018/Computacion",
-        "consolas": "/falabella-cl/category/cat2012/Consolas-y-Videojuegos",
-        "televisores": "/falabella-cl/category/cat2070/Televisores",
+        "tecnologia": "/falabella-cl/category/cat40052/Computadores",
+        "smartphones": "/falabella-cl/category/cat720161/Smartphones",
+        "notebooks": "/falabella-cl/category/cat70057/Notebooks",
+        "consolas": "/falabella-cl/category/cat202303/Consolas",
+        "televisores": "/falabella-cl/category/cat7190148/Smart-TV",
         "linea_blanca": "/falabella-cl/category/cat3205/Refrigeradores",
         "audio": "/falabella-cl/category/cat2005/Audio",
-        "monitores": "/falabella-cl/search?Ntt=monitor+gamer",
-        "componentes": "/falabella-cl/search?Ntt=tarjeta+de+video",
-        "gaming": "/falabella-cl/search?Ntt=perifericos+gamer",
-        "smartwatch": "/falabella-cl/category/cat4290063/Smartwatch",
-        "electrodomesticos": "/falabella-cl/category/cat3136/Electrodomesticos-de-Cocina",
+        "monitores": "/falabella-cl/category/cat2062/Monitores",
+        "componentes": "/falabella-cl/category/cat13520029/Componentes-gamer",
+        "gaming": "/falabella-cl/category/cat2023/Videojuegos",
+        "smartwatch": "/falabella-cl/category/cat4290063/SmartWatch?f.derived.variant.sellerId_popularBrand=FALABELLA+Y+MEJORES+MARCAS",
+        "electrodomesticos": "/falabella-cl/category/cat2034/Electrodomesticos-Cocina",
         "hogar": "/falabella-cl/category/cat1008/Muebles",
         "deportes": "/falabella-cl/category/cat2036/Fitness",
         "vestuario": "/falabella-cl/category/cat2083/Zapatillas",
@@ -422,8 +431,8 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
     # Sodimac: las rutas /lista/cat... soportan paginación y filtros de Falabella; otras categorías siguen vía búsqueda.
     "sodimac": {
         "televisores": "/sodimac-cl/lista/cat7190148/Smart-TV",
-        "linea_blanca": "/sodimac-cl/search?Ntt=refrigerador",
-        "lavadoras": "/sodimac-cl/search?Ntt=lavadora",
+        "linea_blanca": "/sodimac-cl/lista/cat3205/Refrigeradores",
+        "lavadoras": "/sodimac-cl/lista/cat4060/Lavadoras",
         "herramientas": "/sodimac-cl/search?Ntt=taladro",
         "notebooks": "/sodimac-cl/search?Ntt=notebook",
         "consolas": "/sodimac-cl/search?Ntt=playstation",
@@ -607,11 +616,13 @@ def parse_falabella_listing(html: str, category_hint: str = "tecnologia") -> Lis
         if not title or not pid or current <= 0:
             continue
         media = raw.get("mediaUrls") or []
+        brand = str(raw.get("brand") or "").strip() or None
+        seller = str(raw.get("sellerName") or "").strip() or None
         items.append(ProductItem(
             id=pid, store_id="falabella", store_name=STORE_NAMES["falabella"], title=title,
             category=_infer_category(title, category_hint), current_price=current, normal_price=normal,
             card_price=card, url=url, image_url=media[0] if media else None, in_stock=True,
-            timestamp=now, source="direct",
+            brand=brand, seller=seller, timestamp=now, source="direct",
         ))
     return items
 
@@ -677,10 +688,14 @@ def parse_paris_listing(html: str, category_hint: str = "tecnologia") -> List[Pr
             card = None
         images = mv.get("images") or []
         image = images[0].get("url") if images and isinstance(images[0], dict) else None
+        brand = str(raw.get("brand") or "").strip() or None
+        sellers = raw.get("sellers") or []
+        seller = str(sellers[0] or "").strip() or None if sellers else None
         items.append(ProductItem(
             id=pid, store_id="paris", store_name=STORE_NAMES["paris"], title=title,
             category=_infer_category(title, category_hint), current_price=current, normal_price=normal or current,
-            card_price=card, url=url, image_url=image, in_stock=True, timestamp=now, source="direct",
+            card_price=card, url=url, image_url=image, in_stock=True, brand=brand, seller=seller,
+            timestamp=now, source="direct",
         ))
     return items
 
@@ -1336,11 +1351,13 @@ def parse_ripley_listing(html: str, category_hint: str = "tecnologia") -> List[P
         token = pid.split("-", 1)[1]
         url = links.get(pid) or f"{STORE_BASE['ripley']}/{token}{'p' if token.isdigit() else ''}"
         image = raw.get("primaryImage")
+        brand = str(raw.get("brand") or "").strip() or None
+        seller = str(raw.get("seller") or "").strip() or None
         items.append(ProductItem(
             id=pid, store_id="ripley", store_name=STORE_NAMES["ripley"], title=title,
             category=_infer_category(title, category_hint), current_price=current, normal_price=normal,
             card_price=card, url=url, image_url=("https:" + image) if isinstance(image, str) and image.startswith("//") else image,
-            in_stock=bool(raw.get("inStock", True)), timestamp=now, source="direct",
+            in_stock=bool(raw.get("inStock", True)), brand=brand, seller=seller, timestamp=now, source="direct",
         ))
     return items
 
