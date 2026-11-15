@@ -14,6 +14,8 @@ from glitchhunter_ai.core.models import ProductItem
 from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
 from glitchhunter_ai.core.scheduler import DEEP, HOT, StoreScheduler, parse_interval_overrides
 from glitchhunter_ai.scrapers.direct_reader import (
+    BIG_HOT_MAX_PAGES,
+    CATEGORY_MAX_PAGES,
     HOT_LANE_STORES,
     SHOPIFY_STORES,
     DirectStoreReader,
@@ -377,27 +379,70 @@ def test_shopify_sale_collection_ignores_product_lines_named_black():
 
 def test_category_pagination_rotates_pages_and_wraps():
     seen_urls = []
+    empty_on_call = set()
+    duplicate_three = False
+    calls = 0
     reader = DirectStoreReader(client=MagicMock(), backoff=StoreBackoff(clock=_Clock()))
 
-    def fake_listing(store_id, url, category_hint, tolerant=False):
-        seen_urls.append(url)
-        return [ProductItem(
-            id=f"{store_id}-item-1", store_id=store_id, store_name=store_id.title(),
-            title="Smartphone Pro 5G", category=category_hint,
+    def _make_item(store_id, category_hint, idx=1):
+        return ProductItem(
+            id=f"{store_id}-item-{idx}", store_id=store_id, store_name=store_id.title(),
+            title=f"Smartphone Pro 5G {idx}", category=category_hint,
             current_price=199990, normal_price=299990,
-            url=f"https://example.com/{store_id}/1", source="direct",
-        )]
+            url=f"https://example.com/{store_id}/{idx}", source="direct",
+        )
+
+    def fake_listing(store_id, url, category_hint, tolerant=False):
+        nonlocal calls
+        calls += 1
+        seen_urls.append(url)
+        if calls in empty_on_call:
+            return []
+        if duplicate_three:
+            return [_make_item(store_id, category_hint, idx) for idx in (1, 2, 3)]
+        return [_make_item(store_id, category_hint, 1)]
 
     reader._listing = fake_listing
-    for _ in range(5):
+    base_fal = "https://www.falabella.com/falabella-cl/category/cat70008/Smartphones-y-Telefonia"
+    for _ in range(CATEGORY_MAX_PAGES + 1):
         reader.fetch_category("falabella", "smartphones")
+    assert seen_urls == [base_fal] + [f"{base_fal}?page={p}" for p in range(2, CATEGORY_MAX_PAGES + 1)] + [base_fal]
+
+    # Si una página intermedia devuelve [], vuelve de inmediato a la página 1 en la siguiente llamada.
+    seen_urls.clear()
+    empty_on_call.add(calls + 2)
+    reader.fetch_category("ripley", "smartphones")
+    reader.fetch_category("ripley", "smartphones")
+    reader.fetch_category("ripley", "smartphones")
     assert seen_urls == [
-        "https://www.falabella.com/falabella-cl/category/cat70008/Smartphones-y-Telefonia",
-        "https://www.falabella.com/falabella-cl/category/cat70008/Smartphones-y-Telefonia?page=2",
-        "https://www.falabella.com/falabella-cl/category/cat70008/Smartphones-y-Telefonia?page=3",
-        "https://www.falabella.com/falabella-cl/category/cat70008/Smartphones-y-Telefonia?page=4",
-        "https://www.falabella.com/falabella-cl/category/cat70008/Smartphones-y-Telefonia",
+        "https://simple.ripley.cl/tecno/celulares",
+        "https://simple.ripley.cl/tecno/celulares?page=2",
+        "https://simple.ripley.cl/tecno/celulares",
     ]
+
+    # Si page=2 repite los mismos >=3 IDs que page=1, corta el recorrido y vuelve a página 1.
+    seen_urls.clear()
+    duplicate_three = True
+    reader.fetch_category("falabella", "notebooks")
+    reader.fetch_category("falabella", "notebooks")
+    reader.fetch_category("falabella", "notebooks")
+    assert seen_urls == [
+        "https://www.falabella.com/falabella-cl/category/cat2018/Computacion",
+        "https://www.falabella.com/falabella-cl/category/cat2018/Computacion?page=2",
+        "https://www.falabella.com/falabella-cl/category/cat2018/Computacion",
+    ]
+
+    # Paris alterna entre orden por defecto y mejor descuento (?sortby=best-discount+desc).
+    seen_urls.clear()
+    duplicate_three = False
+    for _ in range(3):
+        reader.fetch_category("paris", "smartphones")
+    assert seen_urls == [
+        "https://www.paris.cl/tecnologia/celulares/",
+        "https://www.paris.cl/tecnologia/celulares/?sortby=best-discount+desc",
+        "https://www.paris.cl/tecnologia/celulares/",
+    ]
+
     seen_urls.clear()
     reader.fetch_category("abc", "smartphones")
     reader.fetch_category("abc", "smartphones")
@@ -524,3 +569,46 @@ def test_best_deals_cheap_outlet_bulk_not_boosted():
     score, reasons = score_post(outlet_post)
     assert "Error de precio verificado" not in reasons
     assert score < 70.0  # no recibe +15 (glitch) ni +4 (bulk_price_count)
+
+
+def test_big_store_hot_lane_rotates_discount_sections():
+    for big_store in ("falabella", "ripley", "paris", "sodimac", "abc"):
+        assert big_store in HOT_LANE_STORES
+
+    seen = []
+    reader = DirectStoreReader(client=MagicMock(), backoff=StoreBackoff(clock=_Clock()))
+
+    def fake_listing(store_id, url, category_hint, tolerant=False):
+        seen.append((store_id, url, category_hint, tolerant))
+        return [ProductItem(
+            id=f"{store_id}-hot-{len(seen)}", store_id=store_id, store_name=store_id.title(),
+            title="Smart TV OLED 55", category=category_hint,
+            current_price=399990, normal_price=899990,
+            url=f"https://example.com/{store_id}/hot/{len(seen)}", source="direct",
+        )]
+
+    reader._listing = fake_listing
+
+    for _ in range(BIG_HOT_MAX_PAGES + 1):
+        reader.fetch_hot("falabella")
+    fal_urls = [u for s, u, _, _ in seen if s == "falabella"]
+    assert "f.range.derived.variant.discount=40%25" in fal_urls[0]
+    assert fal_urls[1].endswith("&page=2")
+    assert fal_urls[2].endswith(f"&page={BIG_HOT_MAX_PAGES}")
+    assert "/Smartphones-y-Telefonia?" in fal_urls[3] and "&page=" not in fal_urls[3]
+
+    seen.clear()
+    for _ in range(BIG_HOT_MAX_PAGES + 1):
+        reader.fetch_hot("ripley")
+    rip_urls = [u for s, u, _, _ in seen if s == "ripley"]
+    assert rip_urls[0].endswith("/outlet/tecno")
+    assert rip_urls[1].endswith("/outlet/tecno?page=2")
+    assert rip_urls[2].endswith(f"/outlet/tecno?page={BIG_HOT_MAX_PAGES}")
+    assert rip_urls[3].endswith("/outlet/tecno/telefonia")
+
+    seen.clear()
+    reader.fetch_hot("paris")
+    reader.fetch_hot("paris")
+    paris_urls = [u for s, u, _, _ in seen if s == "paris"]
+    assert all("?sortby=best-discount+desc" in u and "page=" not in u for u in paris_urls)
+    assert paris_urls[0] != paris_urls[1]

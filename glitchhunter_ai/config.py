@@ -101,7 +101,13 @@ USE_LIVE_SCRAPING = os.getenv("USE_LIVE_SCRAPING", "true").lower() in ("true", "
 DIRECT_CONFIRM_ENABLED = os.getenv("DIRECT_CONFIRM_ENABLED", "true").lower() in ("true", "1", "yes")
 DIRECT_SCAN_ENABLED = os.getenv("DIRECT_SCAN_ENABLED", "true").lower() in ("true", "1", "yes")
 DIRECT_SCAN_INTERVAL_SECONDS = int(os.getenv("DIRECT_SCAN_INTERVAL_SECONDS", "180"))
-DIRECT_SCAN_CATEGORIES = [c.strip() for c in os.getenv("DIRECT_SCAN_CATEGORIES", "").split(",") if c.strip()]
+DEFAULT_DIRECT_SCAN_CATEGORIES = (
+    "smartphones,notebooks,televisores,consolas,linea_blanca,audio,"
+    "monitores,componentes,gaming,smartwatch,electrodomesticos,hogar,deportes,vestuario"
+)
+DIRECT_SCAN_CATEGORIES = [
+    c.strip() for c in os.getenv("DIRECT_SCAN_CATEGORIES", DEFAULT_DIRECT_SCAN_CATEGORIES).split(",") if c.strip()
+]
 # PC Factory: páginas de 48 productos de su catálogo completo leídas por ciclo (~35 KB c/u, ~63 páginas en total)
 DIRECT_PCFACTORY_PAGES_PER_CYCLE = int(os.getenv("DIRECT_PCFACTORY_PAGES_PER_CYCLE", "10"))
 # Tiendas consultadas a la vez en el escaneo directo (cada una es un sitio distinto)

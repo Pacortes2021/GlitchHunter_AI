@@ -235,7 +235,8 @@ VTEX_PAGES_PER_CYCLE = 4     # 200 productos por tienda y ciclo
 # de ofertas (Magento, Santa Isabel). Así un descuento grande aparece en minutos, no en horas.
 VTEX_HOT_ORDER = "OrderByBestDiscountDESC"
 VTEX_HOT_MAX_OFFSET = 200    # rota las primeras 4 páginas (200 productos) de mayor descuento
-CATEGORY_MAX_PAGES = 4       # rota hasta 4 páginas por categoría en grandes tiendas
+CATEGORY_MAX_PAGES = 12      # rota hasta 12 páginas por categoría en grandes tiendas
+BIG_HOT_MAX_PAGES = 3        # rota hasta 3 páginas por sección en el carril rápido de grandes tiendas
 
 DIRECT_STORES = (
     ("falabella", "ripley", "paris", "abc", "jumbo", "santaisabel", "hp", "winpy", "sodimac", "pcfactory", "spdigital")
@@ -278,9 +279,71 @@ def pick_shopify_sale_collection(collections: List[Dict[str, Any]]) -> Optional[
     return min(candidates)[2] if candidates else None
 
 
+# Rutas ordenadas/filtradas por mayor descuento u outlet para las 5 grandes tiendas (carril rápido)
+BIG_STORE_HOT_SECTIONS: Dict[str, tuple] = {
+    "falabella": (
+        ("tecnologia", "/falabella-cl/category/cat20002/Tecnologia?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
+        ("smartphones", "/falabella-cl/category/cat70008/Smartphones-y-Telefonia?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
+        ("notebooks", "/falabella-cl/category/cat2018/Computacion?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
+        ("televisores", "/falabella-cl/category/cat2070/Televisores?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
+        ("consolas", "/falabella-cl/category/cat2012/Consolas-y-Videojuegos?f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
+        ("audio", "/falabella-cl/category/cat2005/Audio?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
+        ("linea_blanca", "/falabella-cl/category/cat3205/Refrigeradores?f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
+        ("electrodomesticos", "/falabella-cl/category/cat3136/Electrodomesticos-de-Cocina?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
+        ("hogar", "/falabella-cl/category/cat1005/Dormitorio?f.range.derived.variant.discount=50%25+dcto+y+m%C3%A1s"),
+        ("hogar", "/falabella-cl/category/cat1008/Muebles?f.range.derived.variant.discount=50%25+dcto+y+m%C3%A1s"),
+        ("vestuario", "/falabella-cl/category/cat2083/Zapatillas?f.range.derived.variant.discount=50%25+dcto+y+m%C3%A1s"),
+        ("deportes", "/falabella-cl/category/cat2036/Fitness?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
+    ),
+    "ripley": (
+        ("tecnologia", "/outlet/tecno"),
+        ("smartphones", "/outlet/tecno/telefonia"),
+        ("electrodomesticos", "/outlet/electro"),
+        ("hogar", "/outlet/decohogar"),
+        ("deportes", "/outlet/deporte"),
+        ("vestuario", "/outlet/calzado"),
+        ("smartphones", "/tecno/celulares?orderBy=discount_desc"),
+        ("notebooks", "/tecno/computacion/notebooks?orderBy=discount_desc"),
+        ("televisores", "/tecno/television?orderBy=discount_desc"),
+        ("consolas", "/tecno/mundo-gamer?orderBy=discount_desc"),
+        ("linea_blanca", "/electro/refrigeracion?orderBy=discount_desc"),
+        ("electrodomesticos", "/electro/electrodomesticos?orderBy=discount_desc"),
+    ),
+    "paris": (
+        ("smartphones", "/tecnologia/celulares/?sortby=best-discount+desc"),
+        ("notebooks", "/tecnologia/computadores/notebooks/?sortby=best-discount+desc"),
+        ("televisores", "/electro/television/?sortby=best-discount+desc"),
+        ("audio", "/electro/audio/?sortby=best-discount+desc"),
+        ("consolas", "/tecnologia/consolas-videojuegos/?sortby=best-discount+desc"),
+        ("electrodomesticos", "/linea-blanca/electrodomesticos/?sortby=best-discount+desc"),
+        ("vestuario", "/outlet/?sortby=best-discount+desc"),
+        ("hogar", "/dormitorio/outlet-dormitorio/?sortby=best-discount+desc"),
+        ("deportes", "/outlet/outlet-deportes/?sortby=best-discount+desc"),
+        ("hogar", "/muebles/outlet-muebles/?sortby=best-discount+desc"),
+    ),
+    "sodimac": (
+        ("televisores", "/sodimac-cl/lista/cat7190148/Smart-TV?f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
+        ("audio", "/sodimac-cl/lista/cat2005/Audio?f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
+        ("electrodomesticos", "/sodimac-cl/lista/cat2034/Electrodomesticos-Cocina?f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
+        ("hogar", "/sodimac-cl/lista/cat1008/Muebles?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
+        ("hogar", "/sodimac-cl/lista/cat1005/Dormitorio?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
+        ("hogar", "/sodimac-cl/lista/cat01/Cocina-y-Bano?f.range.derived.variant.discount=40%25+dcto+y+m%C3%A1s"),
+        ("hogar", "/sodimac-cl/lista/cat2079/Parrillas-y-accesorios?f.range.derived.variant.discount=30%25+dcto+y+m%C3%A1s"),
+    ),
+    "abc": (
+        ("televisores", "/tecnologia/televisores/?srule=price-low-to-high&sz=48"),
+        ("smartphones", "/tecnologia/celulares/?srule=price-low-to-high&sz=48"),
+        ("audio", "/tecnologia/audio/?srule=price-low-to-high&sz=48"),
+        ("linea_blanca", "/linea-blanca/refrigeradores/?srule=price-low-to-high&sz=48"),
+    ),
+}
+
 # Tiendas con carril rápido (una petición a sus ofertas en cada turno corto)
 HOT_LANE_STORES = (
-    tuple(VTEX_STORES) + tuple(s for s in MAGENTO_STORES if magento_has_sale_section(s)) + ("santaisabel",)
+    tuple(BIG_STORE_HOT_SECTIONS)
+    + tuple(VTEX_STORES)
+    + tuple(s for s in MAGENTO_STORES if magento_has_sale_section(s))
+    + ("santaisabel",)
 )
 # Tiendas con recorrido de catálogo propio (las demás solo leen la watchlist y las categorías)
 CATALOG_STORES = (
@@ -352,9 +415,11 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
         "gaming": "/falabella-cl/search?Ntt=perifericos+gamer",
         "smartwatch": "/falabella-cl/category/cat4290063/Smartwatch",
         "electrodomesticos": "/falabella-cl/category/cat3136/Electrodomesticos-de-Cocina",
+        "hogar": "/falabella-cl/category/cat1008/Muebles",
+        "deportes": "/falabella-cl/category/cat2036/Fitness",
+        "vestuario": "/falabella-cl/category/cat2083/Zapatillas",
     },
-    # Sodimac: sus rutas de categoría redirigen a la portada; la búsqueda sí funciona (y a veces
-    # redirige a una página /lista/ con el formato de Falabella, que el parser también entiende).
+    # Sodimac: las rutas /lista/cat... soportan paginación y filtros de Falabella; otras categorías siguen vía búsqueda.
     "sodimac": {
         "televisores": "/sodimac-cl/lista/cat7190148/Smart-TV",
         "linea_blanca": "/sodimac-cl/search?Ntt=refrigerador",
@@ -362,22 +427,28 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
         "herramientas": "/sodimac-cl/search?Ntt=taladro",
         "notebooks": "/sodimac-cl/search?Ntt=notebook",
         "consolas": "/sodimac-cl/search?Ntt=playstation",
-        "audio": "/sodimac-cl/search?Ntt=parlante+soundbar",
-        "electrodomesticos": "/sodimac-cl/search?Ntt=freidora+cafetera",
+        "audio": "/sodimac-cl/lista/cat2005/Audio",
+        "electrodomesticos": "/sodimac-cl/lista/cat2034/Electrodomesticos-Cocina",
+        "monitores": "/sodimac-cl/lista/cat2062/Monitores",
+        "hogar": "/sodimac-cl/lista/cat1008/Muebles",
+        "deportes": "/sodimac-cl/lista/cat2036/Fitness",
     },
-    # Paris: Next.js App Router; cada página trae ~30 productos. Búsquedas ampliadas cubren audio, gamer y componentes.
+    # Paris: Next.js App Router; cada página trae ~30 productos. En recorrido alterna orden por defecto y mejor descuento.
     "paris": {
         "smartphones": "/tecnologia/celulares/",
         "notebooks": "/tecnologia/computadores/notebooks/",
         "televisores": "/electro/television/",
         "consolas": "/tecnologia/consolas-videojuegos/",
         "linea_blanca": "/search?q=refrigerador",
-        "audio": "/search?q=audifonos+parlante",
+        "audio": "/electro/audio/",
         "monitores": "/search?q=monitor",
         "componentes": "/search?q=ssd+nvme",
         "gaming": "/search?q=teclado+mouse+gamer",
         "smartwatch": "/search?q=smartwatch",
-        "electrodomesticos": "/search?q=freidora+cafetera",
+        "electrodomesticos": "/linea-blanca/electrodomesticos/",
+        "hogar": "/muebles/outlet-muebles/",
+        "deportes": "/outlet/outlet-deportes/",
+        "vestuario": "/outlet/?sortby=best-discount+desc",
     },
     # ABC (Salesforce Commerce Cloud): ?sz=48 trae 48 productos por página; categorías faltantes vía búsqueda
     # (la búsqueda "consola" sola devuelve sofás "consola", así que se consulta "playstation nintendo")
@@ -389,6 +460,7 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
         "consolas": "/on/demandware.store/Sites-Abc-Site/es_CL/Search-Show?q=playstation+nintendo&sz=48",
         "audio": "/tecnologia/audio/?sz=48",
         "electrodomesticos": "/on/demandware.store/Sites-Abc-Site/es_CL/Search-Show?q=freidora+cafetera&sz=48",
+        "hogar": "/on/demandware.store/Sites-Abc-Site/es_CL/Search-Show?q=mueble+colchon&sz=48",
     },
     # Jumbo (Cencosud; Next.js App Router): solo vende electro pequeño y accesorios de tecnología.
     # Su búsqueda responde 404 a peticiones directas, así que se leen estas dos categorías (~50 por página).
@@ -417,6 +489,9 @@ CATEGORY_PATHS: Dict[str, Dict[str, str]] = {
         "gaming": "/tecno/mundo-gamer",
         "smartwatch": "/search/smartwatch",
         "electrodomesticos": "/electro/electrodomesticos",
+        "hogar": "/outlet/decohogar",
+        "deportes": "/outlet/deporte",
+        "vestuario": "/outlet/calzado",
     },
 }
 
@@ -1329,7 +1404,9 @@ class DirectStoreReader:
         self._catalog_cursor: Dict[str, int] = {}
         self._catalog_pages: Dict[str, int] = {}
         self._vtex_hot_cursor: Dict[str, int] = {}
+        self._big_hot_cursor: Dict[str, tuple] = {}
         self._category_cursor: Dict[tuple, int] = {}
+        self._category_prev_ids: Dict[tuple, set] = {}
         self._magento_cursor: Dict[str, tuple] = {}
         self._magento_page_size: Dict[str, int] = {}   # productos por página que entrega cada tienda
         self._empty_page: Dict[str, bool] = {}         # la última página pedida respondió sin productos
@@ -1672,8 +1749,38 @@ class DirectStoreReader:
         self._catalog_cursor[store_id] = offset
         return items
 
+    @staticmethod
+    def _paginated_listing_url(store_id: str, base_url: str, page: int) -> str:
+        """Agrega el parámetro de paginación nativo de la tienda para la página `page`."""
+        if page <= 1:
+            return base_url
+        sep = "&" if "?" in base_url else "?"
+        if store_id == "abc":
+            return f"{base_url}{sep}start={(page - 1) * 48}"
+        return f"{base_url}{sep}page={page}"
+
+    def _big_store_hot_slice(self, store_id: str) -> List[ProductItem]:
+        """Carril rápido para grandes tiendas: rota secciones filtradas/ordenadas por descuento y sus páginas."""
+        sections = BIG_STORE_HOT_SECTIONS.get(store_id) or ()
+        if not sections:
+            return []
+        sec_idx, page = self._big_hot_cursor.get(store_id, (0, 1))
+        sec_idx = sec_idx % len(sections)
+        cat_hint, path = sections[sec_idx]
+        base_url = STORE_BASE[store_id] + path
+        max_pages = 1 if store_id == "paris" else BIG_HOT_MAX_PAGES
+        url = self._paginated_listing_url(store_id, base_url, page)
+        items = self._listing(store_id, url, cat_hint, tolerant=True)
+        if items and page < max_pages:
+            self._big_hot_cursor[store_id] = (sec_idx, page + 1)
+        else:
+            self._big_hot_cursor[store_id] = ((sec_idx + 1) % len(sections), 1)
+        return items
+
     def fetch_hot(self, store_id: str) -> List[ProductItem]:
         """Carril rápido: una petición a lo que más cambia (mejor descuento u ofertas) de la tienda."""
+        if store_id in BIG_STORE_HOT_SECTIONS:
+            return self._big_store_hot_slice(store_id)
         if store_id in VTEX_STORES:
             return self._vtex_catalog_slice(store_id, 0, lane="hot")
         if store_id in MAGENTO_STORES:
@@ -1787,21 +1894,32 @@ class DirectStoreReader:
             return []
         paginated_stores = ("falabella", "ripley", "sodimac", "jumbo", "abc")
         key = (store_id, category_key)
-        page = self._category_cursor.get(key, 1) if store_id in paginated_stores else 1
         base_url = STORE_BASE[store_id] + path
-        if page <= 1:
-            url = base_url
-        elif store_id == "abc":
-            sep = "&" if "?" in base_url else "?"
-            url = f"{base_url}{sep}start={(page - 1) * 48}"
-        else:
-            sep = "&" if "?" in base_url else "?"
-            url = f"{base_url}{sep}page={page}"
+
+        # Paris ignora ?page= en SSR, pero sí respeta ?sortby=best-discount+desc: alternamos orden por defecto y mejor descuento.
+        if store_id == "paris":
+            page = self._category_cursor.get(key, 1)
+            if page == 2 and "sortby=" not in base_url:
+                sep = "&" if "?" in base_url else "?"
+                url = f"{base_url}{sep}sortby=best-discount+desc"
+            else:
+                url = base_url
+            items = self._listing(store_id, url, category_key, tolerant=(page > 1))
+            self._category_cursor[key] = 2 if page == 1 else 1
+            return items
+
+        page = self._category_cursor.get(key, 1) if store_id in paginated_stores else 1
+        url = self._paginated_listing_url(store_id, base_url, page)
         items = self._listing(store_id, url, category_key, tolerant=(page > 1))
         if store_id in paginated_stores:
-            if items and page < CATEGORY_MAX_PAGES:
+            cur_ids = {i.id for i in items}
+            prev_ids = self._category_prev_ids.get(key, set())
+            repeated_page = page > 1 and len(cur_ids) >= 3 and cur_ids.issubset(prev_ids)
+            if items and not repeated_page and page < CATEGORY_MAX_PAGES:
+                self._category_prev_ids[key] = cur_ids
                 self._category_cursor[key] = page + 1
             else:
+                self._category_prev_ids.pop(key, None)
                 self._category_cursor[key] = 1
         return items
 
