@@ -6,7 +6,7 @@ la verificación de inflación artificial (precios falsos de CyberDay)
 y el filtro semántico NLP estricto para erradicar el 'Carcasa Trap'.
 """
 
-from collections import OrderedDict
+from collections import OrderedDict, deque
 import logging
 import re
 import threading
@@ -46,7 +46,15 @@ logger = logging.getLogger("GlitchHunter.Pipeline")
 # Productos que no son nuevos: su "precio normal" suele ser el de uno nuevo y el descuento es engañoso
 REFURBISHED_RE = re.compile(
     r"\b(?:reacondicionad[oa]s?|refurbished|renovad[oa]|usad[oa]|seminuev[oa]|open\s?box|"
-    r"segunda\s+selecci[oó]n|exhibici[oó]n|outlet|caja\s+abierta|da[ñn]ad[oa]s?)\b",
+    r"segunda\s+selecci[oó]n|exhibici[oó]n|outlet|caja\s+abierta|da[ñn]ad[oa]s?|"
+    r"[456789](?:ta|va|na)\s*gen(?:eraci[oó]n)?|10ma\s*gen(?:eraci[oó]n)?|"
+    r"core\s+i[357]-[456789]\d{3}[a-z]*|"
+    r"thinkpad\s+(?:t4[456789]0s?|t5[456789]0|x2[45678]0|l4[6789]0)|"
+    r"notebook\s+(?:t4[6789]0s?|t14\s+i[57]|54[089]0|7[34][089]0|g[1-6])\b|"
+    r"elitebook\s+(?:8[2345]0\s+g[1-7]|7[24]5\s+g[1-6])|"
+    r"probook\s+[46][345]0\s+g[1-7]|"
+    r"notebook\s+(?:intel\s+)?core\s+i[357]\s+\d+\s*gb\s+de\s+ram|"
+    r"thinkpad\s+core\s+i[57]\s+\d+\s*gb\s+de\s+ram)\b",
     re.IGNORECASE,
 )
 # Servicios que se venden junto al producto (garantías, instalación, gift cards): su "precio" depende
@@ -72,15 +80,77 @@ KNOWN_TECH_BRANDS_RE = re.compile(
     re.IGNORECASE,
 )
 GENERIC_TECH_TRAP_RE = re.compile(
-    r"\b(hk\d{2,3}|gt08|s37|i58\d+|iw\d+|5s01|km88|sk40|stn-?28|t800|t900|w26|w68|y68|d20)\b"
+    r"\b(hk\d{2,3}|gt08|s37|ew\d{2}|i58\d+|iw\d+|5s01|km88|sk40|stn-?28|t800|t900|w26|w68|y68|d20)\b"
     r"|smartwatch\s+reloj\s+inteligente"
+    r"|reloj\s+smartwatch\s+inteligente|smartwatch\s+inteligente\s+pantalla"
     r"|reloj\s+inteligente\s+(?:llamadas|bluetooth|smartwatch|mujer|hombre|deportivo|control|conectividad)"
     r"|smartwatch\s+(?:mujer|hombre|control\s+de\s+salud|pantalla\s+hd|doble\s+correa)"
-    r"|aud[ií]fonos.*(?:cat\s+gato|cat\s+light|orejas\s+de\s+gato|modelo\s+m1\s+cat)"
-    r"|micr[oó]fono\s+inal[aá]mbrico\s+solapa\s+universal"
+    r"|aud[ií]fonos.*(?:cat\s+gato|cat\s+light|forest\s+cat|orejas\s+de\s+gato|modelo\s+m1\s+cat)"
+    r"|micr[oó]fono\s+inal[aá]mbrico\s+(?:solapa\s+universal|profesional\s+largo\s+alcance|cancelaci[oó]n\s+de\s+ruido)"
     r"|calculadora\s+solar\s+de\s+escritorio",
     re.IGNORECASE,
 )
+VIDEOGAME_DISC_RE = re.compile(
+    r"\b(?:videojuegos?|juego\s+(?:ps[45]|switch|xbox|f[ií]sico)|f[ií]sico\s*-?\s*sniper|sniper\s*game)\b"
+    r"|\bjuego\b.{0,50}\b(?:ps[45]|playstation\s*[45]|nintendo\s+switch|switch|xbox|f[ií]sico)\b"
+    r"|-\s*(?:ps[45]|playstation\s*[45]|nintendo\s+switch|switch)(?:\s+(?:f[ií]sico|eu|europeo|\(f[ií]sico\)))?(?:\s*-\s*sniper(?:\s+game)?)?\s*$"
+    r"|\bps[45]\s+playstation\s*[45]\s*$",
+    re.IGNORECASE,
+)
+CONSOLE_PRIORITY_TERMS = {
+    "ps5", "ps4", "playstation", "playstation 5", "nintendo switch", "nintendo switch oled", "switch", "xbox", "xbox series x",
+}
+CAT_PET_FALSE_POSITIVE_RE = re.compile(
+    r"\b(?:scratcher|rascador|gat[oa]s?|mascotas?|pet|forest\s+cat|cat\s+ear|orejas|sisal|arena)\b",
+    re.IGNORECASE,
+)
+COLOR_VARIANT_SUFFIX_RE = re.compile(
+    r"(?:\s*[-/|,]\s*|\s+)\b(?:negro|blanco|azul|rojo|verde|gris|grafito|plata|plateado|dorado|oro|"
+    r"rosado|rosa|lila|morado|violeta|amarillo|naranjo|naranja|cafe|caf[eé]|beige|celeste|turquesa|"
+    r"burdeo|arena|petroleo|petr[oó]leo|blancas|negros|azules|verdes|rojos)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_videogame_title(title: str) -> bool:
+    """True si el título corresponde a un videojuego (no a una consola)."""
+    low = (title or "").lower()
+    if not VIDEOGAME_DISC_RE.search(low):
+        return False
+    return "consola" not in low or bool(re.search(r"\bvideojuegos?\b|\bvideo\s+juego\b", low))
+
+
+def _variant_stem(title: str) -> Optional[str]:
+    """Raíz de título sin sufijo de color para evitar publicar múltiples colores del mismo producto en ráfaga."""
+    raw = (title or "").strip().lower()
+    if not COLOR_VARIANT_SUFFIX_RE.search(raw):
+        return None
+    stem = COLOR_VARIANT_SUFFIX_RE.sub("", raw).strip(" -/|,").strip()
+    return stem or None
+
+
+def _interleave_by_store(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Intercala candidatas por tienda (round-robin) manteniendo el orden interno de cada una."""
+    buckets: Dict[str, deque] = {}
+    order: List[str] = []
+    for row in rows:
+        sid = str(row.get("store_id") or "").lower()
+        if sid not in buckets:
+            buckets[sid] = deque()
+            order.append(sid)
+        buckets[sid].append(row)
+    out: List[Dict[str, Any]] = []
+    active = order
+    while active:
+        next_active: List[str] = []
+        for sid in active:
+            q = buckets[sid]
+            if q:
+                out.append(q.popleft())
+                if q:
+                    next_active.append(sid)
+        active = next_active
+    return out
 console = Console()
 
 
@@ -834,10 +904,23 @@ class GlitchHuntingPipeline:
             if SERVICE_RE.search(title):
                 services.append(post["id"])
                 continue
-            if self.is_generic_marketplace_trap(
-                title,
-                product.get("brand") or payload.get("brand"),
-                product.get("seller") or payload.get("seller"),
+            discount_val = float(post.get("discount_pct") or 0)
+            is_low_disc_game = post["kind"] == "deal" and discount_val < 40.0 and _is_videogame_title(title)
+            is_cat_noise = bool(CAT_PET_FALSE_POSITIVE_RE.search(title)) and (
+                bool(re.search(r"\b(?:scratcher|rascador)\b", title, re.IGNORECASE))
+                or discount_val < 40.0
+            )
+            is_argb_ctrl = bool(re.search(r"\bcontrolador\s+argb\s+para\s+ventiladores\b", title, re.IGNORECASE))
+            if (
+                self.is_generic_marketplace_trap(
+                    title,
+                    product.get("brand") or payload.get("brand"),
+                    product.get("seller") or payload.get("seller"),
+                )
+                or (post["kind"] == "deal" and bool(REFURBISHED_RE.search(title)))
+                or is_low_disc_game
+                or is_cat_noise
+                or is_argb_ctrl
             ):
                 generics.append(post["id"])
                 continue
@@ -943,7 +1026,16 @@ class GlitchHuntingPipeline:
         low = title.lower()
         if PRIORITY_ACCESSORY_RE.search(low):
             return None
+        is_game = _is_videogame_title(title)
+        cat = classify_category(title)
         for term in terms:
+            if is_game and term in CONSOLE_PRIORITY_TERMS:
+                continue
+            if term == "cat" and (
+                CAT_PET_FALSE_POSITIVE_RE.search(low)
+                or cat not in ("ropa_calzado", "herramientas", "smartphones")
+            ):
+                continue
             if re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z])", low):
                 return term
         return None
@@ -1000,18 +1092,24 @@ class GlitchHuntingPipeline:
                     unpublished_only=True,
                 )
                 for r in raw_tech:
-                    cat = classify_category(str(r.get("title") or ""))
+                    title_s = str(r.get("title") or "")
+                    if _is_videogame_title(title_s):
+                        continue
+                    cat = classify_category(title_s)
                     if cat not in NON_TECH_CATEGORIES and cat != ACCESSORY_CATEGORY and cat != "otros":
                         tech_rows.append(r)
-            # Primero prioridad (Apple/watchlist), luego >=40%, luego tech 25%–39%, sin duplicar
+            # Primero prioridad (Apple/watchlist), luego >=40% intercalado por tienda, luego tech 25%–39% intercalado
             seen_pids: set = set()
             combined: List[Dict[str, Any]] = []
-            for r in (priority_rows + list(rows) + tech_rows):
+            interleaved_rows = _interleave_by_store(list(rows))
+            interleaved_tech = _interleave_by_store(tech_rows)
+            for r in (priority_rows + interleaved_rows + interleaved_tech):
                 pid = str(r.get("product_id") or "")
                 if pid and pid not in seen_pids:
                     seen_pids.add(pid)
                     combined.append(r)
             rows = combined
+            seen_variant_stems: set = set()
             checked = 0
             for row in rows:
                 current = float(row.get("current_price") or 0.0)
@@ -1030,6 +1128,15 @@ class GlitchHuntingPipeline:
                     if len(self._rejected_deals) > self._rejected_deals_max:
                         self._rejected_deals.popitem(last=False)
                     continue
+                stem = _variant_stem(str(row.get("title") or ""))
+                if stem:
+                    vkey = (str(row.get("store_id") or "").lower(), stem, round(best))
+                    if vkey in seen_variant_stems:
+                        self._rejected_deals[key] = None
+                        if len(self._rejected_deals) > self._rejected_deals_max:
+                            self._rejected_deals.popitem(last=False)
+                        continue
+                    seen_variant_stems.add(vkey)
                 # Categoría consistente para los filtros de la página (los scrapers usan rótulos distintos)
                 row = dict(row, category=classify_category(str(row.get("title") or "")))
                 post_id = self.db.publish_feed_offer(

@@ -249,6 +249,14 @@ class PriceDatabase:
                 pass
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_in_stock ON products(in_stock);")
             try:
+                cursor.execute("ALTER TABLE products ADD COLUMN brand TEXT;")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE products ADD COLUMN seller TEXT;")
+            except Exception:
+                pass
+            try:
                 cursor.execute("ALTER TABLE tracked_deals ADD COLUMN card_price REAL;")
             except Exception:
                 pass
@@ -481,6 +489,8 @@ class PriceDatabase:
         card_price = float(data["card_price"]) if data.get("card_price") is not None else None
         in_stock = 1 if bool(data.get("in_stock", True)) else 0
         last_updated = data["last_updated"]
+        brand = str(data["brand"]).strip() if data.get("brand") else None
+        seller = str(data["seller"]).strip() if data.get("seller") else None
 
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -489,8 +499,9 @@ class PriceDatabase:
             cursor.execute("""
                 INSERT INTO products (
                     id, store_id, title, category, url, image_url,
-                    current_price, normal_price, card_price, in_stock, last_updated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    current_price, normal_price, card_price, in_stock, last_updated,
+                    brand, seller
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     store_id = excluded.store_id,
                     title = excluded.title,
@@ -501,10 +512,13 @@ class PriceDatabase:
                     normal_price = excluded.normal_price,
                     card_price = excluded.card_price,
                     in_stock = excluded.in_stock,
-                    last_updated = excluded.last_updated;
+                    last_updated = excluded.last_updated,
+                    brand = COALESCE(excluded.brand, products.brand),
+                    seller = COALESCE(excluded.seller, products.seller);
             """, (
                 prod_id, store_id, title, category, url, image_url,
-                current_price, normal_price, card_price, in_stock, last_updated
+                current_price, normal_price, card_price, in_stock, last_updated,
+                brand, seller
             ))
 
             # Registrar en price_history:
@@ -570,6 +584,8 @@ class PriceDatabase:
                 "card_price": float(data["card_price"]) if data.get("card_price") is not None else None,
                 "in_stock": 1 if bool(data.get("in_stock", True)) else 0,
                 "last_updated": data["last_updated"],
+                "brand": str(data["brand"]).strip() if data.get("brand") else None,
+                "seller": str(data["seller"]).strip() if data.get("seller") else None,
             }
 
         items = list(deduped.values())
@@ -577,6 +593,7 @@ class PriceDatabase:
             (
                 d["id"], d["store_id"], d["title"], d["category"], d["url"], d["image_url"],
                 d["current_price"], d["normal_price"], d["card_price"], d["in_stock"], d["last_updated"],
+                d["brand"], d["seller"],
             )
             for d in items
         ]
@@ -586,8 +603,9 @@ class PriceDatabase:
             cursor.executemany("""
                 INSERT INTO products (
                     id, store_id, title, category, url, image_url,
-                    current_price, normal_price, card_price, in_stock, last_updated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    current_price, normal_price, card_price, in_stock, last_updated,
+                    brand, seller
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     store_id = excluded.store_id,
                     title = excluded.title,
@@ -598,7 +616,9 @@ class PriceDatabase:
                     normal_price = excluded.normal_price,
                     card_price = excluded.card_price,
                     in_stock = excluded.in_stock,
-                    last_updated = excluded.last_updated;
+                    last_updated = excluded.last_updated,
+                    brand = COALESCE(excluded.brand, products.brand),
+                    seller = COALESCE(excluded.seller, products.seller);
             """, prod_rows)
 
             last_by_id: Dict[str, tuple] = {}
@@ -1567,6 +1587,8 @@ class PriceDatabase:
                     p.id AS product_id,
                     p.store_id,
                     p.title,
+                    p.brand,
+                    p.seller,
                     p.category,
                     p.url,
                     p.image_url,
@@ -1732,7 +1754,7 @@ class PriceDatabase:
         self,
         min_products: int = 25,
         threshold_ratio: float = 0.28,
-        discount_cutoff: float = 40.0,
+        discount_cutoff: float = 65.0,
     ) -> Dict[str, Dict[str, Any]]:
         """
         Mide empíricamente qué tiendas inflan precios de lista (MSRP) de forma crónica:

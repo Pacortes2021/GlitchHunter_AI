@@ -590,6 +590,8 @@ def format_glitch_record(
             "store_id": store_id,
             "store_name": store_name,
             "title": title,
+            "brand": row.get("brand"),
+            "seller": row.get("seller"),
             "category": row.get("category") or "General",
             "current_price": current_price,
             "normal_price": normal_price,
@@ -679,6 +681,8 @@ def format_commercial_deal_record(
             "store_id": store_id,
             "store_name": store_name,
             "title": title,
+            "brand": row.get("brand"),
+            "seller": row.get("seller"),
             "category": row.get("category") or "General",
             "current_price": current_price,
             "normal_price": normal_price,
@@ -746,6 +750,10 @@ def format_feed_post(
     # Un solo nombre por tienda: cada scraper usa el suyo ("Líder" / "Líder Chile", "Paris" / "Paris.cl")
     product = card.get("product") or {}
     product["store_name"] = STORE_NAMES.get(product.get("store_id") or post["store_id"], product.get("store_name"))
+    if not product.get("brand") and payload.get("brand"):
+        product["brand"] = payload.get("brand")
+    if not product.get("seller") and payload.get("seller"):
+        product["seller"] = payload.get("seller")
     # Publicaciones con rótulo genérico ("otros", "tecnologia"): categoría según el título
     if str(product.get("category") or "").strip().lower() in GENERIC_CATEGORIES:
         product["category"] = classify_category(str(product.get("title") or ""))

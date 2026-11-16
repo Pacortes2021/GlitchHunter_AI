@@ -23,7 +23,7 @@ _RULES: List[Tuple[str, Tuple[str, ...]]] = [
         "funda", "carcasa", "case", "lamina", "mica", "vidrio templado", "cable", "adaptador",
         "correa", "protector", "cargador", "soporte", "caja vacia", "solo caja", "bolso",
         "mochila", "maletin", "base refrigerante", "cooler para notebook", "tinta", "toner",
-        "cartucho", "repuesto",
+        "cartucho", "repuesto", "controlador argb", "hub argb", "hub usb",
     )),
     ("notebooks", ("notebook", "laptop", "macbook", "thinkpad", "zenbook", "ideapad", "vivobook", "chromebook")),
     ("smartphones", ("iphone", "celular", "smartphone", "galaxy s", "galaxy a", "galaxy z", "xiaomi", "redmi", "motorola", "pixel")),

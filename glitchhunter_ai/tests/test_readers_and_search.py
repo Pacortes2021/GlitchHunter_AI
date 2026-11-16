@@ -5,6 +5,7 @@ Shopify y del buscador (catálogo guardado y búsqueda en vivo en las tiendas).
 
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -403,10 +404,11 @@ def test_category_pagination_rotates_pages_and_wraps():
         return [_make_item(store_id, category_hint, 1)]
 
     reader._listing = fake_listing
-    base_fal = "https://www.falabella.com/falabella-cl/category/cat720161/Smartphones"
+    seller_q = "?f.derived.variant.sellerId_popularBrand=FALABELLA+Y+MEJORES+MARCAS"
+    base_fal = f"https://www.falabella.com/falabella-cl/category/cat720161/Smartphones{seller_q}"
     for _ in range(CATEGORY_MAX_PAGES + 1):
         reader.fetch_category("falabella", "smartphones")
-    assert seen_urls == [base_fal] + [f"{base_fal}?page={p}" for p in range(2, CATEGORY_MAX_PAGES + 1)] + [base_fal]
+    assert seen_urls == [base_fal] + [f"{base_fal}&page={p}" for p in range(2, CATEGORY_MAX_PAGES + 1)] + [base_fal]
 
     # Si una página intermedia devuelve [], vuelve de inmediato a la página 1 en la siguiente llamada.
     seen_urls.clear()
@@ -427,9 +429,9 @@ def test_category_pagination_rotates_pages_and_wraps():
     reader.fetch_category("falabella", "notebooks")
     reader.fetch_category("falabella", "notebooks")
     assert seen_urls == [
-        "https://www.falabella.com/falabella-cl/category/cat70057/Notebooks",
-        "https://www.falabella.com/falabella-cl/category/cat70057/Notebooks?page=2",
-        "https://www.falabella.com/falabella-cl/category/cat70057/Notebooks",
+        f"https://www.falabella.com/falabella-cl/category/cat70057/Notebooks{seller_q}",
+        f"https://www.falabella.com/falabella-cl/category/cat70057/Notebooks{seller_q}&page=2",
+        f"https://www.falabella.com/falabella-cl/category/cat70057/Notebooks{seller_q}",
     ]
 
     # Paris alterna entre orden por defecto y mejor descuento (?sortby=best-discount+desc).
@@ -671,3 +673,126 @@ def test_forwarder_coalesces_same_store_batches_when_queued(tmp_path):
     assert posted[1]["store_id"] == "paris"
     assert fw.pending() == 0
     assert list(qdir.glob("*.json")) == []
+
+
+def test_database_persists_brand_and_seller(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "brand_seller.db")
+    db.init_db()
+
+    p1 = ProductItem(
+        id="fal-tv-1", store_id="falabella", store_name="Falabella",
+        title="Smart TV LG 55 OLED C4", category="televisores",
+        current_price=699990, normal_price=1299990,
+        url="https://www.falabella.com/falabella-cl/product/1",
+        brand="LG", seller="FALABELLA",
+    )
+    p2 = ProductItem(
+        id="par-ps5-1", store_id="paris", store_name="Paris",
+        title="Consola PlayStation 5 Slim", category="consolas",
+        current_price=429990, normal_price=699990,
+        url="https://www.paris.cl/ps5-1.html",
+        brand="Sony", seller="Cencosud",
+    )
+    db.upsert_product(p1)
+    db.upsert_products_batch([p2])
+
+    deals = {d["product_id"]: d for d in db.get_commercial_deals(min_discount=30, max_discount=90)}
+    assert deals["fal-tv-1"]["brand"] == "LG"
+    assert deals["fal-tv-1"]["seller"] == "FALABELLA"
+    assert deals["par-ps5-1"]["brand"] == "Sony"
+    assert deals["par-ps5-1"]["seller"] == "Cencosud"
+
+
+def test_camouflaged_refurb_cat_noise_and_low_discount_games_filtered(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "quality2.db")
+    db.init_db()
+    db.add_watchlist_keyword("cat")
+    db.add_watchlist_keyword("ps5")
+    db.add_watchlist_keyword("playstation 5")
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
+
+    terms = pipeline._priority_terms()
+    assert pipeline._priority_match("Cat Scratcher Onda con Bola Sisal – Juguete Rascador", terms) is None
+    assert pipeline._priority_match("Audífonos EW45 In Ear TWS Bluetooth Forest Cat Verde", terms) is None
+    assert pipeline._priority_match("Botín Intruder Hombre Cat Negro", terms) == "cat"
+    assert pipeline._priority_match("Juego NBA2 K24 Kbryant Edision PS5", terms) is None
+    assert pipeline._priority_match("Videojuego Nfs Unbound Video Juego Consola Playstation 5 Ps5", terms) is None
+    assert pipeline._priority_match("Consola PlayStation 5 Slim 1TB", terms) == "playstation 5"
+    assert pipeline._priority_match("Consola PS5 Slim Digital 1TB", terms) == "ps5"
+
+    items = [
+        ProductItem(id="fal-t490s", store_id="falabella", store_name="Falabella",
+                    title="Notebook t490s i7 8va gen 8gb de ram SSD de 512gb",
+                    category="notebooks", current_price=429990, normal_price=999990, url="https://x.cl/1"),
+        ProductItem(id="fal-g4", store_id="falabella", store_name="Falabella",
+                    title="NOTEBOOK ELITEBOOK 840 G4 INTEL CORE I5 3,10GHZ 8GB RAM 256GB",
+                    category="notebooks", current_price=349990, normal_price=879990, url="https://x.cl/2"),
+        ProductItem(id="fal-generic-nb", store_id="falabella", store_name="Falabella",
+                    title="NOTEBOOK INTEL CORE I5 8 GB DE RAM Y DISCO SOLIDO",
+                    category="notebooks", current_price=489990, normal_price=990000, url="https://x.cl/3"),
+        ProductItem(id="fal-game18", store_id="falabella", store_name="Falabella",
+                    title="Juego NBA2 K24 Kbryant Edision PS5",
+                    category="consolas", current_price=59990, normal_price=72990, url="https://x.cl/4"),
+        ProductItem(id="fal-argb", store_id="falabella", store_name="Falabella",
+                    title="Controlador ARGB para Ventiladores PC, 3 Pines 5V",
+                    category="componentes", current_price=7490, normal_price=15990, url="https://x.cl/5"),
+        ProductItem(id="par-ps5-ok", store_id="paris", store_name="Paris",
+                    title="Consola PlayStation 5 Slim Digital 1TB",
+                    category="consolas", current_price=399990, normal_price=549990, url="https://x.cl/6"),
+    ]
+    db.upsert_products_batch(items)
+    assert pipeline.publish_new_deals() == 1
+    assert [p["product_id"] for p in db.get_feed()] == ["par-ps5-ok"]
+
+
+def test_publish_new_deals_dedups_color_variants_and_interleaves_stores(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "variety.db")
+    db.init_db()
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
+
+    products = [
+        ProductItem(id=f"fal-aud-{idx}", store_id="falabella", store_name="Falabella",
+                    title=f"Audífonos Inalámbricos Sony WH-CH520 {color}",
+                    category="audio", current_price=24990, normal_price=59990,
+                    url=f"https://www.falabella.com/falabella-cl/product/aud-{idx}")
+        for idx, color in enumerate(("Verde", "Negro", "Café", "Lila"))
+    ]
+    products.extend([
+        ProductItem(id="fal-tv", store_id="falabella", store_name="Falabella",
+                    title="Smart TV Samsung 50 4K", category="televisores",
+                    current_price=249990, normal_price=499990, url="https://x.cl/f-tv"),
+        ProductItem(id="sod-tal", store_id="sodimac", store_name="Sodimac",
+                    title="Taladro Percutor DeWalt 20V", category="herramientas",
+                    current_price=69990, normal_price=139990, url="https://x.cl/s-tal"),
+        ProductItem(id="rip-cel", store_id="ripley", store_name="Ripley",
+                    title="Celular Xiaomi Redmi Note 14", category="smartphones",
+                    current_price=149990, normal_price=299990, url="https://x.cl/r-cel"),
+    ])
+    db.upsert_products_batch(products)
+    published = pipeline.publish_new_deals()
+    assert published == 4
+    feed_titles = [p["payload"]["title"] for p in db.get_feed()]
+    aud_count = sum(1 for t in feed_titles if "WH-CH520" in t)
+    assert aud_count == 1
+    stores_in_feed = {p["store_id"] for p in db.get_feed()}
+    assert stores_in_feed == {"falabella", "sodimac", "ripley"}
+
+
+def test_store_inflation_stats_does_not_flag_sale_stores_with_65_cutoff(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "infl65.db")
+    db.init_db()
+    now = datetime.now(timezone.utc)
+    rows = [
+        ProductItem(
+            id=f"sod-{i}", store_id="sodimac", store_name="Sodimac",
+            title=f"Herramienta Marca {i}", category="herramientas",
+            current_price=49990 if i < 15 else 99990,
+            normal_price=99990,   # 50% en el 50% de las filas (típico carril de ofertas, no >=65%)
+            url=f"https://www.sodimac.cl/sodimac-cl/articulo/{100 + i}/item",
+            timestamp=now,
+        )
+        for i in range(30)
+    ]
+    db.upsert_products_batch(rows)
+    stats = db.get_store_inflation_stats()
+    assert stats["sodimac"]["is_chronic_inflator"] is False
