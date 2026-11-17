@@ -2345,7 +2345,17 @@ class PriceDatabase:
                 return dict(existing)
 
             seen_dts: List[datetime] = []
-            matched_pid = product_id
+            matched_pid = (
+                None
+                if re.search(r"-(?:rata|odum)-\d+$", str(product_id or ""), re.IGNORECASE)
+                else product_id
+            )
+            non_social_ph = (
+                "NOT EXISTS (SELECT 1 FROM offer_feed sf WHERE sf.product_id = ph.product_id "
+                "AND COALESCE(json_extract(sf.payload, '$.evidence_source'), '') IN ('descuentos_rata', 'odum', 'social') "
+                "AND ABS(julianday(sf.received_at) - julianday(ph.timestamp)) * 86400 < 15)"
+            )
+            non_social_of = "COALESCE(json_extract(f.payload, '$.evidence_source'), '') NOT IN ('descuentos_rata', 'odum', 'social')"
 
             def _collect_ts(ts_val: Any) -> None:
                 parsed = self._parse_utc_datetime(ts_val)
@@ -2354,14 +2364,14 @@ class PriceDatabase:
 
             if matched_pid:
                 cursor.execute(
-                    "SELECT MIN(timestamp) AS ts FROM price_history WHERE product_id = ? AND price > 0 AND price <= ?;",
+                    f"SELECT MIN(ph.timestamp) AS ts FROM price_history ph WHERE ph.product_id = ? AND ph.price > 0 AND ph.price <= ? AND {non_social_ph};",
                     (matched_pid, price_ceil),
                 )
                 row_ph = cursor.fetchone()
                 if row_ph and row_ph["ts"]:
                     _collect_ts(row_ph["ts"])
                 cursor.execute(
-                    "SELECT MIN(received_at) AS ts FROM offer_feed WHERE product_id = ? AND best_price > 0 AND best_price <= ?;",
+                    f"SELECT MIN(f.received_at) AS ts FROM offer_feed f WHERE f.product_id = ? AND f.best_price > 0 AND f.best_price <= ? AND {non_social_of};",
                     (matched_pid, price_ceil),
                 )
                 row_of = cursor.fetchone()
@@ -2373,10 +2383,12 @@ class PriceDatabase:
                 if not seen_dts and m_paris:
                     prefix_like = f"paris-{m_paris.group(1)}%"
                     cursor.execute(
-                        """
+                        f"""
                         SELECT ph.product_id, ph.timestamp AS ts
                         FROM price_history ph
                         WHERE ph.product_id LIKE ? AND ph.price > 0 AND ph.price <= ?
+                          AND ph.product_id NOT LIKE '%-rata-%' AND ph.product_id NOT LIKE '%-odum-%'
+                          AND {non_social_ph}
                         ORDER BY ph.timestamp ASC LIMIT 1;
                         """,
                         (prefix_like, tol_ceil),
@@ -2413,7 +2425,9 @@ class PriceDatabase:
                         FROM products p
                         JOIN price_history ph ON ph.product_id = p.id
                         WHERE {where_store}
+                          AND p.id NOT LIKE '%-rata-%' AND p.id NOT LIKE '%-odum-%'
                           AND ph.price > 0 AND ph.price <= ?
+                          AND {non_social_ph}
                           {must_clause}
                           AND ({sum_expr}) >= ?
                         ORDER BY ph.timestamp ASC LIMIT 1;
@@ -2430,7 +2444,9 @@ class PriceDatabase:
                         FROM offer_feed f
                         JOIN products p ON p.id = f.product_id
                         WHERE {where_store.replace('p.store_id', 'f.store_id')}
+                          AND p.id NOT LIKE '%-rata-%' AND p.id NOT LIKE '%-odum-%'
                           AND f.best_price > 0 AND f.best_price <= ?
+                          AND {non_social_of}
                           {must_clause}
                           AND ({sum_expr}) >= ?
                         ORDER BY f.received_at ASC LIMIT 1;
@@ -2441,6 +2457,9 @@ class PriceDatabase:
                     if r_feed:
                         matched_pid = matched_pid or r_feed["product_id"]
                         _collect_ts(r_feed["ts"])
+
+            if not matched_pid:
+                matched_pid = product_id
 
             our_dt = min(seen_dts) if seen_dts else None
             if our_dt is not None:

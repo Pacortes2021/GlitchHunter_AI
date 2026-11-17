@@ -202,3 +202,27 @@ def test_social_radar_unwraps_affiliates_lider_ids_and_matches_normalized_titles
     )
     assert bench["outcome"] == "ahead"
     assert bench["product_id"] == "paris-357596"
+
+    # Un producto sintético ingestado desde Descuentos Rata no debe auto-matchearse como 'behind' al re-evaluar
+    later = (datetime(2026, 11, 17, 15, 1, tzinfo=timezone.utc)).strftime("%Y-%m-%d %H:%M:%S")
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO products (id, store_id, title, category, url, current_price, normal_price, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+            ("bold-rata-90003", "bold", "Polera Jordan 85", "ropa_calzado", "https://bold.cl/p", 19990, 39990, later),
+        )
+        conn.execute(
+            "INSERT INTO price_history (product_id, price, timestamp) VALUES (?, ?, ?);",
+            ("bold-rata-90003", 19990, later),
+        )
+    bench_self = db.evaluate_social_deal(
+        external_id="rata-90003",
+        channel="descuentos_rata",
+        store_id="bold",
+        product_id="bold-rata-90003",
+        title="Polera Jordan 85",
+        deal_price=19990.0,
+        normal_price=39990.0,
+        store_url="https://bold.cl/p",
+        external_published_at="2026-11-17 15:00:00",
+    )
+    assert bench_self["outcome"] == "captured"
