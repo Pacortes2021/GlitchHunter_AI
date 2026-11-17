@@ -29,12 +29,16 @@ _RULES: List[Tuple[str, Tuple[str, ...]]] = [
     ("smartphones", ("iphone", "celular", "smartphone", "galaxy s", "galaxy a", "galaxy z", "xiaomi", "redmi", "motorola", "pixel")),
     ("tablets", ("tablet", "ipad", "galaxy tab")),
     ("televisores", ("smart tv", "televisor", "oled", "qled", "uhd 4k", "4k uhd")),
+    # Desambiguación previa: bicicletas spinning c/ monitor o procesadores de alimentos no son PC/monitores
+    ("deportes", ("bicicleta", "bicicletas", "spinning", "trotadora", "eliptica")),
+    ("hogar", ("procesador de alimentos", "robot de cocina", "picadora de alimentos")),
     ("monitores", ("monitor",)),
+    ("gaming", ("videojuego", "videojuegos", "ea sports", "juego ps5", "juego ps4", "juego xbox", "juego switch")),
     ("consolas", ("playstation", "ps5", "ps4", "xbox", "nintendo switch", "consola")),
     ("smartwatch", ("smartwatch", "reloj inteligente", "smartband", "apple watch", "galaxy watch", "garmin")),
     ("audio", ("audifonos", "auriculares", "airpods", "parlante", "soundbar", "barra de sonido", "headset", "microfono")),
     ("componentes", ("tarjeta de video", "geforce", "rtx", "radeon", "ryzen", "procesador", "placa madre", "ssd", "memoria ram", "ram ddr4", "ram ddr5", "fuente de poder")),
-    ("gaming", ("mouse", "teclado", "silla gamer", "volante")),
+    ("gaming", ("mouse", "teclado", "silla gamer", "volante gamer", "volante logitech", "volante thrustmaster")),
     ("linea_blanca", ("refrigerador", "lavadora", "secadora", "horno", "microondas", "cocina", "freezer", "lavavajillas", "aire acondicionado", "encimera", "campana", "calefont", "termo electrico")),
     # Rubros de las tiendas de marca, después de tecnología ("audífonos deportivos" sigue siendo audio)
     ("ropa_calzado", (
@@ -60,10 +64,11 @@ _RULES: List[Tuple[str, Tuple[str, ...]]] = [
     )),
     ("hogar", (
         "colchon", "sabana", "sabanas", "almohada", "almohadas", "plumon", "cobertor", "toalla", "toallas",
-        "sofa", "silla", "mesa", "escritorio", "lampara", "olla", "ollas", "sarten", "bateria de cocina",
-        "cafetera", "hervidor", "licuadora", "batidora", "tostadora", "freidora", "aspiradora", "plancha",
-        "ventilador", "estufa", "calefactor", "purificador", "cuchillo", "cuchillos", "escobilla", "wok",
-        "bowl", "bowls", "contenedor", "contenedores", "selladora", "multiolla", "comedor", "vajilla",
+        "sofa", "silla", "mesa", "escritorio", "respaldo", "velador", "alfombra", "lampara", "olla", "ollas",
+        "sarten", "bateria de cocina", "cafetera", "hervidor", "licuadora", "batidora", "tostadora",
+        "freidora", "aspiradora", "plancha", "ventilador", "estufa", "calefactor", "purificador", "cuchillo",
+        "cuchillos", "escobilla", "wok", "bowl", "bowls", "plato", "platos", "contenedor", "contenedores",
+        "selladora", "multiolla", "comedor", "vajilla",
     )),
 ]
 

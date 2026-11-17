@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -22,6 +23,7 @@ from typing import Any, Dict, List, Optional
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Security, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
@@ -73,7 +75,7 @@ from glitchhunter_ai.core.continuous_reader import ContinuousReader
 from glitchhunter_ai.core.forwarder import Forwarder
 from glitchhunter_ai.core.live_search import LiveSearch
 from glitchhunter_ai.core.pipeline import GlitchHuntingPipeline
-from glitchhunter_ai.core.price_signals import active_event, is_odd_price, parse_event_windows, risk_tier
+from glitchhunter_ai.core.price_signals import _is_retail_price_point, active_event, is_odd_price, parse_event_windows, risk_tier
 from glitchhunter_ai.core.store_health import global_store_health
 from glitchhunter_ai.notifications.telegram_bot import TelegramAlertDispatcher
 from glitchhunter_ai.notifications.telegram_feedback import TelegramFeedbackPoller
@@ -425,6 +427,7 @@ app = FastAPI(
 # Configuración de CORS dinámica según configuración de entorno
 parsed_origins = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
 
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parsed_origins,
@@ -754,9 +757,25 @@ def format_feed_post(
         product["brand"] = payload.get("brand")
     if not product.get("seller") and payload.get("seller"):
         product["seller"] = payload.get("seller")
-    # Publicaciones con rótulo genérico ("otros", "tecnologia"): categoría según el título
-    if str(product.get("category") or "").strip().lower() in GENERIC_CATEGORIES:
-        product["category"] = classify_category(str(product.get("title") or ""))
+    # Sanitizar enlaces de carro rotos heredados en Paris Marketplace (ej. pid=0 o pid=20)
+    for target in (card, product):
+        cart_u = str(target.get("add_to_cart_url") or "")
+        if cart_u and re.search(r"paris\.cl/cart-add\?pid=\d{1,5}(?:&|$)", cart_u, re.IGNORECASE):
+            target["add_to_cart_url"] = ""
+
+    # Publicaciones con rótulo genérico o cruzado ("vestuario" en autos/platos, "monitor" en bici spinning)
+    title_str = str(product.get("title") or "")
+    raw_cat = str(product.get("category") or "").strip().lower()
+    if raw_cat in GENERIC_CATEGORIES:
+        product["category"] = classify_category(title_str)
+    elif raw_cat in ("vestuario", "moda"):
+        reclassified = classify_category(title_str)
+        product["category"] = reclassified if reclassified != "otros" else "ropa_calzado"
+    elif raw_cat in ("monitores", "componentes", "gaming"):
+        reclassified = classify_category(title_str)
+        if reclassified in ("deportes", "hogar", "ropa_calzado", "gaming"):
+            product["category"] = reclassified
+
     card["feed_id"] = post["id"]
     card["feed_kind"] = post["kind"]
     # Señales históricas: nivel de riesgo de anulación y cifra de precio inusual
@@ -767,6 +786,14 @@ def format_feed_post(
             (card.get("market_median_price") and mkt_cnt >= 2)
             or (verdict.get("baseline_30d") and post.get("best_price") and post["best_price"] < float(verdict["baseline_30d"]) * 0.70)
         )
+    best_val = float(post.get("best_price") or 0)
+    b30_val = float(verdict.get("baseline_30d") or 0)
+    ev_src = str(verdict.get("evidence_source") or payload.get("evidence_source") or "")
+    if ev_src == "carga_masiva" and _is_retail_price_point(int(round(best_val))) and not (b30_val > 0 and best_val < b30_val * 0.85):
+        verdict["verified_drop"] = False
+    if ev_src == "missing_zero_tech" and b30_val > 0 and best_val >= b30_val * 0.95:
+        verdict["verified_drop"] = False
+        verdict["is_missing_zero"] = False
     if not verdict.get("evidence_label") and card.get("market_median_price") and int(card.get("market_stores_count") or 0) >= 2:
         verdict["evidence_label"] = f"Más barato que {int(card['market_stores_count'])} tiendas"
     card["verdict"] = verdict
@@ -785,10 +812,13 @@ def format_feed_post(
 @app.get("/api/feed")
 async def get_feed(
     after_id: int = Query(0, ge=0, le=2**62, description="Solo publicaciones con id mayor a este (para traer únicamente lo nuevo)"),
+    before_id: int = Query(0, ge=0, le=2**62, description="Solo publicaciones con id menor a este (paginación hacia atrás)"),
     limit: int = Query(300, ge=1, le=1000, description="Cantidad máxima de publicaciones"),
     min_discount: float = Query(0, ge=0, le=100, description="Descuento mínimo (%)"),
     kind: Optional[str] = Query(None, pattern="^(glitch|deal)$", description="Solo errores de precio u ofertas"),
     stores: Optional[str] = Query(None, max_length=2000, description="Tiendas separadas por coma"),
+    verified_only: bool = Query(False, description="Solo ofertas con respaldo real verificado"),
+    active_only: bool = Query(False, description="Solo publicaciones vigentes"),
 ):
     """
     Canal de ofertas: cada oferta se publica una sola vez, con su precio y hora de recepción.
@@ -797,9 +827,24 @@ async def get_feed(
     store_list = [s.strip().lower() for s in (stores or "").split(",") if s.strip()][:50]
 
     def _load() -> List[Dict[str, Any]]:
-        posts = db.get_feed(after_id=after_id, limit=limit, min_discount=min_discount, kind=kind, stores=store_list)
+        posts = db.get_feed(
+            after_id=after_id,
+            limit=limit,
+            min_discount=min_discount,
+            kind=kind,
+            stores=store_list,
+            verified_only=verified_only,
+            active_only=active_only,
+            before_id=before_id,
+            diversify_initial=(after_id == 0 and before_id == 0 and not kind and not store_list and not verified_only),
+        )
         wl_entries = db.get_watchlist_entries()
         cards = [format_feed_post(p, watchlist_entries=wl_entries) for p in posts]
+        if verified_only:
+            cards = [
+                c for c in cards
+                if bool((c.get("verdict") or {}).get("verified_drop")) or int(c.get("market_stores_count") or 0) >= 2
+            ]
         return _attach_feedback_votes(cards)
 
     loop = asyncio.get_running_loop()

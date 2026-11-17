@@ -81,14 +81,16 @@ def generate_direct_add_to_cart_url(store_id: str, product_url: str, product_id:
                 return f"https://articulo.mercadolibre.cl/checkout/buyer/comprar-ahora?itemId={item_id}"
             return url
 
-        # 6. Paris (Cencosud)
+        # 6. Paris (Cencosud): solo productos con SKU numérico válido (6-12 dígitos); Marketplace usa claves MK...
         if "paris" in sid or "paris.cl" in domain:
-            match = re.search(r"-(\d{6,12})\.html", path) or re.search(r"/(\d{6,12})", path)
-            sku = match.group(1) if match else product_id
-            if sku:
-                clean_sku = re.sub(r"[^\d]", "", str(sku))
-                if clean_sku:
-                    return f"https://www.paris.cl/cart-add?pid={clean_sku}&quantity=1"
+            match = re.search(r"-(\d{6,12})\.html", path) or re.search(r"/(\d{6,12})(?:/|$)", path)
+            clean_sku = match.group(1) if match else ""
+            if not clean_sku and product_id:
+                m_pid = re.fullmatch(r"(?:paris-)?(\d{6,12})", str(product_id).strip(), re.IGNORECASE)
+                if m_pid:
+                    clean_sku = m_pid.group(1)
+            if clean_sku:
+                return f"https://www.paris.cl/cart-add?pid={clean_sku}&quantity=1"
             return url
 
         # 7. SoloTodo (Meta-comparador): mantiene el enlace original al producto

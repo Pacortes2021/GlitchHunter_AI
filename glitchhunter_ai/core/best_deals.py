@@ -32,7 +32,8 @@ except Exception:  # sin base de zonas horarias: UTC-3 fijo
 
 logger = logging.getLogger("GlitchHunter.Best")
 
-MIN_SAVINGS_CLP = 3000.0
+MIN_SAVINGS_CLP = 10000.0
+MIN_BEST_PRICE_CLP = 3000.0
 PER_STORE_DEFAULT = 3
 SNAPSHOT_SIZE = 20
 
@@ -53,6 +54,8 @@ def _title_family(title: str) -> str:
 def score_post(post: Dict[str, Any], hist: Optional[Dict[str, float]] = None,
                votes: Optional[Dict[str, int]] = None) -> Tuple[float, List[str]]:
     """Puntaje de una publicación del canal y los motivos legibles que lo explican."""
+    from glitchhunter_ai.core.price_signals import _is_retail_price_point
+
     payload = post.get("payload") or {}
     product = payload.get("product") or payload
     verdict = payload.get("verdict") or {}
@@ -60,6 +63,9 @@ def score_post(post: Dict[str, Any], hist: Optional[Dict[str, float]] = None,
     discount = float(post.get("discount_pct") or verdict.get("discount_percentage") or 0)
     normal = float(product.get("normal_price") or 0)
     savings = float(verdict.get("absolute_savings_clp") or payload.get("savings_clp") or max(0.0, normal - best))
+    b30 = float(verdict.get("baseline_30d") or 0)
+    min90 = float(verdict.get("min_90d") or 0)
+    ev_source = str(verdict.get("evidence_source") or payload.get("evidence_source") or "")
     reasons: List[str] = []
 
     score = discount * 0.8
@@ -67,29 +73,53 @@ def score_post(post: Dict[str, Any], hist: Optional[Dict[str, float]] = None,
         score += min(25.0, 10.0 * math.log10(savings / 5000.0))
     if savings >= 100_000:
         reasons.append(f"Ahorras ${savings:,.0f}".replace(",", "."))
+
+    # Contradicción histórica: historial 30d/90d igual o menor que el precio actual desmiente el MSRP tachado
+    flat_baseline = bool(
+        best > 0
+        and (
+            (b30 > 0 and best >= b30 * 0.95)
+            or (
+                b30 <= 0
+                and min90 > 0
+                and best >= min90 * 0.95
+                and ev_source in ("missing_zero_tech", "carga_masiva", "solo_precio_lista")
+            )
+        )
+    )
     cheap_outlet_bulk = (
         bool(payload.get("bulk_price_count"))
         and not verdict.get("is_missing_zero")
-        and best <= 15000
-        and int(round(best)) % 1000 == 0
-        and savings < 50000
+        and (
+            (best <= 15000 and int(round(best)) % 1000 == 0 and savings < 50000)
+            or (
+                ev_source == "carga_masiva"
+                and _is_retail_price_point(int(round(best)))
+                and not (b30 > 0 and best < b30 * 0.85)
+            )
+        )
     )
-    if post.get("kind") == "glitch" and not cheap_outlet_bulk:
+    if post.get("kind") == "glitch" and not cheap_outlet_bulk and not flat_baseline and verdict.get("verified_drop") is not False:
         score += 15.0
         reasons.append("Error de precio verificado")
-    if verdict.get("is_missing_zero"):
+    if verdict.get("is_missing_zero") and not flat_baseline:
         score += 10.0
         reasons.append("Parece que le falta un cero")
-    if payload.get("bulk_price_count") and not cheap_outlet_bulk:
+    if payload.get("bulk_price_count") and not cheap_outlet_bulk and not flat_baseline:
         score += 4.0
+    if flat_baseline:
+        score -= 25.0
+    if post.get("status") == "expired":
+        score -= 20.0
 
     if hist and hist.get("n", 0) >= 5 and best > 0:
         low, avg = float(hist.get("min") or 0), float(hist.get("avg") or 0)
-        if low > 0 and best <= low * 1.001:
+        if low > 0 and best <= low * 1.001 and not flat_baseline:
             score += 10.0
             reasons.append("El precio más bajo que hemos visto")
-        if avg > 0 and best < avg:
-            drop = (avg - best) / avg
+        ref_hab = b30 if b30 > best else avg
+        if ref_hab > 0 and best < ref_hab:
+            drop = (ref_hab - best) / ref_hab
             if drop >= 0.2:
                 score += 8.0 * min(1.0, drop / 0.5)
                 reasons.append(f"{drop * 100:.0f}% bajo su precio habitual")
@@ -190,7 +220,12 @@ class BestDealsCurator:
         since = (end - timedelta(days=days)).isoformat()
         posts = self._candidates(since, end.isoformat() if until else None, only_active)
         from glitchhunter_ai.core.pipeline import SERVICE_RE
-        posts = [p for p in posts if self._savings(p) >= MIN_SAVINGS_CLP and not SERVICE_RE.search(self._title(p))]
+        posts = [
+            p for p in posts
+            if self._savings(p) >= MIN_SAVINGS_CLP
+            and float(p.get("best_price") or 0) >= MIN_BEST_PRICE_CLP
+            and not SERVICE_RE.search(self._title(p))
+        ]
         hist = self._history([p["product_id"] for p in posts])
         votes = self._votes(posts)
         scored = []
@@ -208,7 +243,8 @@ class BestDealsCurator:
         for p in scored:
             payload = p.get("payload") or {}
             title = str((payload.get("product") or payload).get("title") or "")
-            family = f"{p['store_id']}|{_title_family(title)}"
+            raw_family = _title_family(title)
+            family = raw_family if len(raw_family) >= 12 else f"{p['store_id']}|{raw_family}"
             if p["product_id"] in seen_products or family in seen_families:
                 continue
             if per_store_count.get(p["store_id"], 0) >= per_store:

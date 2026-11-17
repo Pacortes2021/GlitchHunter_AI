@@ -1431,14 +1431,21 @@ class PriceDatabase:
         min_discount: float = 0.0,
         kind: Optional[str] = None,
         stores: Optional[List[str]] = None,
+        verified_only: bool = False,
+        active_only: bool = False,
+        before_id: int = 0,
+        diversify_initial: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Publicaciones del canal, de la más reciente a la más antigua; con after_id, solo las posteriores.
-        Los filtros (descuento mínimo, tipo, tiendas) permiten traer publicaciones antiguas que la página
-        no cargó al inicio.
+        Los filtros (descuento mínimo, tipo, tiendas, verified_only, active_only, before_id) permiten traer
+        publicaciones específicas u ordenar la carga inicial con cuota garantizada de glitches activos.
         """
         # Las retiradas (no eran rebajas reales) no se muestran en el canal
         where, params = ["id > ?", "COALESCE(expired_reason, '') != 'withdrawn'"], [int(after_id)]
+        if before_id > 0:
+            where.append("id < ?")
+            params.append(int(before_id))
         if min_discount > 0:
             where.append("discount_pct >= ?")
             params.append(float(min_discount))
@@ -1448,20 +1455,52 @@ class PriceDatabase:
         if stores:
             where.append(f"store_id IN ({','.join('?' for _ in stores)})")
             params.extend(stores)
-        params.append(int(limit))
+        if active_only:
+            where.append("status = 'active'")
+        if verified_only:
+            where.append(
+                "(COALESCE(json_extract(payload, '$.verified_drop'), 0) = 1 "
+                "OR COALESCE(json_extract(payload, '$.verdict.verified_drop'), 0) = 1 "
+                "OR COALESCE(json_extract(payload, '$.market_stores_count'), 0) >= 2)"
+            )
+        base_sql = """
+            SELECT id, kind, product_id, store_id, best_price, discount_pct, received_at, payload,
+                   status, expired_reason, status_changed_at, price_now
+            FROM offer_feed
+        """
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"""
-                SELECT id, kind, product_id, store_id, best_price, discount_pct, received_at, payload,
-                       status, expired_reason, status_changed_at, price_now
-                FROM offer_feed
-                WHERE {' AND '.join(where)}
-                ORDER BY id DESC
-                LIMIT ?;
-            """, params)
+            cursor.execute(
+                f"{base_sql} WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?;",
+                params + [int(limit)],
+            )
+            main_rows = [dict(r) for r in cursor.fetchall()]
+
+            if (
+                diversify_initial
+                and after_id == 0
+                and before_id == 0
+                and kind is None
+                and not stores
+                and not verified_only
+                and limit >= 20
+            ):
+                glitch_quota = min(60, max(10, int(limit) // 5))
+                g_where = where + ["kind = 'glitch'", "status = 'active'"]
+                cursor.execute(
+                    f"{base_sql} WHERE {' AND '.join(g_where)} ORDER BY id DESC LIMIT ?;",
+                    params + [glitch_quota],
+                )
+                glitch_rows = [dict(r) for r in cursor.fetchall()]
+                seen_ids = {r["id"] for r in main_rows}
+                extra_glitches = [g for g in glitch_rows if g["id"] not in seen_ids]
+                if extra_glitches:
+                    keep_main = max(0, int(limit) - len(extra_glitches))
+                    main_rows = main_rows[:keep_main] + extra_glitches
+                    main_rows.sort(key=lambda r: int(r["id"]), reverse=True)
+
             posts = []
-            for r in cursor.fetchall():
-                post = dict(r)
+            for post in main_rows:
                 post["payload"] = json.loads(post["payload"])
                 posts.append(post)
             return posts
@@ -1773,7 +1812,7 @@ class PriceDatabase:
     def get_store_inflation_stats(
         self,
         min_products: int = 25,
-        threshold_ratio: float = 0.28,
+        threshold_ratio: float = 0.18,
         discount_cutoff: float = 65.0,
     ) -> Dict[str, Dict[str, Any]]:
         """
@@ -2255,11 +2294,18 @@ class PriceDatabase:
         stop = {
             "para", "con", "del", "los", "las", "una", "uno", "por", "negro", "blanco", "azul",
             "gris", "rojo", "verde", "cafe", "oferta", "descuento", "pagando", "tarjeta",
-            "tienda", "web", "gratis", "despacho", "retiro", "liberado", "smart",
+            "tienda", "web", "gratis", "despacho", "retiro", "liberado", "smart", "cupon",
+            "bancos", "banco", "itau", "santander", "bci", "tenpo", "unisex", "zapatilla",
+            "zapatillas", "urbana", "urbano",
         }
-        norm = unicodedata.normalize("NFKD", (title or "").lower())
+        cleaned = re.sub(r"\s+-\s+[A-Za-z0-9\s.&]{2,25}$", "", str(title or "").strip())
+        cleaned = re.sub(r"\$\s*\d+(?:\.\d{3})+.*$", "", cleaned)
+        norm = unicodedata.normalize("NFKD", cleaned.lower())
         norm = "".join(c for c in norm if not unicodedata.combining(c))
-        tokens = [t for t in re.findall(r"[a-z0-9]{3,}", norm) if t not in stop]
+        tokens = [
+            t for t in re.findall(r"[a-z0-9]+", norm)
+            if t not in stop and ((any(c.isdigit() for c in t) and len(t) >= 2) or len(t) >= 3)
+        ]
         # Priorizar códigos/números o palabras más distintivas
         tokens = list(dict.fromkeys(tokens))
         tokens.sort(key=lambda t: (any(c.isdigit() for c in t), len(t)), reverse=True)
@@ -2286,8 +2332,12 @@ class PriceDatabase:
         dt_ext = self._parse_utc_datetime(external_published_at) or datetime.now(timezone.utc)
         ext_str = dt_ext.strftime("%Y-%m-%d %H:%M:%S")
         price_ceil = float(deal_price) * 1.03
+        norm_title = _search_norm(title)
+        has_coupon_hint = bool(re.search(r"cup[oó]n|tarjeta|itau|bci|santander|tenpo|banco", norm_title))
+        tol_ceil = float(deal_price) * (1.35 if has_coupon_hint else 1.15)
 
         with self.get_connection() as conn:
+            conn.create_function("search_norm", 1, _search_norm, deterministic=True)
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM social_benchmark WHERE external_id = ? LIMIT 1;", (ext_id,))
             existing = cursor.fetchone()
@@ -2318,21 +2368,57 @@ class PriceDatabase:
                 if row_of and row_of["ts"]:
                     _collect_ts(row_of["ts"])
 
+                # Variantes de SKU con talla/color en Paris (ej. paris-357596005 vs paris-357596)
+                m_paris = re.fullmatch(r"paris-(\d{6})\d{3}", str(matched_pid).lower())
+                if not seen_dts and m_paris:
+                    prefix_like = f"paris-{m_paris.group(1)}%"
+                    cursor.execute(
+                        """
+                        SELECT ph.product_id, ph.timestamp AS ts
+                        FROM price_history ph
+                        WHERE ph.product_id LIKE ? AND ph.price > 0 AND ph.price <= ?
+                        ORDER BY ph.timestamp ASC LIMIT 1;
+                        """,
+                        (prefix_like, tol_ceil),
+                    )
+                    rp = cursor.fetchone()
+                    if rp:
+                        matched_pid = rp["product_id"]
+                        _collect_ts(rp["ts"])
+
             if not seen_dts and store_id:
                 tokens = self._social_title_tokens(title)
                 if len(tokens) >= 2:
-                    like_clauses = " AND ".join("LOWER(p.title) LIKE ?" for _ in tokens)
-                    like_params: List[Any] = [str(store_id).lower()] + [f"%{t}%" for t in tokens] + [price_ceil]
+                    min_req = len(tokens) if len(tokens) <= 2 else (len(tokens) - 1)
+                    store_low = str(store_id).lower()
+                    # Si Odum no resolvió la tienda y hay modelo distintivo, buscar en catálogo general
+                    is_odum_unresolved = store_low == "odum" and len(tokens) >= 3 and any(c.isdigit() for c in tokens[0])
+                    sum_expr = " + ".join("CASE WHEN search_norm(p.title) LIKE ? THEN 1 ELSE 0 END" for _ in tokens)
+                    sum_params: List[Any] = [f"%{t}%" for t in tokens]
+                    where_store = (
+                        "LOWER(p.store_id) IN ('falabella', 'paris', 'ripley', 'lider', 'mercadolibre', 'pcfactory', 'sodimac', 'abc')"
+                        if is_odum_unresolved
+                        else "LOWER(p.store_id) = ?"
+                    )
+                    base_params: List[Any] = ([] if is_odum_unresolved else [store_low]) + [tol_ceil]
+                    must_clause = (
+                        " AND search_norm(p.title) LIKE ?"
+                        if len(tokens) >= 3 and any(c.isdigit() for c in tokens[0])
+                        else ""
+                    )
+                    must_params: List[Any] = [f"%{tokens[0]}%"] if must_clause else []
                     cursor.execute(
                         f"""
                         SELECT p.id, ph.timestamp AS ts
                         FROM products p
                         JOIN price_history ph ON ph.product_id = p.id
-                        WHERE LOWER(p.store_id) = ? AND {like_clauses}
+                        WHERE {where_store}
                           AND ph.price > 0 AND ph.price <= ?
+                          {must_clause}
+                          AND ({sum_expr}) >= ?
                         ORDER BY ph.timestamp ASC LIMIT 1;
                         """,
-                        tuple(like_params),
+                        tuple(base_params + must_params + sum_params + [min_req]),
                     )
                     r_match = cursor.fetchone()
                     if r_match:
@@ -2343,11 +2429,13 @@ class PriceDatabase:
                         SELECT f.product_id, f.received_at AS ts
                         FROM offer_feed f
                         JOIN products p ON p.id = f.product_id
-                        WHERE LOWER(f.store_id) = ? AND {like_clauses}
+                        WHERE {where_store.replace('p.store_id', 'f.store_id')}
                           AND f.best_price > 0 AND f.best_price <= ?
+                          {must_clause}
+                          AND ({sum_expr}) >= ?
                         ORDER BY f.received_at ASC LIMIT 1;
                         """,
-                        tuple(like_params),
+                        tuple(base_params + must_params + sum_params + [min_req]),
                     )
                     r_feed = cursor.fetchone()
                     if r_feed:

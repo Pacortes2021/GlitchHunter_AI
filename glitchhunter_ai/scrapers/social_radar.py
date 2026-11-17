@@ -111,10 +111,26 @@ _URL_DOMAIN_TO_STORE: tuple = (
     ("aliexpress.com", "aliexpress"),
 )
 
+_REDIRECTOR_DOMAINS = (
+    "rata.link",
+    "go.stilo.io",
+    "meli.la",
+    "ad.soicos.com",
+    "soicos.com",
+    "awin1.com",
+    "creators.falabella.com",
+)
+_REDIRECT_QUERY_KEYS = ("dl", "ued", "url", "u", "redirect", "dest", "target")
 _IGNORED_LINK_DOMAINS = (
     "rata.link",
     "descuentosrata.com",
     "odum.cl",
+    "go.stilo.io",
+    "meli.la",
+    "ad.soicos.com",
+    "soicos.com",
+    "awin1.com",
+    "creators.falabella.com",
     "googletagmanager.com",
     "cloudflareinsights.com",
     "walmartimages.cl",
@@ -138,12 +154,44 @@ _IGNORED_LINK_DOMAINS = (
 _STATIC_EXT_RE = re.compile(r"\.(?:js|css|png|jpg|jpeg|webp|svg|gif|ico|woff2?)(?:\?|$)", re.IGNORECASE)
 _AGE_RE = re.compile(r"\b(\d+)\s*(min|m|h|hr|hrs|d|s)\b", re.IGNORECASE)
 _PRICE_CLP_RE = re.compile(r"\$\s*(\d+(?:\.\d{3})+|\d{4,})")
+_USD_RE = re.compile(r"(?:\bus\$|\busd\b)", re.IGNORECASE)
 _ODUM_DEAL_PREFIX_RE = re.compile(r"\b(?:ofertas?(?:\s+destacadas)?|mercado\s+libre)\b", re.IGNORECASE)
 
 
 def _strip_accents(text: str) -> str:
     nfkd = unicodedata.normalize("NFKD", (text or "").strip().lower())
     return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def _clean_social_title(text: str) -> str:
+    """Limpia emojis y caracteres invisibles (\u200d, \ufe0f) preservando texto y tildes."""
+    cleaned_chars = []
+    for ch in str(text or ""):
+        if ch in ("\u200b", "\u200c", "\u200d", "\ufeff", "\ufe0f"):
+            continue
+        if unicodedata.category(ch) == "So":
+            continue
+        cleaned_chars.append(ch)
+    return " ".join("".join(cleaned_chars).split())
+
+
+def _unwrap_redirect_url(url: str, depth: int = 0) -> str:
+    """Extrae la URL real oculta en parámetros de afiliados (Soicos, Awin, Falabella Creators)."""
+    cur = str(url or "").strip()
+    if not cur or depth >= 4:
+        return cur
+    try:
+        parsed = urllib.parse.urlparse(cur)
+        qs = urllib.parse.parse_qs(parsed.query)
+        for key in _REDIRECT_QUERY_KEYS:
+            vals = qs.get(key)
+            if vals and vals[0]:
+                inner = urllib.parse.unquote(vals[0].strip())
+                if inner.startswith(("http://", "https://")):
+                    return _unwrap_redirect_url(inner, depth + 1)
+    except Exception:
+        pass
+    return cur
 
 
 def _normalize_store_id(store_name: str) -> str:
@@ -223,17 +271,25 @@ def parse_descuentos_rata_html(html: str, now: Optional[datetime] = None) -> Lis
         published_dt = parse_relative_age(age_text, now=ref_now)
 
         title_el = anchor.select_one(".line-clamp--3, .font-weight-bold.line-clamp")
-        title = " ".join(title_el.get_text(" ").split()) if title_el else ""
+        title = _clean_social_title(title_el.get_text(" ") if title_el else "")
         if not title:
+            continue
+
+        anchor_txt = anchor.get_text(" ")
+        if _USD_RE.search(anchor_txt):
             continue
 
         curr_el = anchor.select_one("span.rata-font-poppins")
         current_price = _parse_digits_price(curr_el.get_text(" ") if curr_el else "")
         if current_price <= 0.0:
-            price_match = _PRICE_CLP_RE.search(anchor.get_text(" "))
+            price_match = _PRICE_CLP_RE.search(anchor_txt)
             current_price = _parse_digits_price(price_match.group(1)) if price_match else 0.0
-        if current_price <= 0.0:
+        if current_price < 1500.0:
             continue
+
+        img_el = anchor.select_one("img[src]")
+        raw_img = str(img_el.get("src") or "").strip() if img_el else ""
+        image_url = raw_img if raw_img.startswith(("http://", "https://")) and "descuentosrata.com" not in raw_img.lower() else ""
 
         prev_el = anchor.select_one(".oferta-precio-anterior, [aria-label='Precio anterior']")
         normal_price = _parse_digits_price(prev_el.get_text(" ") if prev_el else "")
@@ -248,6 +304,7 @@ def parse_descuentos_rata_html(html: str, now: Optional[datetime] = None) -> Lis
             "store_name": store_name or DIRECT_STORE_NAMES.get(store_id, store_id.title()),
             "store_id": store_id,
             "title": title,
+            "image_url": image_url,
             "current_price": current_price,
             "normal_price": normal_price,
             "external_published_at": published_dt.strftime("%Y-%m-%d %H:%M:%S"),
@@ -267,14 +324,24 @@ def _is_valid_store_url(url: str) -> bool:
     return not any(ign in host for ign in _IGNORED_LINK_DOMAINS)
 
 
+def _is_redirector_url(url: str) -> bool:
+    low = (url or "").lower()
+    if not low.startswith(("http://", "https://")) or _STATIC_EXT_RE.search(low):
+        return False
+    host = urllib.parse.urlparse(low).netloc
+    return any(dom in host for dom in _REDIRECTOR_DOMAINS) and "descuentosrata.com" not in host
+
+
 def extract_store_url_from_rata_link(html: str, final_url: str = "") -> Optional[str]:
-    """Obtiene la URL real de destino de una página puente rata.link/o/{id}."""
-    if final_url and _is_valid_store_url(final_url):
-        return final_url
+    """Obtiene la URL real de destino de una página puente rata.link/o/{id} o enlace afiliado."""
+    if final_url:
+        unwrapped = _unwrap_redirect_url(final_url)
+        if _is_valid_store_url(unwrapped):
+            return unwrapped
     if not html:
         return None
     for raw in re.findall(r'https?://[^\s"\'<>\\]+', html):
-        cand = html_lib.unescape(raw).rstrip(").,;\"'")
+        cand = _unwrap_redirect_url(html_lib.unescape(raw).rstrip(").,;\"'"))
         if _is_valid_store_url(cand):
             return cand
     return None
@@ -312,8 +379,8 @@ def parse_odum_html(html: str, now: Optional[datetime] = None) -> List[Dict[str,
         if any(bad in _strip_accents(prefix_joined) for bad in ("cupon", "vendo", "compro", "reclamo", "duda", "off topic", "comparto")):
             continue
 
-        title = " ".join(link.get_text(" ").split())
-        if not title:
+        title = _clean_social_title(link.get_text(" "))
+        if not title or _USD_RE.search(title):
             continue
         m_price = _PRICE_CLP_RE.search(title)
         if not m_price:
@@ -366,6 +433,30 @@ class SocialChannelRadar:
             self._seen_external_ids.add(ext_id)
             return True
 
+    def _follow_shortlink(self, url: str) -> Optional[str]:
+        """Desenvuelve query params o sigue hasta 2 saltos HTTP si el link apunta a un shortlink (Stilo/Meli/Soicos)."""
+        cur = _unwrap_redirect_url(url)
+        if _is_valid_store_url(cur):
+            return cur
+        for _ in range(2):
+            if not _is_redirector_url(cur):
+                break
+            try:
+                resp = self.client.get(cur, timeout=self.timeout)
+            except Exception:
+                break
+            final_u = _unwrap_redirect_url(str(getattr(resp, "url", "") or ""))
+            if _is_valid_store_url(final_u):
+                return final_u
+            extracted = extract_store_url_from_rata_link(resp.text or "", final_u)
+            if extracted:
+                return extracted
+            if final_u and final_u != cur and _is_redirector_url(final_u):
+                cur = final_u
+                continue
+            break
+        return None
+
     def _resolve_rata_url(self, deal: Dict[str, Any]) -> Optional[str]:
         go_url = deal.get("go_url")
         if not go_url:
@@ -373,7 +464,21 @@ class SocialChannelRadar:
         try:
             resp = self.client.get(go_url, timeout=self.timeout)
             if getattr(resp, "status_code", 0) == 200:
-                return extract_store_url_from_rata_link(resp.text or "", str(getattr(resp, "url", "") or ""))
+                html = resp.text or ""
+                final_u = str(getattr(resp, "url", "") or "")
+                direct = extract_store_url_from_rata_link(html, final_u)
+                if direct:
+                    return direct
+                if final_u and _is_redirector_url(final_u):
+                    followed = self._follow_shortlink(final_u)
+                    if followed:
+                        return followed
+                for raw in re.findall(r'https?://[^\s"\'<>\\]+', html):
+                    cand = html_lib.unescape(raw).rstrip(").,;\"'")
+                    if _is_redirector_url(cand):
+                        followed = self._follow_shortlink(cand)
+                        if followed:
+                            return followed
         except Exception as exc:
             logger.debug("No se pudo resolver %s: %s", go_url, exc)
         return None
@@ -391,17 +496,22 @@ class SocialChannelRadar:
             if not post:
                 return None
             for a in post.select("a[href^='http']"):
-                cand = str(a.get("href") or "").strip()
+                cand = _unwrap_redirect_url(str(a.get("href") or "").strip())
                 if _is_valid_store_url(cand):
                     return cand
+                if _is_redirector_url(cand):
+                    followed = self._follow_shortlink(cand)
+                    if followed:
+                        return followed
         except Exception as exc:
             logger.debug("No se pudo resolver hilo Odum %s: %s", thread_url, exc)
         return None
 
     def fetch_recent_social_deals(self, max_resolve: int = 12) -> List[Dict[str, Any]]:
-        """Descarga Descuentos Rata y Odum y resuelve hasta `max_resolve` enlaces nuevos."""
+        """Descarga Descuentos Rata y Odum y resuelve hasta `max_resolve` enlaces nuevos por canal."""
         deals: List[Dict[str, Any]] = []
-        resolved = 0
+        rata_resolved = 0
+        odum_resolved = 0
 
         try:
             r_rata = self.client.get(RATA_HOME_URL, timeout=self.timeout)
@@ -410,9 +520,9 @@ class SocialChannelRadar:
                     if not self._remember_seen(d["external_id"]):
                         continue
                     store_url = None
-                    if resolved < max_resolve:
+                    if rata_resolved < max_resolve:
                         store_url = self._resolve_rata_url(d)
-                        resolved += 1
+                        rata_resolved += 1
                     d["store_url"] = store_url or d.get("offer_page_url") or d.get("go_url")
                     if store_url:
                         d["store_id"] = _store_id_from_url(store_url, d["store_id"])
@@ -430,9 +540,9 @@ class SocialChannelRadar:
                     if not self._remember_seen(d["external_id"]):
                         continue
                     store_url = None
-                    if resolved < max_resolve:
+                    if odum_resolved < max_resolve:
                         store_url = self._resolve_odum_url(d)
-                        resolved += 1
+                        odum_resolved += 1
                     d["store_url"] = store_url or d.get("thread_url")
                     if store_url:
                         d["store_id"] = _store_id_from_url(store_url, d["store_id"])
@@ -498,6 +608,7 @@ class SocialChannelRadar:
             if callable(get_prod):
                 existing = get_prod(prod_id)
             preserved_normal = float(existing.get("normal_price") or 0.0) if isinstance(existing, dict) else 0.0
+            existing_img = str(existing.get("image_url") or "") if isinstance(existing, dict) else ""
             eff_normal = max(normal_raw if normal_raw > deal_price else 0.0, preserved_normal if preserved_normal > deal_price else 0.0)
 
             cat = classify_category(title)
@@ -510,6 +621,7 @@ class SocialChannelRadar:
                 current_price=deal_price,
                 normal_price=eff_normal,
                 url=store_url or f"https://www.{store_id}.cl/",
+                image_url=str(deal.get("image_url") or "") or existing_img,
                 in_stock=True,
                 brand=deal.get("brand"),
                 seller=deal.get("seller"),

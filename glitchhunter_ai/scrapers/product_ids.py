@@ -50,6 +50,8 @@ _RIPLEY_RE = re.compile(r"-(\d{8,16})p$|-(mp[a-z]?\d{6,})$", re.IGNORECASE)
 _SODIMAC_RE = re.compile(r"/sodimac-cl/(?:articulo|product)/([A-Za-z0-9]+)")
 # PC Factory: /producto/{id}-{slug}
 _PCFACTORY_RE = re.compile(r"/producto/(\d+)")
+# Líder: /ip/{cat?}/{slug}/{id} o /sku/{id}
+_LIDER_RE = re.compile(r"/(?:ip/(?:[^/]+/)+|sku/)(\d+)", re.IGNORECASE)
 # Mercado Libre: MLC123456789 o MLC-123456789 (en la ruta o en parámetros como wid=)
 _MERCADOLIBRE_RE = re.compile(r"MLC-?(\d{6,})", re.IGNORECASE)
 
@@ -123,6 +125,10 @@ def canonical_product_id(store_id: str, url: Optional[str]) -> Optional[str]:
     if store == "pcfactory":
         m = _PCFACTORY_RE.search(path)
         return f"pcfactory-{m.group(1)}" if m else None
+
+    if store == "lider":
+        m = _LIDER_RE.search(path)
+        return f"lider-{m.group(1)}" if m else None
 
     if store == "mercadolibre":
         # Los enlaces de publicidad (click1.mercadolibre.cl) llevan el ID real codificado en la query

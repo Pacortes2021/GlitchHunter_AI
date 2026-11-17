@@ -49,7 +49,20 @@
     winpy: { name: 'Winpy', color: CORE_STORE_COLORS.winpy },
     spdigital: { name: 'SP Digital', color: CORE_STORE_COLORS.spdigital },
     santaisabel: { name: 'Santa Isabel', color: CORE_STORE_COLORS.santaisabel },
-    solotodo: { name: 'SoloTodo', color: CORE_STORE_COLORS.solotodo }
+    solotodo: { name: 'SoloTodo', color: CORE_STORE_COLORS.solotodo },
+    bold: { name: 'Bold', color: '#0f172a' },
+    buscalibrechile: { name: 'Buscalibre', color: '#ea580c' },
+    '7veinte': { name: '7Veinte', color: '#4f46e5' },
+    lg: { name: 'LG', color: '#a50034' },
+    stevemadden: { name: 'Steve Madden', color: '#111827' },
+    construplaza: { name: 'Construplaza', color: '#b45309' },
+    americaneagle: { name: 'American Eagle', color: '#1d4ed8' },
+    dolly: { name: 'Dolly', color: '#be185d' },
+    mk: { name: 'MK', color: '#334155' },
+    sparta: { name: 'Sparta', color: '#dc2626' },
+    theline: { name: 'The Line', color: '#0f172a' },
+    kliper: { name: 'Kliper', color: '#0369a1' },
+    dbs: { name: 'DBS', color: '#db2777' }
   };
 
   function storeColor(id) {
@@ -246,6 +259,7 @@
     monitores: 'Monitores', consolas: 'Consolas', smartwatch: 'Relojes inteligentes', audio: 'Audio',
     componentes: 'Componentes PC', gaming: 'Gaming', linea_blanca: 'Línea blanca', accesorios: 'Accesorios',
     tecnologia: 'Tecnología', computacion: 'Computación', ropa_calzado: 'Ropa y calzado',
+    vestuario: 'Ropa y calzado', electrodomesticos: 'Electrodomésticos',
     belleza: 'Belleza y perfumes', deportes: 'Deportes y aire libre', herramientas: 'Herramientas',
     hogar: 'Hogar y cocina', otros: 'Otros'
   };
@@ -397,12 +411,15 @@
 
   function hasVerifiedBacking(post, d) {
     const verdict = post.verdict || {};
-    return Boolean(
-      verdict.verified_drop
-      || toNum(verdict.baseline_30d) > 0
-      || (toNum(post.market_median_price) > 0 && toNum(post.market_stores_count) >= 2)
-      || (d && d.isGlitch && verdict.evidence_label)
-    );
+    const b30 = toNum(verdict.baseline_30d);
+    const mkt = toNum(post.market_median_price);
+    const mktStores = toNum(post.market_stores_count);
+    const ev = String(verdict.evidence_source || '');
+    if (ev === 'descuentos_rata' || ev === 'odum' || ev === 'knasta' || ev === 'knasta_habitual') return true;
+    if (b30 > 0 && d.best > 0 && d.best < b30 * 0.92) return true;
+    if (mkt > 0 && mktStores >= 2 && d.best > 0 && d.best < mkt * 0.92) return true;
+    if (verdict.verified_drop && !(b30 > 0 && d.best >= b30 * 0.95) && ev !== 'carga_masiva') return true;
+    return false;
   }
 
   function buildProofTags(post, verdict, d) {
@@ -410,34 +427,45 @@
     tags.push(d.isGlitch
       ? '<span class="tag tag-glitch">⚡ Posible error de precio</span>'
       : '<span class="tag tag-deal">🏷️ Oferta</span>');
-    if (verdict.is_missing_zero) {
+    const b30 = toNum(verdict.baseline_30d);
+    const mkt = toNum(post.market_median_price);
+    const mktStores = toNum(post.market_stores_count);
+    const evSource = String(verdict.evidence_source || '');
+    const flatBaseline = b30 > 0 && d.best > 0 && d.best >= b30 * 0.95;
+
+    if (verdict.is_missing_zero && !flatBaseline) {
       tags.push('<span class="tag tag-zero" title="El precio parece estar ~10 veces más bajo por un cero omitido">~10× bajo lo normal</span>');
+    }
+    if (post.odd_price && d.isGlitch) {
+      tags.push('<span class="tag tag-odd" title="Precio con terminación inusual (~no terminada en 90/00)">🔢 Cifra inusual</span>');
     }
     const tier = d.isGlitch ? post.risk_tier : null;
     if (tier === 'irrisorio') {
       tags.push('<span class="tag tag-risk-high" title="Con descuentos de 95% o más, las tiendas casi siempre anulan la compra">⚠️ Muy probable anulación</span>');
-    } else if (tier === 'plausible') {
+    } else if (tier === 'plausible' && !flatBaseline) {
       tags.push('<span class="tag tag-risk-ok" title="Rango donde suele haber más posibilidades de que respeten la compra">✅ Error plausible</span>');
     }
-    if (toNum(post.bulk_price_count) >= 4) {
-      tags.push(`<span class="tag tag-bulk" title="Varios productos distintos de esta tienda aparecieron al mismo precio: típico error masivo">📦 Mismo precio en ${toNum(post.bulk_price_count)} productos</span>`);
+    const bulkCnt = toNum(post.bulk_price_count);
+    if (bulkCnt >= 4) {
+      tags.push(`<span class="tag tag-bulk" title="Varios productos distintos de esta tienda aparecieron al mismo precio: posible error masivo">📦 Mismo precio en ${bulkCnt} productos</span>`);
     }
     if (d.hasCardPrice) tags.push('<span class="tag tag-card">💳 Precio tarjeta</span>');
     if (post.__isTest) tags.unshift('<span class="tag tag-test" title="Simulación: no se guarda y desaparece al recargar">🧪 PRUEBA</span>');
     if (post.is_watchlist_match) tags.push('<span class="tag tag-watch">⭐ Tu watchlist</span>');
 
-    const b30 = toNum(verdict.baseline_30d);
-    const mkt = toNum(post.market_median_price);
-    const mktStores = toNum(post.market_stores_count);
+    const isSocial = evSource === 'descuentos_rata' || evSource === 'odum';
+    const evLabel = String(verdict.evidence_label || '');
+    const redundantBulkLabel = evSource === 'carga_masiva' || (bulkCnt >= 4 && evLabel.includes('mismo precio exacto'));
+
     if (b30 > 0 && d.best > 0 && d.best < b30 * 0.92) {
       tags.push(`<span class="tag tag-verified" title="Respaldo histórico real en el radar">✓ Bajó vs su precio 30d (${escapeHtml(formatCLP(b30))})</span>`);
-    } else if (mkt > 0 && mktStores >= 2) {
+    } else if (mkt > 0 && mktStores >= 2 && d.best < mkt * 0.92) {
       tags.push(`<span class="tag tag-verified" title="Comparado con otras tiendas del mercado">✓ Más barato vs ${mktStores} tiendas</span>`);
-    } else if (verdict.evidence_label) {
-      tags.push(`<span class="tag tag-verified">${escapeHtml(verdict.evidence_label)}</span>`);
-    } else if (verdict.verified_drop) {
+    } else if (evLabel && !redundantBulkLabel && !(flatBaseline && evSource === 'missing_zero_tech')) {
+      tags.push(`<span class="tag ${isSocial ? 'tag-social' : 'tag-verified'}">${escapeHtml(evLabel)}</span>`);
+    } else if (verdict.verified_drop && !flatBaseline && !redundantBulkLabel) {
       tags.push('<span class="tag tag-verified">✓ Baja respaldada</span>');
-    } else {
+    } else if (bulkCnt < 4) {
       tags.push('<span class="tag tag-neutral" title="Aún no tenemos suficiente historial o tiendas comparables para confirmar si el precio antes realmente era mayor">Sin historial suficiente</span>');
     }
     return tags;
@@ -459,7 +487,8 @@
     const cleanUrl = sanitizeUrl(post.alert_url || product.url);
     const cleanCart = sanitizeUrl(post.add_to_cart_url || product.add_to_cart_url);
     const safeUrl = sanitizeAttrUrl(cleanUrl);
-    const safeCartUrl = cleanCart !== '#' && cleanCart !== cleanUrl ? sanitizeAttrUrl(cleanCart) : '';
+    const isBrokenParisCart = /paris\.cl\/cart-add\?pid=\d{1,5}(?:&|$)/i.test(cleanCart);
+    const safeCartUrl = cleanCart !== '#' && cleanCart !== cleanUrl && !isBrokenParisCart ? sanitizeAttrUrl(cleanCart) : '';
     const rawImage = product.image_url ? String(product.image_url).trim() : '';
     const safeImage = /^https?:\/\//i.test(rawImage) ? sanitizeAttrUrl(rawImage) : '';
     const safeCategory = escapeHtml(categoryLabel(d.category));
@@ -478,7 +507,8 @@
     }
     const min90 = toNum(verdict.min_90d);
     if (min90 > 0) {
-      marketHtml += `<div class="market">📉 Mínimo visto (90d): <strong>${formatCLP(min90)}</strong></div>`;
+      const lbl90 = min90 > d.best * 1.01 ? '📉 Antes nunca bajó de (90d):' : '📉 Mínimo visto (90d):';
+      marketHtml += `<div class="market">${lbl90} <strong>${formatCLP(min90)}</strong></div>`;
     }
 
     // Consejos prácticos (texto fijo, sin datos del servidor)
@@ -701,24 +731,29 @@
       moreBtn.hidden = rem <= 0;
       if (rem > 0) moreBtn.textContent = `Mostrar ${Math.min(PAGE_STEP, rem)} ofertas más (${shown} de ${matchedTotal})`;
     }
-    updateSummary(matchedTotal);
+    updateSummary(matchedTotal, shown);
     syncFilterControls();
     saveFilters();
   }
 
-  function updateSummary(visible) {
-    const total = state.posts.size;
+  function updateSummary(visible, shownCount = null) {
+    const hideExp = Boolean(state.filters.hideExpired);
+    let total = 0;
     let glitches = 0;
     let latest = null;
     state.posts.forEach(e => {
+      if (hideExp && e.post.status === 'expired') return;
+      total++;
       if (e.derived.isGlitch) glitches++;
       if (!latest || e.post.feed_id > latest.post.feed_id) latest = e;
     });
+    const shown = shownCount !== null ? shownCount : Math.min(visible, state.pageLimit);
 
     const summary = $('feed-summary');
     if (summary && state.loaded) {
       const parts = [];
-      if (visible !== total) parts.push(`Mostrando ${visible} de ${total}`);
+      if (shown < visible) parts.push(`Mostrando ${shown} de ${visible}`);
+      else if (visible !== total) parts.push(`Mostrando ${visible} de ${total}`);
       else parts.push(`${total} ${total === 1 ? 'publicación' : 'publicaciones'}`);
       parts.push(`${glitches} ${glitches === 1 ? 'error de precio' : 'errores de precio'}`);
       if (latest) parts.push(`última ${formatRelative(latest.derived.createdAt)}`);
@@ -729,10 +764,10 @@
     if (empty && state.loaded) {
       empty.hidden = visible > 0;
       const hasFilters = activeFilterCount() > 0 || state.filters.search.trim();
-      $('feed-empty-title').textContent = total === 0
+      $('feed-empty-title').textContent = state.posts.size === 0
         ? 'Todavía no hay publicaciones'
         : 'No hay ofertas con estos filtros';
-      $('feed-empty-text').textContent = total === 0
+      $('feed-empty-text').textContent = state.posts.size === 0
         ? 'El radar publicará aquí cada oferta apenas la detecte. Esta página se actualiza sola.'
         : 'Prueba quitando algún filtro o buscando otra palabra.';
       $('btn-empty-clear').hidden = !hasFilters;
@@ -748,7 +783,9 @@
   function renderFilterChips() {
     const storeCounts = new Map();
     const catCounts = new Map();
+    const hideExp = Boolean(state.filters.hideExpired);
     state.posts.forEach(e => {
+      if (hideExp && e.post.status === 'expired') return;
       storeCounts.set(e.derived.storeId, (storeCounts.get(e.derived.storeId) || 0) + 1);
       if (e.derived.category) catCounts.set(e.derived.category, (catCounts.get(e.derived.category) || 0) + 1);
     });
@@ -885,11 +922,13 @@
   let matchingSeq = 0;
   async function loadMatching() {
     const f = state.filters;
-    if (f.kind === 'all' && !f.minDiscount && !f.stores.length) return;
+    if (f.kind === 'all' && !f.minDiscount && !f.stores.length && !f.verifiedOnly) return;
     const params = new URLSearchParams({ limit: String(MATCHING_LIMIT) });
     if (f.kind !== 'all') params.set('kind', f.kind);
     if (f.minDiscount) params.set('min_discount', String(f.minDiscount));
     if (f.stores.length) params.set('stores', f.stores.join(','));
+    if (f.verifiedOnly) params.set('verified_only', 'true');
+    if (f.hideExpired) params.set('active_only', 'true');
     const seq = ++matchingSeq;
     try {
       const res = await fetch(`/api/feed?${params}`);
@@ -1145,16 +1184,53 @@
     if (empty) empty.hidden = state.watchlistEntries.length > 0;
   }
 
+  function mergeLocalWatchlist(serverEntries) {
+    const adds = storage.getJSON('glitchhunter_local_wl_add', []);
+    const dels = new Set((storage.getJSON('glitchhunter_local_wl_del', []) || []).map(k => String(k).toLowerCase()));
+    const byKw = new Map();
+    for (const e of serverEntries) {
+      if (!dels.has(e.keyword)) byKw.set(e.keyword, e);
+    }
+    if (Array.isArray(adds)) {
+      for (const a of adds) {
+        if (!a || !a.keyword) continue;
+        const kw = String(a.keyword).toLowerCase();
+        byKw.set(kw, { keyword: kw, max_price: a.max_price ? Number(a.max_price) : null, local: true });
+      }
+    }
+    return [...byKw.values()];
+  }
+
+  function saveLocalWatchlistChange(mode, keyword, maxPrice = null) {
+    const kw = String(keyword || '').toLowerCase();
+    let adds = storage.getJSON('glitchhunter_local_wl_add', []);
+    let dels = storage.getJSON('glitchhunter_local_wl_del', []);
+    adds = Array.isArray(adds) ? adds.filter(a => String(a.keyword || '').toLowerCase() !== kw) : [];
+    dels = Array.isArray(dels) ? dels.filter(k => String(k || '').toLowerCase() !== kw) : [];
+    if (mode === 'add') {
+      adds.push({ keyword: kw, max_price: maxPrice });
+    } else {
+      dels.push(kw);
+    }
+    storage.setJSON('glitchhunter_local_wl_add', adds);
+    storage.setJSON('glitchhunter_local_wl_del', dels);
+  }
+
   async function loadWatchlist() {
     try {
       const res = await fetch('/api/watchlist');
       if (!res.ok) return;
       const data = await res.json();
-      state.watchlistEntries = normalizeWatchlistEntries(data);
+      const serverEntries = normalizeWatchlistEntries(data);
+      state.watchlistEntries = (state.adminMode || getStoredApiKey()) ? serverEntries : mergeLocalWatchlist(serverEntries);
       state.watchlist = state.watchlistEntries.map(e => e.keyword);
       renderWatchlist();
       refreshFeedWatchlistMatches();
-    } catch { /* offline */ }
+    } catch {
+      state.watchlistEntries = mergeLocalWatchlist([]);
+      state.watchlist = state.watchlistEntries.map(e => e.keyword);
+      renderWatchlist();
+    }
   }
 
   /** Traduce un 422 del servidor (FastAPI/Pydantic) a un mensaje legible. */
@@ -1183,6 +1259,12 @@
     const maxPrice = Number(maxPriceRaw);
     const hasCap = isFinite(maxPrice) && maxPrice > 0;
     if (state.watchlist.includes(kw) && !hasCap) { showToast(`"${kw}" ya está en tu watchlist.`, 'Watchlist'); return; }
+    if (!state.adminMode && !getStoredApiKey()) {
+      saveLocalWatchlistChange('add', kw, hasCap ? maxPrice : null);
+      await loadWatchlist();
+      showToast(hasCap ? `Te avisaremos de "${kw}" hasta ${formatCLP(maxPrice)} (en este navegador).` : `Te avisaremos de "${kw}" en este navegador.`, '⭐ Guardado en watchlist');
+      return;
+    }
     try {
       const payload = hasCap ? { keyword: kw, max_price: maxPrice } : { keyword: kw };
       const res = await authenticatedFetch('/api/watchlist', {
@@ -1200,7 +1282,9 @@
       } else if (res.status === 422) {
         showToast(await friendlyValidationError(res), 'Palabra no válida');
       } else if (res.status === 401) {
-        showToast('Se necesita la clave de API para cambiar la watchlist.', 'No autorizado');
+        saveLocalWatchlistChange('add', kw, hasCap ? maxPrice : null);
+        await loadWatchlist();
+        showToast(`"${kw}" se guardó localmente en tu navegador.`, '⭐ Watchlist local');
       } else {
         showToast('No se pudo agregar la palabra.', 'Error');
       }
@@ -1210,6 +1294,12 @@
   }
 
   async function removeWatchlist(keyword) {
+    if (!state.adminMode && !getStoredApiKey()) {
+      saveLocalWatchlistChange('del', keyword);
+      await loadWatchlist();
+      showToast(`"${keyword}" se quitó de tu watchlist.`, 'Watchlist');
+      return;
+    }
     try {
       const res = await authenticatedFetch(`/api/watchlist?keyword=${encodeURIComponent(keyword)}`, { method: 'DELETE' });
       if (res.ok) {
@@ -1220,7 +1310,9 @@
         refreshFeedWatchlistMatches();
         showToast(`"${keyword}" se quitó de tu watchlist.`, 'Watchlist');
       } else if (res.status === 401) {
-        showToast('Se necesita la clave de API para cambiar la watchlist.', 'No autorizado');
+        saveLocalWatchlistChange('del', keyword);
+        await loadWatchlist();
+        showToast(`"${keyword}" se quitó de tu watchlist local.`, 'Watchlist');
       } else {
         showToast('No se pudo quitar la palabra.', 'Error');
       }
@@ -1379,7 +1471,62 @@
   function dayLabel(iso) {
     const d = new Date(`${iso}T12:00:00Z`);
     if (Number.isNaN(d.getTime())) return iso;
-    return d.toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'long' });
+    const raw = d.toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'long' });
+    return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : iso;
+  }
+
+  function renderSocialBenchmark(list, status, data) {
+    const total = toNum(data && data.total);
+    const ahead = toNum(data && data.ahead);
+    const behind = toNum(data && data.behind);
+    const captured = toNum(data && data.captured);
+    const winRate = data && data.win_rate_pct !== null && data.win_rate_pct !== undefined ? `${data.win_rate_pct}%` : '–';
+    const avgLead = data && data.avg_lead_minutes !== null && data.avg_lead_minutes !== undefined ? `${Math.round(Number(data.avg_lead_minutes))} min` : '–';
+    status.textContent = `Comparativa de velocidad frente a Descuentos Rata y Odum (${total} ofertas evaluadas).`;
+
+    const kpis = document.createElement('div');
+    kpis.className = 'social-kpis';
+    kpis.innerHTML = `
+      <div class="kpi"><span class="kpi-label">Detectadas antes</span><strong>${ahead} (${winRate})</strong></div>
+      <div class="kpi"><span class="kpi-label">Después del canal</span><strong>${behind}</strong></div>
+      <div class="kpi"><span class="kpi-label">Capturadas vía red</span><strong>${captured}</strong></div>
+      <div class="kpi"><span class="kpi-label">Ventaja promedio</span><strong>${escapeHtml(avgLead)}</strong></div>`;
+    list.appendChild(kpis);
+
+    const ul = document.createElement('div');
+    ul.className = 'social-list';
+    const recent = Array.isArray(data && data.recent) ? data.recent : [];
+    recent.forEach(item => {
+      const ch = item.channel === 'descuentos_rata' ? 'Descuentos Rata' : 'Odum';
+      const store = (STORES[item.store_id] && STORES[item.store_id].name) || item.store_id || 'Tienda';
+      const out = String(item.outcome || 'captured');
+      const lead = toNum(item.lead_minutes);
+      let badgeTxt = '📡 Capturada';
+      let badgeCls = 'is-captured';
+      if (out === 'ahead') {
+        badgeTxt = lead >= 1 ? `⚡ ${Math.round(lead)} min antes` : '⚡ Detectada antes';
+        badgeCls = 'is-ahead';
+      } else if (out === 'behind') {
+        badgeTxt = `🕐 ${Math.abs(Math.round(lead))} min después`;
+        badgeCls = 'is-behind';
+      }
+      const row = document.createElement('div');
+      row.className = 'social-row';
+      row.innerHTML = `
+        <div>
+          <a class="social-row-title" href="${sanitizeAttrUrl(item.store_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title || 'Oferta')}</a>
+          <div class="social-row-meta">
+            <span>${escapeHtml(ch)}</span>
+            <span>·</span>
+            <span>${escapeHtml(store)}</span>
+            <span>·</span>
+            <strong>${escapeHtml(formatCLP(item.deal_price))}</strong>
+          </div>
+        </div>
+        <span class="social-badge ${badgeCls}">${escapeHtml(badgeTxt)}</span>`;
+      ul.appendChild(row);
+    });
+    list.appendChild(ul);
   }
 
   async function loadBest(tab) {
@@ -1390,7 +1537,8 @@
     if (!list) return;
     const req = ++bestRequest;
     status.textContent = 'Revisando el canal…';
-    const url = tab === 'history' ? '/api/best/history?days=14&per_day=5'
+    const url = tab === 'social' ? '/api/benchmark/social'
+      : tab === 'history' ? '/api/best/history?days=14&per_day=5'
       : tab === 'active' ? '/api/best?days=3&limit=20&active=true'
       : `/api/best?days=${encodeURIComponent(tab)}&limit=25`;
     try {
@@ -1399,7 +1547,9 @@
       const data = await res.json();
       if (req !== bestRequest) return;
       list.replaceChildren();
-      if (tab === 'history') {
+      if (tab === 'social') {
+        renderSocialBenchmark(list, status, data);
+      } else if (tab === 'history') {
         data.forEach(day => {
           const h = document.createElement('h3');
           h.className = 'section-title';
@@ -1651,6 +1801,17 @@
     if (only) only.addEventListener('change', () => { deep.shown = DEEP_PAGE; deepRender(); });
     const more = $('btn-deep-more');
     if (more) more.addEventListener('click', () => { deep.shown += DEEP_PAGE; deepRender(); });
+    const deepList = $('deep-results');
+    if (deepList) {
+      deepList.addEventListener('error', (e) => {
+        if (e.target && e.target.tagName === 'IMG') {
+          const fallback = document.createElement('span');
+          fallback.className = 'deep-img-empty';
+          fallback.setAttribute('aria-hidden', 'true');
+          e.target.replaceWith(fallback);
+        }
+      }, true);
+    }
     if (search.value) deepSetQuery(search.value);
   }
 
@@ -1896,6 +2057,7 @@
     if (vfCheck) vfCheck.addEventListener('change', (e) => {
       state.filters.verifiedOnly = e.target.checked;
       applyFilters({ resetPage: true });
+      loadMatching();
     });
     $('filter-watchlist').addEventListener('change', (e) => {
       state.filters.watchlistOnly = e.target.checked;
@@ -1903,6 +2065,7 @@
     });
     $('filter-hide-expired').addEventListener('change', (e) => {
       state.filters.hideExpired = e.target.checked;
+      renderFilterChips();
       applyFilters({ resetPage: true });
     });
     $('btn-clear-filters').addEventListener('click', clearFilters);

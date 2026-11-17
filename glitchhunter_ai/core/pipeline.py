@@ -24,7 +24,7 @@ from glitchhunter_ai.ai_detector.math_detector import MathAnomalyDetector
 from glitchhunter_ai.ai_detector.semantic_filter import SemanticGlitchFilter
 from glitchhunter_ai.core.cart_sniper import generate_direct_add_to_cart_url
 from glitchhunter_ai.core.categories import ACCESSORY_CATEGORY, NON_TECH_CATEGORIES, _normalize as _norm_text, classify_category
-from glitchhunter_ai.core.price_signals import BULK_MIN_PRODUCTS, detect_bulk_prices, risk_tier
+from glitchhunter_ai.core.price_signals import BULK_EXTREME_DISCOUNT, BULK_MIN_PRODUCTS, _is_retail_price_point, detect_bulk_prices, risk_tier
 from glitchhunter_ai.scrapers.live_feed import KNASTA_DEAL_STATES
 from glitchhunter_ai.core.database import PriceDatabase
 from glitchhunter_ai.core.market_reference import default_market_reference
@@ -354,7 +354,10 @@ class GlitchHuntingPipeline:
             ):
                 k_disc = round(((product.normal_price - product.best_price) / product.normal_price) * 100.0, 1)
                 k_sav = round(product.normal_price - product.best_price, 0)
-                if (k_disc >= 10.0 and k_sav >= 20000.0) or (k_disc >= 20.0 and k_sav >= 10000.0):
+                if (
+                    (getattr(product, "knasta_state", None) == "OPPORTUNITY_BEST" and k_disc >= 15.0 and k_sav >= 25000.0)
+                    or (k_disc >= 20.0 and k_sav >= 20000.0)
+                ):
                     self._publish_knasta_opportunity_deal(product, k_disc, k_sav)
             # Si el producto estaba ACTIVO en el radar y el precio ya no es glitch,
             # la tienda corrigió el precio (volvió a precio normal / liquidación común)
@@ -514,6 +517,19 @@ class GlitchHuntingPipeline:
             )
         )
         has_bulk_drop = bool(bulk_count >= BULK_MIN_PRODUCTS and not store_inflated)
+        # Contradicción histórica: si el baseline 30d o mediana 90d ya es igual o menor que el precio actual,
+        # no se puede autoverificar por carga masiva en punto retail ni por missing_zero solo de lista.
+        hist_span = float(hist_stats.get("days_span") or 0.0)
+        flat_history_contradiction = bool(
+            (baseline_price and baseline_price > 0 and best_now >= float(baseline_price) * 0.93)
+            or (
+                hist_span >= 0.5
+                and hist_stats.get("median_30d")
+                and best_now >= float(hist_stats["median_30d"]) * 0.93
+            )
+        )
+        if has_bulk_drop and _is_retail_price_point(int(round(best_now))) and flat_history_contradiction:
+            has_bulk_drop = False
 
         # Tiendas con inflación crónica de MSRP no pueden autoverificar alertas sin historial ni mercado
         if store_inflated and not (has_hist_drop or has_mkt_drop or has_knasta_drop) and not is_simulated_test:
@@ -543,14 +559,20 @@ class GlitchHuntingPipeline:
         # Evitar falsos "Missing Zero" en ropa/hogar baratos o si historial/mercado/pre-evento contradice
         nontech_cheap_trap = bool(
             classify_category(product.title) in NON_TECH_CATEGORIES
-            and product.category in NON_TECH_CATEGORIES
-            and best_now <= 25000.0
-            and product.normal_price < 200000.0
+            and str(product.category or "").lower() in (NON_TECH_CATEGORIES | {"electrodomesticos", "general"})
+            and best_now <= 45000.0
+            and product.normal_price < 450000.0
             and not has_hist_drop
             and not has_mkt_drop
             and not has_knasta_drop
         )
-        if market_inflation or pre_event_spike or nontech_cheap_trap or (store_inflated and not (has_hist_drop or has_mkt_drop)):
+        if (
+            market_inflation
+            or pre_event_spike
+            or nontech_cheap_trap
+            or (flat_history_contradiction and not (has_mkt_drop or has_knasta_drop))
+            or (store_inflated and not (has_hist_drop or has_mkt_drop))
+        ):
             missing_zero = False
 
         verified_drop = bool(
@@ -996,8 +1018,6 @@ class GlitchHuntingPipeline:
         Revisa el canal con las reglas actuales y retira lo que nunca fue una rebaja real (servicios,
         liquidaciones de precio único publicadas como error de carga). Mantenimiento: `run.py retirar-falsos`.
         """
-        from glitchhunter_ai.core.price_signals import BULK_EXTREME_DISCOUNT, _is_retail_price_point
-
         services, outlets, generics = [], [], []
         for post in self.db.get_feed(limit=1_000_000):
             payload = post.get("payload") or {}
@@ -1036,14 +1056,33 @@ class GlitchHuntingPipeline:
                 continue
             verdict = payload.get("verdict") or {}
             reason = str(verdict.get("reason") or "")
-            if (
+            ev_src = str(verdict.get("evidence_source") or payload.get("evidence_source") or "")
+            b30 = float(verdict.get("baseline_30d") or 0.0)
+            is_flat_hist = bool(
+                b30 > 0
+                and best_p > 0
+                and best_p >= b30 * 0.95
+                and ev_src in ("missing_zero_tech", "carga_masiva", "solo_precio_lista")
+            )
+            is_unverified_legacy_glitch = (
                 post["kind"] == "glitch"
-                and payload.get("bulk_price_count")
-                and not verdict.get("is_missing_zero")
-                and "habitual" not in reason
-                and float(post.get("discount_pct") or 0) < BULK_EXTREME_DISCOUNT
-                and _is_retail_price_point(int(round(float(post.get("best_price") or 0))))
-            ):
+                and ("verified_drop" in verdict)
+                and verdict.get("verified_drop") is False
+            )
+            is_retail_bulk = bool(
+                post["kind"] == "glitch"
+                and _is_retail_price_point(int(round(best_p)))
+                and (
+                    (ev_src == "carga_masiva" and not (b30 > 0 and best_p < b30 * 0.85))
+                    or (
+                        payload.get("bulk_price_count")
+                        and not verdict.get("is_missing_zero")
+                        and "habitual" not in reason
+                        and float(post.get("discount_pct") or 0) < BULK_EXTREME_DISCOUNT
+                    )
+                )
+            )
+            if is_retail_bulk or is_flat_hist or is_unverified_legacy_glitch:
                 outlets.append(post["id"])
         self.db.withdraw_feed_offers(services + outlets + generics)
         res = {"servicios": len(services), "liquidaciones": len(outlets)}
