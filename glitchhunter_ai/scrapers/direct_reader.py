@@ -347,6 +347,42 @@ BIG_STORE_HOT_SECTIONS: Dict[str, tuple] = {
     ),
 }
 
+PARIS_CNSTRC_BASE = "https://ac.cnstrc.com/browse/group_id"
+PARIS_CNSTRC_KEY = "key_8pjkPsSkEsJHKgxR"
+PARIS_CNSTRC_STOCK_COMUNAS = (
+    "13114_I", "13114_L", "DS_S_I", "DS_S_L", "DS_M_I", "DS_M_L", "DS_L_I", "DS_L_L",
+)
+PARIS_CNSTRC_HOT_GROUPS: Tuple[Tuple[str, str, bool], ...] = (
+    ("tecnologia", "tecOfertastecnologia", False),
+    ("smartphones", "tecCelSmartphones", True),
+    ("notebooks", "tecCompNotebooks", True),
+    ("televisores", "elcTelevisionSmartTV", True),
+    ("consolas", "tecConsolas", True),
+    ("gaming", "tecGamers", True),
+    ("audio", "elcAudio-1", True),
+    ("linea_blanca", "TodosLineaBlanca", True),
+    ("electrodomesticos", "lineablanca", True),
+    ("otros", "CategDescuentoParis", False),
+    ("otros", "CategOfertas", False),
+    ("deportes", "deportes", True),
+)
+PARIS_CNSTRC_CATEGORY_GROUPS: Dict[str, str] = {
+    "smartphones": "tecCelSmartphones",
+    "notebooks": "tecCompNotebooks",
+    "televisores": "elcTelevisionSmartTV",
+    "consolas": "tecConsolas",
+    "linea_blanca": "TodosLineaBlanca",
+    "audio": "elcAudio-1",
+    "monitores": "tecComputadores",
+    "componentes": "tecGamers",
+    "gaming": "tecGamers",
+    "smartwatch": "tecCelSmartwatchWearables",
+    "electrodomesticos": "lineablanca",
+    "hogar": "muebles",
+    "deportes": "deportes",
+    "vestuario": "Outlet",
+}
+
 # Tiendas con carril rápido (una petición a sus ofertas en cada turno corto)
 HOT_LANE_STORES = (
     tuple(BIG_STORE_HOT_SECTIONS)
@@ -1385,6 +1421,60 @@ def parse_ripley_product(html: str, url: str) -> Optional[ProductItem]:
     )
 
 
+def parse_paris_cnstrc_products(data: Dict[str, Any], category_hint: str = "tecnologia") -> List[ProductItem]:
+    """Parsea la respuesta JSON de Constructor.io usada por el catálogo web de Paris.cl."""
+    results = ((data or {}).get("response") or {}).get("results") or []
+    items: List[ProductItem] = []
+    now = datetime.now(timezone.utc)
+    for raw in results:
+        if not isinstance(raw, dict):
+            continue
+        d = raw.get("data") or {}
+        title = str(raw.get("value") or d.get("title") or "").strip()
+        raw_url = str(d.get("url") or "").strip()
+        slug = str(d.get("slug") or "").strip().lstrip("/")
+        if raw_url:
+            url = re.sub(r"^https?://(?:beta\.|www\.)?paris\.cl", STORE_BASE["paris"], raw_url, flags=re.IGNORECASE)
+        elif slug:
+            url = f"{STORE_BASE['paris']}/{slug}.html" if not slug.endswith(".html") else f"{STORE_BASE['paris']}/{slug}"
+        else:
+            continue
+        pid = canonical_product_id("paris", url) or (f"paris-{str(d.get('id')).lower()}" if d.get("id") else None)
+        current = _clean_price(d.get("displayedPrice"))
+        if not title or not pid or current <= 0:
+            continue
+        try:
+            disc = float(d.get("discountPercentage") or 0.0)
+        except (TypeError, ValueError):
+            disc = 0.0
+        if 0.0 < disc <= 92.0:
+            normal = float(round(current / (1.0 - disc / 100.0), -1))
+        else:
+            normal = current
+        brand = str(d.get("brand") or "").strip() or None
+        sellers = d.get("sellers") or []
+        seller = str(sellers[0]).strip() if isinstance(sellers, list) and sellers else None
+        image = d.get("image_url")
+        items.append(ProductItem(
+            id=pid,
+            store_id="paris",
+            store_name=STORE_NAMES["paris"],
+            title=title,
+            category=_infer_category(title, category_hint),
+            current_price=current,
+            normal_price=max(normal, current),
+            card_price=None,
+            url=url,
+            image_url=image,
+            in_stock=True,
+            brand=brand,
+            seller=seller,
+            timestamp=now,
+            source="direct",
+        ))
+    return items
+
+
 LISTING_PARSERS = {
     "falabella": parse_falabella_listing,
     "ripley": parse_ripley_listing,
@@ -1776,8 +1866,70 @@ class DirectStoreReader:
             return f"{base_url}{sep}start={(page - 1) * 48}"
         return f"{base_url}{sep}page={page}"
 
+    def _use_paris_cnstrc(self) -> bool:
+        return self.client is default_stealth_client and "_listing" not in self.__dict__
+
+    def _paris_cnstrc_query(
+        self,
+        group_id: str,
+        category_hint: str,
+        page: int = 1,
+        sort_by: str = "best-discount",
+        only_1p: bool = False,
+    ) -> List[ProductItem]:
+        """Consulta el backend Constructor.io de Paris (100 productos en stock por página)."""
+        if self.backoff.is_paused("paris"):
+            return []
+        params: List[Tuple[str, Any]] = [
+            ("key", PARIS_CNSTRC_KEY),
+            ("num_results_per_page", 100),
+            ("page", max(1, int(page))),
+            ("sort_by", sort_by),
+            ("sort_order", "descending"),
+        ]
+        for comuna in PARIS_CNSTRC_STOCK_COMUNAS:
+            params.append(("filters[stockLevelForServiceableComunas]", comuna))
+        if only_1p:
+            params.append(("filters[sellers]", "Paris"))
+        qs = urllib.parse.urlencode(params)
+        url = f"{PARIS_CNSTRC_BASE}/{urllib.parse.quote(group_id)}?{qs}"
+        try:
+            resp = self.client.get(url, timeout=self.timeout)
+        except Exception as exc:
+            logger.debug("Error de red en Constructor.io de Paris (%s): %s", group_id, exc)
+            return []
+        status = getattr(resp, "status_code", 0)
+        if status in (403, 429):
+            self.backoff.record_block("paris", f"HTTP {status}")
+            return []
+        if status >= 500:
+            logger.debug("Error temporal HTTP %s en Constructor.io de Paris (%s).", status, group_id)
+            return []
+        if status != 200:
+            return []
+        try:
+            items = parse_paris_cnstrc_products(resp.json(), category_hint)
+        except Exception as exc:
+            logger.debug("Respuesta no JSON en Constructor.io de Paris (%s): %s", group_id, exc)
+            return []
+        if items:
+            self.backoff.record_success("paris")
+        return items
+
     def _big_store_hot_slice(self, store_id: str) -> List[ProductItem]:
         """Carril rápido para grandes tiendas: rota secciones filtradas/ordenadas por descuento y sus páginas."""
+        if store_id == "paris" and self._use_paris_cnstrc():
+            sec_idx, page = self._big_hot_cursor.get("paris", (0, 1))
+            sec_idx = sec_idx % len(PARIS_CNSTRC_HOT_GROUPS)
+            cat_hint, group_id, only_1p = PARIS_CNSTRC_HOT_GROUPS[sec_idx]
+            items = self._paris_cnstrc_query(
+                group_id, cat_hint, page=page, sort_by="best-discount", only_1p=only_1p,
+            )
+            if items and page < BIG_HOT_MAX_PAGES:
+                self._big_hot_cursor["paris"] = (sec_idx, page + 1)
+            else:
+                self._big_hot_cursor["paris"] = ((sec_idx + 1) % len(PARIS_CNSTRC_HOT_GROUPS), 1)
+            return items
         sections = BIG_STORE_HOT_SECTIONS.get(store_id) or ()
         if not sections:
             return []
@@ -1870,8 +2022,11 @@ class DirectStoreReader:
             logger.debug("Error de red en lectura directa de %s: %s", store_id, exc)
             return None
         status = getattr(resp, "status_code", 0)
-        if status in (403, 429) or status >= 500:
+        if status in (403, 429):
             self.backoff.record_block(store_id, f"HTTP {status}")
+            return None
+        if status >= 500:
+            logger.debug("Error temporal HTTP %s en lectura directa de %s (%s).", status, store_id, url)
             return None
         if status != 200:
             return None
@@ -1906,6 +2061,18 @@ class DirectStoreReader:
         return items
 
     def fetch_category(self, store_id: str, category_key: str) -> List[ProductItem]:
+        if store_id == "paris" and self._use_paris_cnstrc() and category_key in PARIS_CNSTRC_CATEGORY_GROUPS:
+            key = ("paris", category_key)
+            page = self._category_cursor.get(key, 1)
+            group_id = PARIS_CNSTRC_CATEGORY_GROUPS[category_key]
+            sort_by = "best-discount" if page % 2 == 1 else "relevance"
+            api_page = (page + 1) // 2
+            only_1p = category_key not in ("vestuario", "hogar")
+            items = self._paris_cnstrc_query(
+                group_id, category_key, page=api_page, sort_by=sort_by, only_1p=only_1p,
+            )
+            self._category_cursor[key] = page + 1 if items and page < 4 else 1
+            return items
         path = CATEGORY_PATHS.get(store_id, {}).get(category_key)
         if not path:
             return []

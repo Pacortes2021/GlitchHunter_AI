@@ -965,6 +965,10 @@ class IngestRequest(BaseModel):
     latency_ms: Optional[float] = Field(None, ge=0.0, le=600000.0)
 
 
+class SocialIngestRequest(BaseModel):
+    deals: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 @app.post("/api/ingest", dependencies=[Depends(verify_admin_key)])
 async def ingest_products(req: IngestRequest):
     """
@@ -1014,6 +1018,31 @@ async def get_readers():
     for lane in lanes:
         lane["store_name"] = DIRECT_STORE_NAMES.get(lane["store_id"], lane["store_id"])
     return {"active": True, "speed": CONTINUOUS_READER.scheduler.speed, "lanes": lanes}
+
+
+@app.get("/api/benchmark/social")
+async def get_social_benchmark(limit: int = Query(50, ge=1, le=200)):
+    """Latencia y cobertura de GlitchHunter frente a Descuentos Rata y Odum."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: db.get_social_benchmark_summary(limit=limit))
+
+
+@app.post("/api/benchmark/social/ingest", dependencies=[Depends(verify_admin_key)])
+async def ingest_social_benchmark(req: SocialIngestRequest):
+    """Recibe ofertas capturadas desde canales sociales por el recolector residencial."""
+    if not API_AUTH_KEY:
+        raise HTTPException(status_code=403, detail="Configura API_AUTH_KEY en este servidor.")
+    from glitchhunter_ai.scrapers.social_radar import SocialChannelRadar
+
+    deals = req.deals[:200]
+    loop = asyncio.get_running_loop()
+
+    def _run() -> Dict[str, int]:
+        with pipeline._scan_lock:
+            return SocialChannelRadar().ingest_social_deals(pipeline, deals)
+
+    stats = await loop.run_in_executor(None, _run)
+    return {"status": "ok", **stats}
 
 
 @app.post("/api/scan", dependencies=[Depends(verify_admin_key)])

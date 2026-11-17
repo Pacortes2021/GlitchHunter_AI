@@ -393,6 +393,26 @@ class PriceDatabase:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_feedback_deal ON deal_feedback(deal_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_feedback_store_cat ON deal_feedback(store_id, category);")
 
+            # 8. Benchmark de latencia contra canales sociales (Descuentos Rata / Odum)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS social_benchmark (
+                    external_id TEXT PRIMARY KEY,
+                    channel TEXT NOT NULL,
+                    store_id TEXT NOT NULL,
+                    product_id TEXT,
+                    title TEXT NOT NULL,
+                    deal_price REAL NOT NULL,
+                    normal_price REAL,
+                    store_url TEXT,
+                    external_published_at TEXT NOT NULL,
+                    our_first_seen_at TEXT,
+                    lead_minutes REAL,
+                    outcome TEXT NOT NULL,
+                    recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_social_bench_recorded ON social_benchmark(recorded_at);")
+
             cursor.execute("SELECT COUNT(*) AS cnt FROM tracked_deals;")
             if cursor.fetchone()["cnt"] == 0:
                 cursor.execute("""
@@ -2208,6 +2228,221 @@ class PriceDatabase:
             """, (cutoff, limit))
             conn.commit()
             return int(cursor.rowcount or 0)
+
+    @staticmethod
+    def _parse_utc_datetime(raw: Any) -> Optional[datetime]:
+        """Parsea timestamps ISO/SQL con o sin 'Z' o '+HHMM' a datetime UTC aware."""
+        if isinstance(raw, datetime):
+            return raw.astimezone(timezone.utc) if raw.tzinfo is not None else raw.replace(tzinfo=timezone.utc)
+        s = str(raw or "").strip()
+        if not s:
+            return None
+        if s.endswith(("Z", "z")):
+            s = s[:-1] + "+00:00"
+        s = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", s)
+        try:
+            dt = datetime.fromisoformat(s)
+            return dt.astimezone(timezone.utc) if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+        try:
+            return datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _social_title_tokens(title: str) -> List[str]:
+        stop = {
+            "para", "con", "del", "los", "las", "una", "uno", "por", "negro", "blanco", "azul",
+            "gris", "rojo", "verde", "cafe", "oferta", "descuento", "pagando", "tarjeta",
+            "tienda", "web", "gratis", "despacho", "retiro", "liberado", "smart",
+        }
+        norm = unicodedata.normalize("NFKD", (title or "").lower())
+        norm = "".join(c for c in norm if not unicodedata.combining(c))
+        tokens = [t for t in re.findall(r"[a-z0-9]{3,}", norm) if t not in stop]
+        # Priorizar códigos/números o palabras más distintivas
+        tokens = list(dict.fromkeys(tokens))
+        tokens.sort(key=lambda t: (any(c.isdigit() for c in t), len(t)), reverse=True)
+        return tokens[:4]
+
+    def evaluate_social_deal(
+        self,
+        external_id: str,
+        channel: str,
+        store_id: str,
+        product_id: Optional[str],
+        title: str,
+        deal_price: float,
+        normal_price: Optional[float],
+        store_url: Optional[str],
+        external_published_at: Any,
+    ) -> Dict[str, Any]:
+        """
+        Evalúa si una oferta publicada en redes sociales (Descuentos Rata / Odum) ya había sido
+        detectada antes por nuestro radar (`ahead`) o llegó después (`behind` / `captured`),
+        registrando el resultado en `social_benchmark` una sola vez por `external_id`.
+        """
+        ext_id = str(external_id).strip()
+        dt_ext = self._parse_utc_datetime(external_published_at) or datetime.now(timezone.utc)
+        ext_str = dt_ext.strftime("%Y-%m-%d %H:%M:%S")
+        price_ceil = float(deal_price) * 1.03
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM social_benchmark WHERE external_id = ? LIMIT 1;", (ext_id,))
+            existing = cursor.fetchone()
+            if existing:
+                return dict(existing)
+
+            seen_dts: List[datetime] = []
+            matched_pid = product_id
+
+            def _collect_ts(ts_val: Any) -> None:
+                parsed = self._parse_utc_datetime(ts_val)
+                if parsed is not None:
+                    seen_dts.append(parsed)
+
+            if matched_pid:
+                cursor.execute(
+                    "SELECT MIN(timestamp) AS ts FROM price_history WHERE product_id = ? AND price > 0 AND price <= ?;",
+                    (matched_pid, price_ceil),
+                )
+                row_ph = cursor.fetchone()
+                if row_ph and row_ph["ts"]:
+                    _collect_ts(row_ph["ts"])
+                cursor.execute(
+                    "SELECT MIN(received_at) AS ts FROM offer_feed WHERE product_id = ? AND best_price > 0 AND best_price <= ?;",
+                    (matched_pid, price_ceil),
+                )
+                row_of = cursor.fetchone()
+                if row_of and row_of["ts"]:
+                    _collect_ts(row_of["ts"])
+
+            if not seen_dts and store_id:
+                tokens = self._social_title_tokens(title)
+                if len(tokens) >= 2:
+                    like_clauses = " AND ".join("LOWER(p.title) LIKE ?" for _ in tokens)
+                    like_params: List[Any] = [str(store_id).lower()] + [f"%{t}%" for t in tokens] + [price_ceil]
+                    cursor.execute(
+                        f"""
+                        SELECT p.id, ph.timestamp AS ts
+                        FROM products p
+                        JOIN price_history ph ON ph.product_id = p.id
+                        WHERE LOWER(p.store_id) = ? AND {like_clauses}
+                          AND ph.price > 0 AND ph.price <= ?
+                        ORDER BY ph.timestamp ASC LIMIT 1;
+                        """,
+                        tuple(like_params),
+                    )
+                    r_match = cursor.fetchone()
+                    if r_match:
+                        matched_pid = matched_pid or r_match["id"]
+                        _collect_ts(r_match["ts"])
+                    cursor.execute(
+                        f"""
+                        SELECT f.product_id, f.received_at AS ts
+                        FROM offer_feed f
+                        JOIN products p ON p.id = f.product_id
+                        WHERE LOWER(f.store_id) = ? AND {like_clauses}
+                          AND f.best_price > 0 AND f.best_price <= ?
+                        ORDER BY f.received_at ASC LIMIT 1;
+                        """,
+                        tuple(like_params),
+                    )
+                    r_feed = cursor.fetchone()
+                    if r_feed:
+                        matched_pid = matched_pid or r_feed["product_id"]
+                        _collect_ts(r_feed["ts"])
+
+            our_dt = min(seen_dts) if seen_dts else None
+            if our_dt is not None:
+                our_str: Optional[str] = our_dt.strftime("%Y-%m-%d %H:%M:%S")
+                lead_minutes: Optional[float] = round((dt_ext - our_dt).total_seconds() / 60.0, 1)
+                outcome = "ahead" if lead_minutes >= 0 else "behind"
+            else:
+                our_str = None
+                lead_minutes = None
+                outcome = "captured"
+
+            record = {
+                "external_id": ext_id,
+                "channel": str(channel),
+                "store_id": str(store_id).lower(),
+                "product_id": matched_pid,
+                "title": str(title),
+                "deal_price": float(deal_price),
+                "normal_price": float(normal_price) if normal_price is not None else None,
+                "store_url": store_url,
+                "external_published_at": ext_str,
+                "our_first_seen_at": our_str,
+                "lead_minutes": lead_minutes,
+                "outcome": outcome,
+            }
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO social_benchmark (
+                    external_id, channel, store_id, product_id, title,
+                    deal_price, normal_price, store_url,
+                    external_published_at, our_first_seen_at, lead_minutes, outcome
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    record["external_id"], record["channel"], record["store_id"], record["product_id"],
+                    record["title"], record["deal_price"], record["normal_price"], record["store_url"],
+                    record["external_published_at"], record["our_first_seen_at"],
+                    record["lead_minutes"], record["outcome"],
+                ),
+            )
+            conn.commit()
+            return record
+
+    def get_social_benchmark_summary(self, limit: int = 50) -> Dict[str, Any]:
+        """Resumen de latencia y ventaja del radar frente a canales sociales externos."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT outcome, COUNT(*) AS cnt
+                FROM social_benchmark
+                GROUP BY outcome;
+                """
+            )
+            counts = {"ahead": 0, "behind": 0, "captured": 0}
+            for r in cursor.fetchall():
+                out_key = str(r["outcome"] or "")
+                if out_key in counts:
+                    counts[out_key] = int(r["cnt"] or 0)
+            total = sum(counts.values())
+            compared = counts["ahead"] + counts["behind"]
+            win_rate_pct = round((counts["ahead"] / compared) * 100.0, 1) if compared > 0 else None
+
+            cursor.execute("SELECT AVG(lead_minutes) AS avg_lead FROM social_benchmark WHERE lead_minutes IS NOT NULL;")
+            avg_row = cursor.fetchone()
+            avg_lead = round(float(avg_row["avg_lead"]), 1) if avg_row and avg_row["avg_lead"] is not None else None
+
+            cursor.execute(
+                """
+                SELECT external_id, channel, store_id, product_id, title,
+                       deal_price, normal_price, store_url,
+                       external_published_at, our_first_seen_at, lead_minutes, outcome, recorded_at
+                FROM social_benchmark
+                ORDER BY recorded_at DESC, external_published_at DESC
+                LIMIT ?;
+                """,
+                (max(1, int(limit)),),
+            )
+            recent = [dict(r) for r in cursor.fetchall()]
+
+            return {
+                "total": total,
+                "ahead": counts["ahead"],
+                "behind": counts["behind"],
+                "captured": counts["captured"],
+                "compared": compared,
+                "win_rate_pct": win_rate_pct,
+                "avg_lead_minutes": avg_lead,
+                "recent": recent,
+            }
 
 
 # =====================================================================

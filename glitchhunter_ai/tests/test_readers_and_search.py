@@ -5,7 +5,7 @@ Shopify y del buscador (catálogo guardado y búsqueda en vivo en las tiendas).
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -796,3 +796,212 @@ def test_store_inflation_stats_does_not_flag_sale_stores_with_65_cutoff(tmp_path
     db.upsert_products_batch(rows)
     stats = db.get_store_inflation_stats()
     assert stats["sodimac"]["is_chronic_inflator"] is False
+
+
+def test_parse_paris_cnstrc_products_extracts_brand_seller_and_discount():
+    from glitchhunter_ai.scrapers.direct_reader import parse_paris_cnstrc_products
+
+    payload = {
+        "response": {
+            "results": [
+                {
+                    "value": "Simulador de Conducción Driving Force Racing G29 Negro",
+                    "data": {
+                        "id": "999888",
+                        "url": "https://beta.paris.cl/simulador-g29-MK1234ABCD.html",
+                        "brand": "Logitech",
+                        "sellers": ["Paris"],
+                        "displayedPrice": 219990,
+                        "discountPercentage": 37,
+                        "image_url": "https://img.paris.cl/g29.jpg",
+                    },
+                },
+                {
+                    "value": "Audífonos Sin Link",
+                    "data": {"id": "777", "slug": "audifonos-test-777999", "displayedPrice": 19990, "discountPercentage": 50},
+                },
+            ]
+        }
+    }
+    items = parse_paris_cnstrc_products(payload, category_hint="gaming")
+    assert len(items) == 2
+    g29 = items[0]
+    assert g29.id == "paris-mk1234abcd"
+    assert g29.url == "https://www.paris.cl/simulador-g29-MK1234ABCD.html"
+    assert g29.current_price == 219990.0
+    assert g29.normal_price >= 340000.0
+    assert g29.brand == "Logitech"
+    assert g29.seller == "Paris"
+    assert items[1].url == "https://www.paris.cl/audifonos-test-777999.html"
+
+
+def test_apple_overpriced_duplicates_suppressed_and_tier1_prioritized(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "apple_tier.db")
+    db.init_db()
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
+
+    # Múltiples AirPods 4 y AirPods Max con variantes/sobreprecio + exceso de ropa tier2
+    items = [
+        ProductItem(id="par-ap4", store_id="paris", store_name="Paris", title="Apple AirPods 4",
+                    category="audio", current_price=119990, normal_price=199990, url="https://x.cl/p-ap4"),
+        ProductItem(id="fal-ap4-hi", store_id="falabella", store_name="Falabella", title="AirPods 4 2024 con USB-C",
+                    category="audio", current_price=154990, normal_price=199990, url="https://x.cl/f-ap4-hi"),
+        ProductItem(id="rip-ap4-hi", store_id="ripley", store_name="Ripley", title="APPLE AIRPODS 4",
+                    category="audio", current_price=189990, normal_price=249990, url="https://x.cl/r-ap4-hi"),
+        ProductItem(id="fal-max1", store_id="falabella", store_name="Falabella",
+                    title="AirPods Max 2 MHWN4 Inalámbricos", category="audio",
+                    current_price=697669, normal_price=907990, url="https://x.cl/f-m1"),
+        ProductItem(id="fal-max2", store_id="falabella", store_name="Falabella",
+                    title="AirPods Max 2 MHWM4 Inalámbricos", category="audio",
+                    current_price=697669, normal_price=907990, url="https://x.cl/f-m2"),
+        ProductItem(id="par-max-ok", store_id="paris", store_name="Paris",
+                    title="Apple AirPods Max Naranja", category="audio",
+                    current_price=449990, normal_price=649990, url="https://x.cl/p-max"),
+    ]
+    for i in range(18):
+        items.append(ProductItem(
+            id=f"col-ropa-{i}", store_id="colloky", store_name="Colloky",
+            title=f"Polera Niño Algodón Diseño {i}", category="ropa_calzado",
+            current_price=4990, normal_price=12990, url=f"https://www.colloky.cl/p-{i}",
+        ))
+    for i in range(6):
+        items.append(ProductItem(
+            id=f"fal-tv-{i}", store_id="falabella", store_name="Falabella",
+            title=f"Smart TV LG 55 OLED Modelo {i}", category="televisores",
+            current_price=599990, normal_price=1199990, url=f"https://www.falabella.com/tv-{i}",
+        ))
+    db.upsert_products_batch(items)
+    pipeline.publish_new_deals()
+
+    feed_ids = [p["product_id"] for p in db.get_feed()]
+    assert "par-ap4" in feed_ids
+    assert "fal-ap4-hi" not in feed_ids
+    assert "rip-ap4-hi" not in feed_ids
+    assert "par-max-ok" in feed_ids
+    assert "fal-max1" not in feed_ids and "fal-max2" not in feed_ids
+    assert sum(1 for pid in feed_ids if pid.startswith("col-ropa-")) <= 2
+
+
+def test_knasta_opportunity_and_baseline_normal_price_backfill(tmp_path):
+    db = PriceDatabase(db_path=tmp_path / "knasta_opp.db")
+    db.init_db()
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
+    pipeline.telegram_dispatcher.send_alert = MagicMock(return_value=True)
+
+    # Producto sin precio tachado (tipo PC Factory / ABC), con historial 30d previo más caro
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+    mid_ts = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO products (id, store_id, title, category, url, current_price, normal_price, last_updated) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+            ("pcf-57363", "pcfactory", "SSD NVMe 2TB Kingston", "componentes", "https://www.pcfactory.cl/producto/57363", 199990, 199990, mid_ts),
+        )
+        conn.execute(
+            "INSERT INTO price_history (product_id, price, timestamp) VALUES (?, ?, ?);",
+            ("pcf-57363", 199990, old_ts),
+        )
+        conn.execute(
+            "INSERT INTO price_history (product_id, price, timestamp) VALUES (?, ?, ?);",
+            ("pcf-57363", 199990, mid_ts),
+        )
+    dropped = ProductItem(
+        id="pcf-57363", store_id="pcfactory", store_name="PC Factory",
+        title="SSD NVMe 2TB Kingston", category="componentes",
+        current_price=119990, normal_price=119990,
+        url="https://www.pcfactory.cl/producto/57363", source="direct",
+    )
+    pipeline.process_store_products("pcfactory", [dropped], send_notifications=False)
+    row_after = db.get_product("pcf-57363")
+    assert row_after["normal_price"] == 199990.0
+
+    # Oportunidad Knasta (-15%, >=$20k ahorro, is_best_price): entra directo al feed
+    kn_item = ProductItem(
+        id="mercadolibre-mlc999111", store_id="mercadolibre", store_name="Mercado Libre Chile",
+        title="Samsung Galaxy S25 128GB Dual Sim", category="smartphones",
+        current_price=503991, normal_price=599990,
+        url="https://www.mercadolibre.cl/p/MLC999111",
+        source="knasta", knasta_state="OPPORTUNITY_BEST", knasta_has_habitual=True,
+    )
+    pipeline.process_product(kn_item, send_notifications=False)
+    feed = db.get_feed()
+    assert any(p["product_id"] == "mercadolibre-mlc999111" and p["payload"].get("evidence_source") == "knasta" for p in feed)
+
+
+def test_social_radar_parsing_and_latency_benchmark(tmp_path):
+    from glitchhunter_ai.scrapers.social_radar import (
+        SocialChannelRadar,
+        extract_store_url_from_rata_link,
+        parse_descuentos_rata_html,
+        parse_odum_html,
+    )
+
+    now = datetime(2026, 11, 17, 14, 0, 0, tzinfo=timezone.utc)
+    rata_html = """
+    <html><body>
+      <a href="/oferta/52443/smart-tv-lg-c6-42-oled">
+        <div class="card"><h6>Paris</h6><small>15min</small>
+        <div class="font-weight-bold line-clamp--3">Smart TV LG C6 42" 4K UHD OLED</div>
+        <span class="rata-font-poppins">$689.990</span>
+        <small class="oferta-precio-anterior"><small>$1.099.990</small></small>
+        </div>
+      </a>
+    </body></html>
+    """
+    rata_deals = parse_descuentos_rata_html(rata_html, now=now)
+    assert len(rata_deals) == 1
+    assert rata_deals[0]["external_id"] == "rata-52443"
+    assert rata_deals[0]["store_id"] == "paris"
+    assert rata_deals[0]["current_price"] == 689990.0
+    assert rata_deals[0]["normal_price"] == 1099990.0
+    assert rata_deals[0]["external_published_at"] == "2026-11-17 13:45:00"
+
+    rata_link_html = '<a href="https://www.paris.cl/tv-lg-c6-42-MKC6OLED.html">Ir</a>'
+    assert extract_store_url_from_rata_link(rata_link_html) == "https://www.paris.cl/tv-lg-c6-42-MKC6OLED.html"
+
+    odum_html = """
+    <div class="structItem">
+      <div class="structItem-title">
+        <span class="mercadolibre">MERCADO LIBRE📦</span>
+        <a href="/tema/tv-55-4k-rokutv-239-990.67307/">TV 55" 4K con RokuTV $239.990</a>
+      </div>
+      <time datetime="2026-11-17T10:30:00-0300">Hoy</time>
+    </div>
+    """
+    odum_deals = parse_odum_html(odum_html, now=now)
+    assert len(odum_deals) == 1
+    assert odum_deals[0]["external_id"] == "odum-67307"
+    assert odum_deals[0]["store_id"] == "mercadolibre"
+    assert odum_deals[0]["current_price"] == 239990.0
+
+    # Benchmark: nosotros detectamos el LG C6 30 min ANTES que Descuentos Rata
+    db = PriceDatabase(db_path=tmp_path / "bench.db")
+    db.init_db()
+    pipeline = GlitchHuntingPipeline(db=db, direct_reader=MagicMock())
+    early_ts = (now - timedelta(minutes=45)).strftime("%Y-%m-%d %H:%M:%S")
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO products (id, store_id, title, category, url, current_price, normal_price, last_updated) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+            ("paris-mkc6oled", "paris", 'Smart TV LG C6 42" 4K UHD OLED', "televisores",
+             "https://www.paris.cl/tv-lg-c6-42-MKC6OLED.html", 689990, 1099990, early_ts),
+        )
+        conn.execute(
+            "INSERT INTO price_history (product_id, price, timestamp) VALUES (?, ?, ?);",
+            ("paris-mkc6oled", 689990, early_ts),
+        )
+
+    radar = SocialChannelRadar(client=MagicMock())
+    ingest_deals = [
+        dict(rata_deals[0], store_url="https://www.paris.cl/tv-lg-c6-42-MKC6OLED.html", product_id="paris-mkc6oled"),
+        dict(odum_deals[0], store_url="https://www.mercadolibre.cl/p/MLC777888", product_id="mercadolibre-mlc777888"),
+    ]
+    res = radar.ingest_social_deals(pipeline, ingest_deals)
+    assert res["evaluated"] == 2
+    assert res["ahead"] == 1
+    assert res["captured"] == 1
+
+    summary = db.get_social_benchmark_summary()
+    assert summary["ahead"] == 1 and summary["captured"] == 1
+    assert summary["avg_lead_minutes"] == 30.0
+    assert summary["win_rate_pct"] == 100.0

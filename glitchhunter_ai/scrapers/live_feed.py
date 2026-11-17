@@ -80,6 +80,11 @@ KNASTA_TO_STORE_ID.update({
     "paris.cl": "paris",
     "lider.cl": "lider",
     "falabella.com": "falabella",
+    "abcdin": "abc",
+    "abc": "abc",
+    "la polar": "abc",
+    "lapolar": "abc",
+    "sodimac": "sodimac",
 })
 
 DEFAULT_HEADERS = {
@@ -190,11 +195,11 @@ def knasta_normal_price(k_item: Dict[str, Any], current_price: float) -> float:
 
 # Estados del análisis de historial de Knasta que indican una oferta real
 # (OPPORTUNITY: oportunidad clara; BELOW_HABITUAL: bajo el precio habitual).
-KNASTA_DEAL_STATES = {"OPPORTUNITY", "BELOW_HABITUAL"}
+KNASTA_DEAL_STATES = {"OPPORTUNITY", "OPPORTUNITY_BEST", "BELOW_HABITUAL"}
 
 # Knasta no cubre Ripley: su filtro 'partners=ripley' se ignora y devuelve todas las tiendas.
 KNASTA_UNSUPPORTED_STORES = {"ripley"}
-KNASTA_PAGES_PER_STORE = 2
+KNASTA_PAGES_PER_STORE = 4
 
 
 def _extract_knasta_products(html: str) -> List[Dict[str, Any]]:
@@ -380,7 +385,10 @@ class LiveRetailFeed:
         card = parse_clp_price(k_item.get("price_card"))
         desc = k_item.get("descriptive") or {}
         k_state = str(desc.get("state") or "").strip().upper() or None
+        if bool(k_item.get("is_best_price")) and k_state == "OPPORTUNITY":
+            k_state = "OPPORTUNITY_BEST"
         has_habitual = parse_clp_price(desc.get("habitual_price")) > 0.0
+        brand = str(k_item.get("brand_title") or k_item.get("brand") or "").strip() or None
         cfg = STORE_MAPPING.get(store_id, {})
         return ProductItem(
             id=canonical_product_id(store_id, ext_url) or f"{store_id}-k{k_item.get('product_id')}",
@@ -394,6 +402,7 @@ class LiveRetailFeed:
             url=ext_url,
             image_url=k_item.get("image") or k_item.get("thumbnail_image") or k_item.get("images"),
             in_stock=True,
+            brand=brand,
             timestamp=datetime.now(timezone.utc),
             source="knasta",
             knasta_state=k_state,

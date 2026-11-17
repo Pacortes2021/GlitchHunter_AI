@@ -226,6 +226,7 @@ class PCFactoryScraper:
                 # La API de búsqueda entrega el slug completo ("57363-motorola-…"), que es la URL pública
                 slug = raw.get("slug")
                 product_url = f"{self.base_url}/producto/{slug or pid}"
+                brand = str(raw.get("marca") or "").strip() or None
 
                 items.append(
                     ProductItem(
@@ -240,6 +241,8 @@ class PCFactoryScraper:
                         url=product_url,
                         image_url=image_url,
                         in_stock=str(raw.get("stock", "1")).strip() not in ("0", "", "None"),
+                        brand=brand,
+                        seller="PC Factory",
                         timestamp=now,
                         source="direct",
                     )

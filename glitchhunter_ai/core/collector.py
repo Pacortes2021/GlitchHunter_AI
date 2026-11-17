@@ -144,6 +144,7 @@ class CollectorRunner:
         self._stop = threading.Event()
         self._seen_search_jobs: set = set()
         self._aux_threads: List[threading.Thread] = []
+        self._social_radar = None
 
     def _auth_get_json(self, url: str, timeout: float = 4.0) -> Any:
         headers = {"Accept": "application/json", "X-API-Key": self.forward_api_key}
@@ -223,6 +224,19 @@ class CollectorRunner:
         if lider_items:
             self.forwarder.submit("lider", lider_items, latency_ms=(time.monotonic() - t0) * 1000.0 / 5.0)
             total_items += len(lider_items)
+
+        try:
+            from glitchhunter_ai.scrapers.social_radar import SocialChannelRadar
+
+            if self._social_radar is None:
+                self._social_radar = SocialChannelRadar()
+            social_deals = self._social_radar.fetch_recent_social_deals(max_resolve=12)
+            if social_deals:
+                body = json.dumps({"deals": social_deals}).encode("utf-8")
+                headers = {"Content-Type": "application/json", "X-API-Key": self.forward_api_key}
+                _urllib_post(f"{self.forward_url}/api/benchmark/social/ingest", body, headers, 10.0)
+        except Exception as exc:
+            logger.debug("Radar social omitido en recolector: %s", exc)
         return total_items
 
     def _search_relay_loop(self) -> None:

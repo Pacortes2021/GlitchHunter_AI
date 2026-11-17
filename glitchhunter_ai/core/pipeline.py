@@ -23,7 +23,7 @@ from glitchhunter_ai.ai_detector.inflation_verifier import InflationVerifier
 from glitchhunter_ai.ai_detector.math_detector import MathAnomalyDetector
 from glitchhunter_ai.ai_detector.semantic_filter import SemanticGlitchFilter
 from glitchhunter_ai.core.cart_sniper import generate_direct_add_to_cart_url
-from glitchhunter_ai.core.categories import ACCESSORY_CATEGORY, NON_TECH_CATEGORIES, classify_category
+from glitchhunter_ai.core.categories import ACCESSORY_CATEGORY, NON_TECH_CATEGORIES, _normalize as _norm_text, classify_category
 from glitchhunter_ai.core.price_signals import BULK_MIN_PRODUCTS, detect_bulk_prices, risk_tier
 from glitchhunter_ai.scrapers.live_feed import KNASTA_DEAL_STATES
 from glitchhunter_ai.core.database import PriceDatabase
@@ -112,6 +112,17 @@ COLOR_VARIANT_SUFFIX_RE = re.compile(
 )
 
 
+MAJOR_RETAIL_STORES = {
+    "falabella", "paris", "ripley", "lider", "mercadolibre", "pcfactory",
+    "sodimac", "abc", "jumbo", "santaisabel", "winpy", "hp", "sony",
+    "motorola", "nike", "adidas", "samsung", "lg",
+}
+APPLE_PART_CODE_RE = re.compile(
+    r"\b(?:m[a-z0-9]{3,4}\d(?:[a-z]{1,2}/a)?|202[3456]|con\s+usb-?c)\b",
+    re.IGNORECASE,
+)
+
+
 def _is_videogame_title(title: str) -> bool:
     """True si el título corresponde a un videojuego (no a una consola)."""
     low = (title or "").lower()
@@ -121,16 +132,40 @@ def _is_videogame_title(title: str) -> bool:
 
 
 def _variant_stem(title: str) -> Optional[str]:
-    """Raíz de título sin sufijo de color para evitar publicar múltiples colores del mismo producto en ráfaga."""
+    """Raíz de título sin sufijo de color o código Apple para evitar publicar variantes en ráfaga."""
     raw = (title or "").strip().lower()
-    if not COLOR_VARIANT_SUFFIX_RE.search(raw):
+    if not (COLOR_VARIANT_SUFFIX_RE.search(raw) or APPLE_PART_CODE_RE.search(raw)):
         return None
-    stem = COLOR_VARIANT_SUFFIX_RE.sub("", raw).strip(" -/|,").strip()
+    stem = APPLE_PART_CODE_RE.sub("", raw)
+    stem = COLOR_VARIANT_SUFFIX_RE.sub("", stem)
+    stem = re.sub(r"\s+", " ", stem).strip(" -/|,").strip()
     return stem or None
 
 
-def _interleave_by_store(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Intercala candidatas por tienda (round-robin) manteniendo el orden interno de cada una."""
+def _priority_family_key(title: str) -> Optional[str]:
+    """Agrupa modelos estrella para evitar publicar múltiples clones o precios inflados."""
+    low = _norm_text(title or "")
+    if PRIORITY_ACCESSORY_RE.search(low):
+        return None
+    if "airpods 4" in low:
+        if "cancelacion" in low or re.search(r"\banc\b", low):
+            return "airpods 4 anc"
+        return "airpods 4"
+    if "airpods 5" in low:
+        return "airpods 5"
+    if "airpods pro" in low:
+        return "airpods pro 2"
+    if "airpods max" in low:
+        return "airpods max"
+    if ("ps5" in low or "playstation 5" in low) and "consola" in low:
+        return "ps5 pro" if re.search(r"\bpro\b", low) else "ps5 slim"
+    if "switch" in low and "oled" in low and "consola" in low:
+        return "switch oled"
+    return None
+
+
+def _round_robin_buckets(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Round-robin simple por tienda preservando el orden interno de cada tienda."""
     buckets: Dict[str, deque] = {}
     order: List[str] = []
     for row in rows:
@@ -150,6 +185,41 @@ def _interleave_by_store(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 if q:
                     next_active.append(sid)
         active = next_active
+    return out
+
+
+def _interleave_by_store(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Intercala candidatas por tienda (round-robin). En lotes amplios (>20) prioriza
+    grandes retailers y tecnología (tier 1) 3:1 sobre tiendas de moda secundarias (tier 2).
+    """
+    if len(rows) <= 20:
+        return _round_robin_buckets(rows)
+    tier1: List[Dict[str, Any]] = []
+    tier2: List[Dict[str, Any]] = []
+    tier2_counts: Dict[str, int] = {}
+    for row in rows:
+        sid = str(row.get("store_id") or "").lower()
+        cat = classify_category(str(row.get("title") or ""))
+        if sid in MAJOR_RETAIL_STORES or cat not in NON_TECH_CATEGORIES:
+            tier1.append(row)
+        else:
+            cnt = tier2_counts.get(sid, 0)
+            if cnt < 2:
+                tier2.append(row)
+                tier2_counts[sid] = cnt + 1
+    rr1 = _round_robin_buckets(tier1)
+    rr2 = _round_robin_buckets(tier2)
+    out: List[Dict[str, Any]] = []
+    i1, i2 = 0, 0
+    while i1 < len(rr1) or i2 < len(rr2):
+        for _ in range(3):
+            if i1 < len(rr1):
+                out.append(rr1[i1])
+                i1 += 1
+        if i2 < len(rr2):
+            out.append(rr2[i2])
+            i2 += 1
     return out
 console = Console()
 
@@ -198,6 +268,7 @@ class GlitchHuntingPipeline:
         self._forward_seen_prices: Dict[str, float] = {}
         self._store_inflation_cache: Dict[str, Dict[str, Any]] = {}
         self._store_inflation_cache_ts: float = 0.0
+        self._social_radar = None
 
     def _get_store_inflation_map(self, ttl_seconds: float = 300.0) -> Dict[str, Dict[str, Any]]:
         """Perfil empírico cacheado de tiendas con inflación crónica de precios de lista."""
@@ -257,6 +328,12 @@ class GlitchHuntingPipeline:
 
         # Fase 1: Consulta de precio histórico base previo (30d) y persistencia
         baseline_price = _baseline_price if _baseline_price is not None else self.db.get_baseline_price(product.id, days=30)
+        if (
+            (product.normal_price is None or product.normal_price <= product.current_price)
+            and baseline_price
+            and baseline_price > product.current_price * 1.05
+        ):
+            product.normal_price = float(baseline_price)
         if not _already_upserted:
             self.db.upsert_product(product)
 
@@ -269,6 +346,16 @@ class GlitchHuntingPipeline:
         )
 
         if not is_candidate:
+            if (
+                product.source == "knasta"
+                and getattr(product, "knasta_state", None) in ("OPPORTUNITY", "OPPORTUNITY_BEST", "BELOW_HABITUAL")
+                and product.normal_price
+                and product.normal_price > product.best_price
+            ):
+                k_disc = round(((product.normal_price - product.best_price) / product.normal_price) * 100.0, 1)
+                k_sav = round(product.normal_price - product.best_price, 0)
+                if (k_disc >= 10.0 and k_sav >= 20000.0) or (k_disc >= 20.0 and k_sav >= 10000.0):
+                    self._publish_knasta_opportunity_deal(product, k_disc, k_sav)
             # Si el producto estaba ACTIVO en el radar y el precio ya no es glitch,
             # la tienda corrigió el precio (volvió a precio normal / liquidación común)
             if self.db.get_deal_status(product.id) == "ACTIVE":
@@ -843,7 +930,22 @@ class GlitchHuntingPipeline:
                 f"{len(all_detected_glitches)} glitches confirmados."
             )
             if use_live:
+                social_deals: List[Dict[str, Any]] = []
+                if not self.forward_only:
+                    try:
+                        from glitchhunter_ai.scrapers.social_radar import SocialChannelRadar
+
+                        if self._social_radar is None:
+                            self._social_radar = SocialChannelRadar()
+                        social_deals = self._social_radar.fetch_recent_social_deals(max_resolve=12)
+                    except Exception as exc:
+                        logger.debug("Radar social omitido en ciclo: %s", exc)
                 with self._scan_lock:
+                    if social_deals and self._social_radar is not None:
+                        try:
+                            self._social_radar.ingest_social_deals(self, social_deals)
+                        except Exception as exc:
+                            logger.debug("Ingesta social omitida en ciclo: %s", exc)
                     self.publish_new_deals()
                     self.refresh_feed_statuses()
             return all_detected_glitches
@@ -911,6 +1013,13 @@ class GlitchHuntingPipeline:
                 or discount_val < 40.0
             )
             is_argb_ctrl = bool(re.search(r"\bcontrolador\s+argb\s+para\s+ventiladores\b", title, re.IGNORECASE))
+            fam = _priority_family_key(title)
+            best_p = float(post.get("best_price") or 0)
+            is_overpriced_apple = post["kind"] == "deal" and fam is not None and best_p > 0 and (
+                (fam in ("airpods 4", "airpods 5") and best_p > 140000)
+                or (fam == "airpods 4 anc" and best_p > 175000)
+                or (fam == "airpods max" and best_p > 540000)
+            )
             if (
                 self.is_generic_marketplace_trap(
                     title,
@@ -921,6 +1030,7 @@ class GlitchHuntingPipeline:
                 or is_low_disc_game
                 or is_cat_noise
                 or is_argb_ctrl
+                or is_overpriced_apple
             ):
                 generics.append(post["id"])
                 continue
@@ -941,8 +1051,13 @@ class GlitchHuntingPipeline:
             res["genericos"] = len(generics)
         return res
 
-    def _publish_unverified_as_deal(self, product: ProductItem, discount_pct: float, savings_clp: float) -> None:
-        """Publica como 'Oferta' un descuento ≥65% sin evidencia independiente (si pasa el filtro de calidad)."""
+    def _build_deal_payload(
+        self,
+        product: ProductItem,
+        discount_pct: float,
+        savings_clp: float,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         row = {
             "product_id": product.id,
             "store_id": product.store_id,
@@ -958,6 +1073,13 @@ class GlitchHuntingPipeline:
             "discount_pct": round(discount_pct, 1),
             "savings_clp": round(savings_clp, 0),
         }
+        if extra:
+            row.update(extra)
+        return row
+
+    def _publish_unverified_as_deal(self, product: ProductItem, discount_pct: float, savings_clp: float) -> None:
+        """Publica como 'Oferta' un descuento ≥65% sin evidencia independiente (si pasa el filtro de calidad)."""
+        row = self._build_deal_payload(product, discount_pct, savings_clp)
         if self._is_publishable_deal(row, product.best_price):
             self.db.publish_feed_offer(
                 kind="deal",
@@ -967,6 +1089,34 @@ class GlitchHuntingPipeline:
                 discount_pct=discount_pct,
                 payload=row,
             )
+
+    def _publish_knasta_opportunity_deal(
+        self, product: ProductItem, discount_pct: float, savings_clp: float
+    ) -> Optional[int]:
+        """Publica oportunidades reales de Knasta bajo su precio habitual (sin inflar MSRP)."""
+        if product.id.startswith("test-") or getattr(product, "is_mock", False):
+            return None
+        label = (
+            "Precio mínimo histórico en Knasta"
+            if getattr(product, "knasta_state", None) == "OPPORTUNITY_BEST"
+            else "Bajo su precio habitual en Knasta"
+        )
+        row = self._build_deal_payload(
+            product,
+            discount_pct,
+            savings_clp,
+            extra={"verified_drop": True, "evidence_source": "knasta", "evidence_label": label},
+        )
+        if self._is_publishable_deal(row, product.best_price):
+            return self.db.publish_feed_offer(
+                kind="deal",
+                product_id=product.id,
+                store_id=product.store_id,
+                best_price=product.best_price,
+                discount_pct=discount_pct,
+                payload=row,
+            )
+        return None
 
     def _is_publishable_deal(self, row: Dict[str, Any], best_price: float) -> bool:
         """
@@ -1040,6 +1190,11 @@ class GlitchHuntingPipeline:
                 return term
         return None
 
+    def _remember_rejected_deal(self, key: tuple) -> None:
+        self._rejected_deals[key] = None
+        if len(self._rejected_deals) > self._rejected_deals_max:
+            self._rejected_deals.popitem(last=False)
+
     def publish_new_deals(self, min_discount: float = 40.0, max_discount: float = 101.0) -> int:
         """
         Publica en el canal las ofertas (40% o más) que aún no se habían publicado, o que ahora están
@@ -1109,7 +1264,18 @@ class GlitchHuntingPipeline:
                     seen_pids.add(pid)
                     combined.append(r)
             rows = combined
+            family_min_price: Dict[str, float] = {}
+            for r in rows:
+                fam = _priority_family_key(str(r.get("title") or ""))
+                if not fam:
+                    continue
+                cur = float(r.get("current_price") or 0.0)
+                crd = r.get("card_price")
+                bp = float(crd) if crd and 0 < float(crd) < cur else cur
+                if bp > 0 and (fam not in family_min_price or bp < family_min_price[fam]):
+                    family_min_price[fam] = bp
             seen_variant_stems: set = set()
+            seen_family_per_store: set = set()
             checked = 0
             for row in rows:
                 current = float(row.get("current_price") or 0.0)
@@ -1124,17 +1290,22 @@ class GlitchHuntingPipeline:
                     break
                 checked += 1
                 if not self._is_publishable_deal(row, best):
-                    self._rejected_deals[key] = None
-                    if len(self._rejected_deals) > self._rejected_deals_max:
-                        self._rejected_deals.popitem(last=False)
+                    self._remember_rejected_deal(key)
                     continue
-                stem = _variant_stem(str(row.get("title") or ""))
+                title_str = str(row.get("title") or "")
+                store_key = str(row.get("store_id") or "").lower()
+                fam = _priority_family_key(title_str)
+                if fam is not None:
+                    min_fam = family_min_price.get(fam, best)
+                    if best > min_fam * 1.08 or (store_key, fam) in seen_family_per_store:
+                        self._remember_rejected_deal(key)
+                        continue
+                    seen_family_per_store.add((store_key, fam))
+                stem = _variant_stem(title_str)
                 if stem:
-                    vkey = (str(row.get("store_id") or "").lower(), stem, round(best))
+                    vkey = (store_key, stem, round(best))
                     if vkey in seen_variant_stems:
-                        self._rejected_deals[key] = None
-                        if len(self._rejected_deals) > self._rejected_deals_max:
-                            self._rejected_deals.popitem(last=False)
+                        self._remember_rejected_deal(key)
                         continue
                     seen_variant_stems.add(vkey)
                 # Categoría consistente para los filtros de la página (los scrapers usan rótulos distintos)
@@ -1315,6 +1486,14 @@ class GlitchHuntingPipeline:
                     for p in products
                     if p.in_stock
                 }
+                for prod in products:
+                    b_val = baseline_map.get(prod.id)
+                    if (
+                        (prod.normal_price is None or prod.normal_price <= prod.current_price)
+                        and b_val
+                        and b_val > prod.current_price * 1.05
+                    ):
+                        prod.normal_price = float(b_val)
                 self.db.upsert_products_batch(products)
                 already_upserted = True
             self._bulk_price_counts = {}
